@@ -106,7 +106,7 @@ Claude Code = 一个 agent loop
 
 就这些。这就是全部架构。每一个组件都是 harness 机制 -- 为 agent 构建的栖居世界的一部分。Agent 本身呢？是 Claude。一个模型。由 Anthropic 在人类推理和代码的全部广度上训练而成。Harness 没有让 Claude 变聪明。Claude 本来就聪明。Harness 给了 Claude 双手、双眼和一个工作空间。
 
-这就是 Claude Code 作为教学标本的意义：**它展示了当你信任模型、把工程精力集中在 harness 上时会发生什么。** 本仓库的每一个课程（s01-s12）都在逆向工程 Claude Code 架构中的一个 harness 机制。学完之后，你理解的不只是 Claude Code 怎么工作，而是适用于任何领域、任何 agent 的 harness 工程通用原则。
+这就是 Claude Code 作为教学标本的意义：**它展示了当你信任模型、把工程精力集中在 harness 上时会发生什么。** 本仓库的每一个课程（s01-s19）都在逆向工程 Claude Code 架构中的一个 harness 机制。学完之后，你理解的不只是 Claude Code 怎么工作，而是适用于任何领域、任何 agent 的 harness 工程通用原则。
 
 启示不是 "复制 Claude Code"。启示是：**最好的 agent 产品，出自那些明白自己的工作是 harness 而非 intelligence 的工程师之手。**
 
@@ -159,32 +159,46 @@ Claude Code = 一个 agent loop
     让 agent 在特定领域高效工作的 harness。
 ```
 
-**12 个递进式课程, 从简单循环到隔离化的自治执行。**
+**19 个递进式课程, 从简单循环到外接插件。**
 **每个课程添加一个 harness 机制。每个机制有一句格言。**
 
 > **s01** &nbsp; *"One loop & Bash is all you need"* &mdash; 一个工具 + 一个循环 = 一个 Agent
 >
 > **s02** &nbsp; *"加一个工具, 只加一个 handler"* &mdash; 循环不用动, 新工具注册进 dispatch map 就行
 >
-> **s03** &nbsp; *"没有计划的 agent 走哪算哪"* &mdash; 先列步骤再动手, 完成率翻倍
+> **s03** &nbsp; *"先划边界, 再给自由"* &mdash; 权限管线决定哪些操作需要审批
 >
-> **s04** &nbsp; *"大任务拆小, 每个小任务干净的上下文"* &mdash; Subagent 用独立 messages[], 不污染主对话
+> **s04** &nbsp; *"挂在循环上, 不写进循环里"* &mdash; 钩子在工具执行前后注入扩展逻辑
 >
-> **s05** &nbsp; *"用到什么知识, 临时加载什么知识"* &mdash; 通过 tool_result 注入, 不塞 system prompt
+> **s05** &nbsp; *"没有计划的 agent 走哪算哪"* &mdash; 先列步骤再动手, 完成率翻倍
 >
-> **s06** &nbsp; *"上下文总会满, 要有办法腾地方"* &mdash; 三层压缩策略, 换来无限会话
+> **s06** &nbsp; *"大任务拆小, 每个小任务干净的上下文"* &mdash; Subagent 用独立 messages[], 不污染主对话
 >
-> **s07** &nbsp; *"大目标要拆成小任务, 排好序, 记在磁盘上"* &mdash; 文件持久化的任务图, 为多 agent 协作打基础
+> **s07** &nbsp; *"用到时再加载, 别全塞 prompt 里"* &mdash; 通过 tool_result 注入, 不塞 system prompt
 >
-> **s08** &nbsp; *"慢操作丢后台, agent 继续想下一步"* &mdash; 后台线程跑命令, 完成后注入通知
+> **s08** &nbsp; *"上下文总会满, 要有办法腾地方"* &mdash; 四层压缩策略, 便宜的先跑贵的后跑
 >
-> **s09** &nbsp; *"任务太大一个人干不完, 要能分给队友"* &mdash; 持久化队友 + 异步邮箱
+> **s09** &nbsp; *"记住该记的, 忘掉该忘的"* &mdash; 三个子系统: 筛选、提取、整理
 >
-> **s10** &nbsp; *"队友之间要有统一的沟通规矩"* &mdash; 一个 request-response 模式驱动所有协商
+> **s10** &nbsp; *"prompt 是组装出来的, 不是写死的"* &mdash; 分段 + 按需拼接
 >
-> **s11** &nbsp; *"队友自己看看板, 有活就认领"* &mdash; 不需要领导逐个分配, 自组织
+> **s11** &nbsp; *"错误不是终点, 是重试的起点"* &mdash; 升级 token、压缩上下文、切换模型
 >
-> **s12** &nbsp; *"各干各的目录, 互不干扰"* &mdash; 任务管目标, worktree 管目录, 按 ID 绑定
+> **s12** &nbsp; *"大目标拆成小任务, 排好序, 持久化"* &mdash; 文件持久化的任务图, 多 agent 协作的基础
+>
+> **s13** &nbsp; *"慢操作丢后台, agent 继续思考"* &mdash; 后台线程跑命令, 完成后注入通知
+>
+> **s14** &nbsp; *"定时触发, 不需要人推"* &mdash; cron 调度, 持久化或会话级
+>
+> **s15** &nbsp; *"一个搞不定, 组队来"* &mdash; 持久化队友 + 异步邮箱
+>
+> **s16** &nbsp; *"队友之间要有约定"* &mdash; 一个 request-response 模式驱动所有协商
+>
+> **s17** &nbsp; *"队友自己看板, 有活就认领"* &mdash; 不需要领导逐个分配, 自组织
+>
+> **s18** &nbsp; *"各干各的目录, 互不干扰"* &mdash; 任务管目标, worktree 管目录, 按 ID 绑定
+>
+> **s19** &nbsp; *"能力不够? 插上 MCP"* &mdash; 多传输、通道路由、工具池合并
 
 ---
 
@@ -238,9 +252,9 @@ cd learn-claude-code
 pip install -r requirements.txt
 cp .env.example .env   # 编辑 .env 填入你的 ANTHROPIC_API_KEY
 
-python agents/s01_agent_loop.py       # 从这里开始
-python agents/s12_worktree_task_isolation.py  # 完整递进终点
-python agents/s_full.py               # 总纲: 全部机制合一
+python s01_agent_loop/code.py        # 起点 — 一个循环 + bash
+python s08_context_compact/code.py    # 上下文压缩（最复杂章）
+python s_full/code.py                 # 总纲: 全部 19 个机制合一
 ```
 
 ### Web 平台
@@ -251,75 +265,64 @@ python agents/s_full.py               # 总纲: 全部机制合一
 cd web && npm install && npm run dev   # http://localhost:3000
 ```
 
-## 学习路径
+## 五个阶段
 
-```
-第一阶段: 循环                       第二阶段: 规划与知识
-==================                   ==============================
-s01  Agent Loop              [1]     s03  TodoWrite               [5]
-     while + stop_reason                  TodoManager + nag 提醒
-     |                                    |
-     +-> s02  Tool Use            [4]     s04  Subagent             [5]
-              dispatch map: name->handler     每个 Subagent 独立 messages[]
-                                              |
-                                         s05  Skills               [5]
-                                              SKILL.md 通过 tool_result 注入
-                                              |
-                                         s06  Context Compact      [5]
-                                              三层 Context Compact
+| 阶段 | 章节 | 你在构建什么 |
+|---|---|---|
+| **工具管线** | `s01-s04` | loop → dispatch → permission → hooks |
+| **单 Agent 能力** | `s05-s08` | planning → subagent → skill → context compact |
+| **知识与韧性** | `s09-s11` | memory → prompt assembly → error recovery |
+| **持久化工作** | `s12-s14` | task graph → background → cron |
+| **多 Agent 平台** | `s15-s19` | teams → protocols → autonomy → worktree → MCP |
 
-第三阶段: 持久化                     第四阶段: 团队
-==================                   =====================
-s07  Task System             [8]     s09  Agent Teams             [9]
-     文件持久化 CRUD + 依赖图             队友 + JSONL 邮箱
-     |                                    |
-s08  Background Tasks        [6]     s10  Team Protocols          [12]
-     守护线程 + 通知队列                  关机 + 计划审批 FSM
-                                          |
-                                     s11  Autonomous Agents       [14]
-                                          空闲轮询 + 自动认领
-                                     |
-                                     s12  Worktree Isolation      [16]
-                                          Task 协调 + 按需隔离执行通道
+## 全部章节
 
-                                     [N] = 工具数量
-```
+| 章节 | 主题 | 关键概念 |
+|---|---|---|
+| [s01](./s01_agent_loop/) | Agent Loop | `messages` / `while True` / `stop_reason` |
+| [s02](./s02_tool_use/) | Tool Use | `TOOL_HANDLERS` / dispatch map / 并发 |
+| [s03](./s03_permission/) | Permission | `PermissionRule` / 审批管线 |
+| [s04](./s04_hooks/) | Hooks | `PreToolUse` / `PostToolUse` / 扩展点 |
+| [s05](./s05_todo_write/) | TodoWrite | `TodoItem` / 先计划后执行 |
+| [s06](./s06_subagent/) | Subagent | `fresh messages[]` / 上下文隔离 |
+| [s07](./s07_skill_loading/) | Skill Loading | `SkillManifest` / 按需注入 |
+| [s08](./s08_context_compact/) | Context Compact | snip / micro / budget / auto 四层压缩 |
+| [s09](./s09_memory/) | Memory | selection / extraction / consolidation |
+| [s10](./s10_system_prompt/) | System Prompt | 运行时组装 / 分段拼接 |
+| [s11](./s11_error_recovery/) | Error Recovery | token 升级 / fallback 模型 / 重试策略 |
+| [s12](./s12_task_system/) | Task System | `TaskRecord` / `blockedBy` / 磁盘持久化 |
+| [s13](./s13_background_tasks/) | Background Tasks | 线程执行 / 通知队列 |
+| [s14](./s14_cron_scheduler/) | Cron Scheduler | 持久化调度 / 会话级触发 |
+| [s15](./s15_agent_teams/) | Agent Teams | `MessageBus` / 收件箱 / 权限冒泡 |
+| [s16](./s16_team_protocols/) | Team Protocols | 关机握手 / 计划审批 |
+| [s17](./s17_autonomous_agents/) | Autonomous Agents | 空闲循环 / 自动认领 |
+| [s18](./s18_worktree_isolation/) | Worktree Isolation | `WorktreeRecord` / 任务-目录绑定 |
+| [s19](./s19_mcp_plugin/) | MCP Plugin | 多传输 / 通道路由 / 工具池合并 |
+| [s_full](./s_full/) | 总纲 | s01-s19 全部机制合并 |
 
 ## 项目结构
 
 ```
 learn-claude-code/
-|
-|-- agents/                        # Python 参考实现 (s01-s12 + s_full 总纲)
-|-- docs/{en,zh,ja}/               # 心智模型优先的文档 (3 种语言)
-|-- web/                           # 交互式学习平台 (Next.js)
-|-- skills/                        # s05 的 Skill 文件
-+-- .github/workflows/ci.yml      # CI: 类型检查 + 构建
-```
-
-## 文档
-
-心智模型优先: 问题、方案、ASCII 图、最小化代码。
-[English](./docs/en/) | [中文](./docs/zh/) | [日本語](./docs/ja/)
-
-| 课程 | 主题 | 格言 |
-|------|------|------|
-| [s01](./docs/zh/s01-the-agent-loop.md) | Agent Loop | *One loop & Bash is all you need* |
-| [s02](./docs/zh/s02-tool-use.md) | Tool Use | *加一个工具, 只加一个 handler* |
-| [s03](./docs/zh/s03-todo-write.md) | TodoWrite | *没有计划的 agent 走哪算哪* |
-| [s04](./docs/zh/s04-subagent.md) | Subagent | *大任务拆小, 每个小任务干净的上下文* |
-| [s05](./docs/zh/s05-skill-loading.md) | Skills | *用到什么知识, 临时加载什么知识* |
-| [s06](./docs/zh/s06-context-compact.md) | Context Compact | *上下文总会满, 要有办法腾地方* |
-| [s07](./docs/zh/s07-task-system.md) | Task System | *大目标要拆成小任务, 排好序, 记在磁盘上* |
-| [s08](./docs/zh/s08-background-tasks.md) | Background Tasks | *慢操作丢后台, agent 继续想下一步* |
-| [s09](./docs/zh/s09-agent-teams.md) | Agent Teams | *任务太大一个人干不完, 要能分给队友* |
-| [s10](./docs/zh/s10-team-protocols.md) | Team Protocols | *队友之间要有统一的沟通规矩* |
-| [s11](./docs/zh/s11-autonomous-agents.md) | Autonomous Agents | *队友自己看看板, 有活就认领* |
-| [s12](./docs/zh/s12-worktree-task-isolation.md) | Worktree + Task Isolation | *各干各的目录, 互不干扰* |
+  s01_agent_loop/          # 每章一个文件夹
+    README.md              #   中文源文档（完整叙事）
+    README.en.md           #   英文译本
+    README.ja.md           #   日文译本
+    code.py                #   独立可运行代码
+    images/                #   SVG 流程图
+  s02_tool_use/
+  ...
+  s19_mcp_plugin/
+  s_full/                  # 总纲
+  agents/                  # 扁平副本，方便 python agents/sXX.py 快速运行
+  skills/                  # s07 使用的 skill 文件
+  docs/                    # 旧版线上文档（已归档）
+  web/                     # Web 教学平台
+  tests/
 
 ## 学完之后 -- 从理解到落地
 
-12 个课程走完, 你已经从内到外理解了 harness 工程的运作原理。两种方式把知识变成产品:
+19 个课程走完, 你已经从内到外理解了 harness 工程的运作原理。两种方式把知识变成产品:
 
 ### Kode Agent CLI -- 开源 Coding Agent CLI
 

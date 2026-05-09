@@ -26,7 +26,7 @@
               | [ ] task A            |
               | [>] task B  <- doing  |
               | [x] task C            |
-              +-----------------------+
+              +-----------	------------+
                           |
               if rounds_since_todo >= 3:
                 inject <reminder> into tool_result
