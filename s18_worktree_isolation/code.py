@@ -228,6 +228,9 @@ def _count_worktree_changes(path: Path) -> tuple[int, int]:
 
 def remove_worktree(name: str, discard_changes: bool = False) -> str:
     """Remove worktree. Refuses if uncommitted changes unless discard_changes."""
+    err = validate_worktree_name(name)
+    if err:
+        return err
     path = WORKTREES_DIR / name
     if not path.exists():
         return f"Worktree '{name}' not found"
@@ -252,6 +255,9 @@ def remove_worktree(name: str, discard_changes: bool = False) -> str:
 
 def keep_worktree(name: str) -> str:
     """Keep worktree for manual review. Branch preserved."""
+    err = validate_worktree_name(name)
+    if err:
+        return err
     log_event("keep", name)
     print(f"  \033[36m[worktree] kept: {name}\033[0m")
     return f"Worktree '{name}' kept for review (branch: wt/{name})"

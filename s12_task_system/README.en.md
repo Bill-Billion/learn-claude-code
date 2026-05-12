@@ -246,7 +246,7 @@ Storage location: `~/.claude/tasks/{taskListId}/{id}.json`. One file per task.
 
 ### 2. Not a TodoWrite Upgrade — Two Independent Systems
 
-In CC, Task System and TodoWrite **coexist**, toggled by `isTodoV2Enabled()` (`utils/tasks.ts:133`) — non-interactive sessions (SDK) default to Task, interactive sessions use TodoWrite. The `TODO_V2` environment variable can force override. Task has what TodoWrite lacks: file-lock concurrency protection, dependency enforcement, ownership, fs.watch reactive monitoring, lifecycle hooks.
+In CC, Task System and TodoWrite **coexist**, toggled by `isTodoV2Enabled()` (`utils/tasks.ts:133`) — interactive sessions default to Task (V2), non-interactive/SDK sessions default to TodoWrite. The `CLAUDE_CODE_ENABLE_TASKS` env var can force-enable Task. Task has what TodoWrite lacks: file-lock concurrency protection, dependency enforcement, ownership, fs.watch reactive monitoring, lifecycle hooks.
 
 ### 3. Concurrent Claim Locking
 

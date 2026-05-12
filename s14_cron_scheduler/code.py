@@ -410,15 +410,52 @@ def cron_matches(cron_expr: str, dt: datetime) -> bool:
     return dom_ok or dow_ok
 
 
+def _validate_cron_field(field: str, lo: int, hi: int) -> str | None:
+    """Validate a single cron field value is within [lo, hi]."""
+    if field == "*":
+        return None
+    if field.startswith("*/"):
+        step_str = field[2:]
+        if not step_str.isdigit():
+            return f"Invalid step: {field}"
+        step = int(step_str)
+        if step <= 0:
+            return f"Step must be > 0: {field}"
+        return None
+    if "," in field:
+        for part in field.split(","):
+            err = _validate_cron_field(part.strip(), lo, hi)
+            if err: return err
+        return None
+    if "-" in field:
+        parts = field.split("-", 1)
+        if not parts[0].isdigit() or not parts[1].isdigit():
+            return f"Invalid range: {field}"
+        a, b = int(parts[0]), int(parts[1])
+        if a < lo or a > hi or b < lo or b > hi:
+            return f"Range {field} out of bounds [{lo}-{hi}]"
+        if a > b:
+            return f"Range start > end: {field}"
+        return None
+    if not field.isdigit():
+        return f"Invalid field: {field}"
+    val = int(field)
+    if val < lo or val > hi:
+        return f"Value {val} out of bounds [{lo}-{hi}]"
+    return None
+
+
 def validate_cron(cron_expr: str) -> str | None:
     """Validate a cron expression. Returns error message or None."""
     fields = cron_expr.strip().split()
     if len(fields) != 5:
         return f"Expected 5 fields, got {len(fields)}"
-    try:
-        cron_matches(cron_expr, datetime.now())
-    except (ValueError, IndexError) as e:
-        return f"Invalid cron expression: {e}"
+    bounds = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
+    names = ["minute", "hour", "day-of-month", "month", "day-of-week"]
+    for i, (field, (lo, hi), name) in enumerate(zip(fields, bounds, names)):
+        err = _validate_cron_field(field, lo, hi)
+        if err:
+            return f"{name}: {err}"
     return None
 
 
