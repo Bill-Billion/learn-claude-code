@@ -340,7 +340,7 @@ export default function MemoryVisualization({ title }: { title?: string }) {
                 Memory file preview
               </div>
               {step >= 2 ? (
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(220px,0.85fr)]">
+                <div className="grid gap-3">
                   <MemoryDetail file={selectedFile} selected={selected} />
                   <div className="space-y-2">
                     {MEMORY_FILES.slice(1).map((file) => (
