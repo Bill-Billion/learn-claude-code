@@ -1,105 +1,195 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 620" font-family="'Noto Sans CJK SC', 'Droid Sans Fallback', system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 700" font-family="system-ui, -apple-system, sans-serif">
   <defs>
-    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#1e3a5f"/>
-      <stop offset="100%" stop-color="#0f766e"/>
-    </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
-    </marker>
     <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#059669"/>
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
     </marker>
-    <marker id="arrow-purple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c3aed"/>
-    </marker>
-    <marker id="arrow-orange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea580c"/>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
     </marker>
   </defs>
 
-  <rect width="920" height="620" rx="8" fill="#fafbfc"/>
-  <rect x="0" y="0" width="920" height="46" rx="8" fill="url(#header)"/>
-  <rect x="0" y="38" width="920" height="8" fill="url(#header)"/>
-  <text x="460" y="29" text-anchor="middle" fill="#fff" font-size="17" font-weight="700">s20 Comprehensive Agent — 全部机制挂在同一个循环上</text>
+  <!-- Background -->
+  <rect width="960" height="700" rx="8" fill="#ffffff"/>
 
-  <!-- Main loop band -->
-  <rect x="40" y="76" width="840" height="212" rx="8" fill="#eef2ff" stroke="#2563eb" stroke-width="1.8"/>
-  <text x="460" y="101" text-anchor="middle" fill="#1e3a8a" font-size="13" font-weight="700">核心 Agent Loop</text>
+  <!-- Title -->
+  <text x="480" y="30" text-anchor="middle" fill="#1a1a1a" font-size="20" font-weight="700">Comprehensive Agent — All Mechanisms, One Loop</text>
+  <text x="480" y="48" text-anchor="middle" fill="#888888" font-size="12">Every component converges in the same while-True loop</text>
 
-  <rect x="70" y="128" width="110" height="48" rx="7" fill="#fff" stroke="#2563eb" stroke-width="1.4"/>
-  <text x="125" y="157" text-anchor="middle" fill="#1e3a5f" font-size="11" font-weight="700">messages[]</text>
+  <!-- ============================================ -->
+  <!-- Core Agent Loop container -->
+  <!-- ============================================ -->
+  <rect x="30" y="68" width="900" height="220" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="44" y="84" fill="#1a1a1a" font-size="14" font-weight="700">Core Agent Loop</text>
 
-  <line x1="180" y1="152" x2="222" y2="152" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Box 1: messages[] -->
+  <rect x="55" y="112" width="120" height="50" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="115" y="142" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700" font-family="monospace">messages[]</text>
 
-  <rect x="225" y="118" width="150" height="68" rx="7" fill="#ecfdf5" stroke="#059669" stroke-width="1.6"/>
-  <text x="300" y="140" text-anchor="middle" fill="#065f46" font-size="11" font-weight="700">LLM 前处理</text>
-  <text x="240" y="158" fill="#047857" font-size="8.5">cron / background 注入</text>
-  <text x="240" y="171" fill="#047857" font-size="8.5">compact + memory + prompt</text>
+  <!-- Arrow 1→2 -->
+  <line x1="175" y1="137" x2="210" y2="137" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <line x1="375" y1="152" x2="417" y2="152" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Box 2: LLM Pre-processing -->
+  <rect x="220" y="106" width="175" height="62" rx="8" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="307" y="127" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">LLM Pre-processing</text>
+  <text x="235" y="143" fill="#888888" font-size="10">cron / background inject</text>
+  <text x="235" y="157" fill="#888888" font-size="10">compact + memory + prompt</text>
 
-  <rect x="420" y="118" width="110" height="68" rx="7" fill="#fff" stroke="#2563eb" stroke-width="1.4"/>
-  <text x="475" y="146" text-anchor="middle" fill="#1e3a5f" font-size="12" font-weight="700">LLM</text>
-  <text x="475" y="164" text-anchor="middle" fill="#64748b" font-size="8.5">stop_reason=tool_use?</text>
+  <!-- Arrow 2→3 -->
+  <line x1="395" y1="137" x2="410" y2="137" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <line x1="530" y1="152" x2="572" y2="152" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Box 3: LLM -->
+  <rect x="420" y="106" width="110" height="62" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="475" y="131" text-anchor="middle" fill="#1a1a1a" font-size="14" font-weight="700">LLM</text>
+  <text x="475" y="149" text-anchor="middle" fill="#888888" font-size="10" font-family="monospace">stop_reason=</text>
+  <text x="475" y="161" text-anchor="middle" fill="#888888" font-size="10" font-family="monospace">tool_use?</text>
 
-  <rect x="575" y="118" width="150" height="68" rx="7" fill="#fff7ed" stroke="#ea580c" stroke-width="1.6"/>
-  <text x="650" y="140" text-anchor="middle" fill="#9a3412" font-size="11" font-weight="700">工具前闸门</text>
-  <text x="590" y="158" fill="#c2410c" font-size="8.5">PreToolUse hooks</text>
-  <text x="590" y="171" fill="#c2410c" font-size="8.5">permission pipeline</text>
+  <!-- Arrow 3→4 -->
+  <line x1="530" y1="137" x2="565" y2="137" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <line x1="725" y1="152" x2="767" y2="152" stroke="#475569" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Box 4: PreToolUse Gate -->
+  <rect x="575" y="106" width="150" height="62" rx="8" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="650" y="127" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">Pre-Tool Gate</text>
+  <text x="590" y="143" fill="#888888" font-size="10">PreToolUse hooks</text>
+  <text x="590" y="157" fill="#888888" font-size="10">permission pipeline</text>
 
-  <rect x="770" y="118" width="80" height="68" rx="7" fill="#fff" stroke="#2563eb" stroke-width="1.4"/>
-  <text x="810" y="147" text-anchor="middle" fill="#1e3a5f" font-size="10" font-weight="700">handlers</text>
-  <text x="810" y="164" text-anchor="middle" fill="#64748b" font-size="8">builtin + MCP</text>
+  <!-- Arrow 4→5 -->
+  <line x1="725" y1="137" x2="760" y2="137" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <path d="M 810 186 L 810 244 L 125 244 L 125 176" fill="none" stroke="#475569" stroke-width="1.4" stroke-dasharray="6,4" marker-end="url(#arrow)"/>
-  <text x="460" y="263" text-anchor="middle" fill="#64748b" font-size="9">tool_result / task_notification → messages[] → 下一轮</text>
+  <!-- Box 5: Tool Handlers -->
+  <rect x="770" y="106" width="130" height="62" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="835" y="131" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">Tool Handlers</text>
+  <text x="835" y="149" text-anchor="middle" fill="#888888" font-size="10">builtin + MCP</text>
+  <text x="835" y="161" text-anchor="middle" fill="#888888" font-size="10">PostToolUse hooks</text>
 
-  <!-- Top sidecars -->
-  <rect x="40" y="318" width="190" height="104" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.4"/>
-  <text x="135" y="341" text-anchor="middle" fill="#065f46" font-size="11" font-weight="700">上下文与知识</text>
-  <text x="58" y="362" fill="#047857" font-size="9">s07 skills catalog + load_skill</text>
-  <text x="58" y="377" fill="#047857" font-size="9">s09 memory selection</text>
-  <text x="58" y="392" fill="#047857" font-size="9">s10 prompt sections</text>
-  <text x="58" y="407" fill="#047857" font-size="9">s08 compact pipeline</text>
-  <path d="M 230 350 L 282 186" fill="none" stroke="#059669" stroke-width="1.3" marker-end="url(#arrow-green)" stroke-dasharray="5,3"/>
+  <!-- Loop-back arrow: handlers → messages[] -->
+  <path d="M 835 106 L 835 88 L 115 88 L 115 112" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+  <!-- Junction circles -->
+  <circle cx="835" cy="88" r="3" fill="#22c55e"/>
+  <circle cx="115" cy="88" r="3" fill="#22c55e"/>
+  <!-- Loop-back label -->
+  <text x="480" y="80" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600" font-family="monospace">tool_result / task_notification → messages[] → next round</text>
 
-  <rect x="260" y="318" width="190" height="104" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.4"/>
-  <text x="355" y="341" text-anchor="middle" fill="#9a3412" font-size="11" font-weight="700">治理与扩展点</text>
-  <text x="278" y="362" fill="#c2410c" font-size="9">s03 permission</text>
-  <text x="278" y="377" fill="#c2410c" font-size="9">s04 hooks</text>
-  <text x="278" y="392" fill="#c2410c" font-size="9">s11 retry / fallback</text>
-  <text x="278" y="407" fill="#c2410c" font-size="9">Stop hooks</text>
-  <path d="M 450 350 L 592 186" fill="none" stroke="#ea580c" stroke-width="1.3" marker-end="url(#arrow-orange)" stroke-dasharray="5,3"/>
+  <!-- Stop hooks exit (gray, going down from LLM) -->
+  <line x1="475" y1="168" x2="475" y2="195" stroke="#888888" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <text x="500" y="188" fill="#888888" font-size="10" font-weight="600">no tool_use</text>
 
-  <rect x="480" y="318" width="190" height="104" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.4"/>
-  <text x="575" y="341" text-anchor="middle" fill="#5b21b6" font-size="11" font-weight="700">持久工作</text>
-  <text x="498" y="362" fill="#6d28d9" font-size="9">s05 todo_write</text>
-  <text x="498" y="377" fill="#6d28d9" font-size="9">s12 task graph</text>
-  <text x="498" y="392" fill="#6d28d9" font-size="9">s13 background</text>
-  <text x="498" y="407" fill="#6d28d9" font-size="9">s14 cron scheduler</text>
-  <path d="M 575 318 L 575 188" fill="none" stroke="#7c3aed" stroke-width="1.3" marker-end="url(#arrow-purple)" stroke-dasharray="5,3"/>
+  <!-- Stop hooks box -->
+  <rect x="430" y="197" width="90" height="30" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="475" y="217" text-anchor="middle" fill="#888888" font-size="11" font-weight="700">Stop hooks</text>
 
-  <rect x="700" y="318" width="180" height="104" rx="8" fill="#f0fdfa" stroke="#0d9488" stroke-width="1.4"/>
-  <text x="790" y="341" text-anchor="middle" fill="#0f766e" font-size="11" font-weight="700">团队与插件</text>
-  <text x="718" y="362" fill="#0f766e" font-size="9">s06 subagent</text>
-  <text x="718" y="377" fill="#0f766e" font-size="9">s15-s17 team protocols</text>
-  <text x="718" y="392" fill="#0f766e" font-size="9">s18 worktree isolation</text>
-  <text x="718" y="407" fill="#0f766e" font-size="9">s19 MCP tools</text>
-  <path d="M 790 318 L 790 188" fill="none" stroke="#0d9488" stroke-width="1.3" marker-end="url(#arrow-green)" stroke-dasharray="5,3"/>
+  <!-- Exit arrow from stop hooks to exit pill -->
+  <line x1="475" y1="227" x2="475" y2="250" stroke="#888888" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <!-- Exit pill node -->
+  <rect x="420" y="252" width="110" height="26" rx="13" fill="#ffffff" stroke="#888888" stroke-width="1.5"/>
+  <text x="475" y="270" text-anchor="middle" fill="#888888" font-size="10" font-weight="600">Return Result</text>
 
-  <!-- Tool pool -->
-  <rect x="70" y="462" width="780" height="112" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.2"/>
-  <text x="460" y="487" text-anchor="middle" fill="#1e293b" font-size="12" font-weight="700">TOOL POOL: 27 builtins + dynamic mcp__server__tool</text>
-  <text x="95" y="512" fill="#334155" font-size="9">file/shell: bash · read · write · edit · glob</text>
-  <text x="95" y="530" fill="#334155" font-size="9">single-agent: todo_write · task · load_skill · compact</text>
-  <text x="95" y="548" fill="#334155" font-size="9">durable work: create/list/get/claim/complete_task · schedule/list/cancel_cron</text>
-  <text x="510" y="512" fill="#334155" font-size="9">team: spawn_teammate · send_message · check_inbox</text>
-  <text x="510" y="530" fill="#334155" font-size="9">protocol: request_shutdown · request_plan · review_plan</text>
-  <text x="510" y="548" fill="#334155" font-size="9">isolation/plugin: create/remove/keep_worktree · connect_mcp</text>
-  <path d="M 850 518 L 890 518 L 890 152 L 850 152" fill="none" stroke="#475569" stroke-width="1.2" marker-end="url(#arrow)" stroke-dasharray="4,4"/>
+  <!-- ============================================ -->
+  <!-- Four component category boxes -->
+  <!-- ============================================ -->
+
+  <!-- Category 1: Context & Knowledge -->
+  <rect x="30" y="310" width="210" height="120" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="135" y="334" text-anchor="middle" fill="#1a1a1a" font-size="13" font-weight="700">Context &amp; Knowledge</text>
+  <text x="46" y="354" fill="#888888" font-size="10">skills catalog + load_skill</text>
+  <text x="46" y="370" fill="#888888" font-size="10">memory selection</text>
+  <text x="46" y="386" fill="#888888" font-size="10">system prompt assembly</text>
+  <text x="46" y="402" fill="#888888" font-size="10">compact pipeline</text>
+  <!-- Dashed arrow up to LLM Pre-processing -->
+  <path d="M 135 310 L 135 296 L 307 296 L 307 168" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+
+  <!-- Category 2: Governance & Extensions -->
+  <rect x="265" y="310" width="200" height="120" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="365" y="334" text-anchor="middle" fill="#1a1a1a" font-size="13" font-weight="700">Governance &amp; Extensions</text>
+  <text x="281" y="354" fill="#888888" font-size="10">permission pipeline</text>
+  <text x="281" y="370" fill="#888888" font-size="10">hooks (Pre/Post/Stop)</text>
+  <text x="281" y="386" fill="#888888" font-size="10">retry / fallback</text>
+  <text x="281" y="402" fill="#888888" font-size="10">error recovery</text>
+  <!-- Dashed arrow up to Pre-Tool Gate (routed around the exit path) -->
+  <path d="M 365 310 L 365 296 L 650 296 L 650 168" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+
+  <!-- Category 3: Durable Work -->
+  <rect x="490" y="310" width="200" height="120" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="590" y="334" text-anchor="middle" fill="#1a1a1a" font-size="13" font-weight="700">Durable Work</text>
+  <text x="506" y="354" fill="#888888" font-size="10">todo_write (session plan)</text>
+  <text x="506" y="370" fill="#888888" font-size="10">task graph (cross-session)</text>
+  <text x="506" y="386" fill="#888888" font-size="10">background dispatch</text>
+  <text x="506" y="402" fill="#888888" font-size="10">cron scheduler</text>
+  <!-- Dashed arrow up to Tool Handlers (durable tools are dispatched) -->
+  <path d="M 590 310 L 590 302 L 810 302 L 810 168" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+
+  <!-- Category 4: Teams & Plugins -->
+  <rect x="715" y="310" width="215" height="120" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="822" y="334" text-anchor="middle" fill="#1a1a1a" font-size="13" font-weight="700">Teams &amp; Plugins</text>
+  <text x="731" y="354" fill="#888888" font-size="10">subagent (one-shot)</text>
+  <text x="731" y="370" fill="#888888" font-size="10">team protocols</text>
+  <text x="731" y="386" fill="#888888" font-size="10">worktree isolation</text>
+  <text x="731" y="402" fill="#888888" font-size="10">MCP external tools</text>
+  <!-- Dashed arrow up to Tool Handlers -->
+  <path d="M 822 310 L 822 296 L 860 296 L 860 168" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+
+  <!-- ============================================ -->
+  <!-- Tool Pool (terminal mockup style) -->
+  <!-- ============================================ -->
+  <rect x="30" y="460" width="900" height="230" rx="8" fill="#2d2d2d"/>
+
+  <!-- Terminal title bar dots -->
+  <circle cx="52" cy="478" r="5" fill="#888888"/>
+  <circle cx="68" cy="478" r="5" fill="#888888"/>
+  <circle cx="84" cy="478" r="5" fill="#888888"/>
+  <text x="480" y="482" text-anchor="middle" fill="#22c55e" font-size="14" font-weight="700" font-family="monospace">TOOL POOL: 27 builtins + dynamic mcp__server__tool</text>
+
+  <!-- Divider line -->
+  <line x1="50" y1="494" x2="910" y2="494" stroke="#888888" stroke-width="1"/>
+
+  <!-- Column 1: file/shell tools -->
+  <text x="60" y="516" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">file/shell</text>
+  <text x="60" y="534" fill="#22c55e" font-size="11" font-family="monospace">  bash</text>
+  <text x="60" y="550" fill="#22c55e" font-size="11" font-family="monospace">  read_file</text>
+  <text x="60" y="566" fill="#22c55e" font-size="11" font-family="monospace">  write_file</text>
+  <text x="60" y="582" fill="#22c55e" font-size="11" font-family="monospace">  edit_file</text>
+  <text x="60" y="598" fill="#22c55e" font-size="11" font-family="monospace">  glob</text>
+
+  <!-- Column 2: single-agent tools -->
+  <text x="210" y="516" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">single-agent</text>
+  <text x="210" y="534" fill="#22c55e" font-size="11" font-family="monospace">  todo_write</text>
+  <text x="210" y="550" fill="#22c55e" font-size="11" font-family="monospace">  task</text>
+  <text x="210" y="566" fill="#22c55e" font-size="11" font-family="monospace">  load_skill</text>
+  <text x="210" y="582" fill="#22c55e" font-size="11" font-family="monospace">  compact</text>
+
+  <!-- Column 3: durable work tools -->
+  <text x="380" y="516" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">durable work</text>
+  <text x="380" y="534" fill="#22c55e" font-size="11" font-family="monospace">  create_task</text>
+  <text x="380" y="550" fill="#22c55e" font-size="11" font-family="monospace">  list_tasks</text>
+  <text x="380" y="566" fill="#22c55e" font-size="11" font-family="monospace">  get_task</text>
+  <text x="380" y="582" fill="#22c55e" font-size="11" font-family="monospace">  claim_task</text>
+  <text x="380" y="598" fill="#22c55e" font-size="11" font-family="monospace">  complete_task</text>
+  <text x="380" y="614" fill="#22c55e" font-size="11" font-family="monospace">  schedule_cron</text>
+  <text x="380" y="630" fill="#22c55e" font-size="11" font-family="monospace">  list_crons</text>
+  <text x="380" y="646" fill="#22c55e" font-size="11" font-family="monospace">  cancel_cron</text>
+
+  <!-- Column 4: team tools -->
+  <text x="570" y="516" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">team</text>
+  <text x="570" y="534" fill="#22c55e" font-size="11" font-family="monospace">  spawn_teammate</text>
+  <text x="570" y="550" fill="#22c55e" font-size="11" font-family="monospace">  send_message</text>
+  <text x="570" y="566" fill="#22c55e" font-size="11" font-family="monospace">  check_inbox</text>
+
+  <!-- Column 5: protocol tools -->
+  <text x="570" y="594" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">protocol</text>
+  <text x="570" y="612" fill="#22c55e" font-size="11" font-family="monospace">  request_shutdown</text>
+  <text x="570" y="628" fill="#22c55e" font-size="11" font-family="monospace">  request_plan</text>
+  <text x="570" y="644" fill="#22c55e" font-size="11" font-family="monospace">  review_plan</text>
+
+  <!-- Column 6: isolation/plugin tools -->
+  <text x="770" y="516" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">isolation</text>
+  <text x="770" y="534" fill="#22c55e" font-size="11" font-family="monospace">  create_worktree</text>
+  <text x="770" y="550" fill="#22c55e" font-size="11" font-family="monospace">  remove_worktree</text>
+  <text x="770" y="566" fill="#22c55e" font-size="11" font-family="monospace">  keep_worktree</text>
+  <text x="770" y="594" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">plugin</text>
+  <text x="770" y="612" fill="#22c55e" font-size="11" font-family="monospace">  connect_mcp</text>
+
+  <!-- Cursor block -->
+  <rect x="860" y="604" width="8" height="14" fill="#22c55e" opacity="0.7"/>
+
+  <!-- Dashed arrow from tool pool back up to handlers -->
+  <path d="M 930 560 L 940 560 L 940 137 L 900 137" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
 </svg>

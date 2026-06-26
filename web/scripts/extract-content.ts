@@ -166,7 +166,7 @@ function copyChapterAssets(chapter: ChapterSource): ChapterImage[] {
 }
 
 function localeReadmeName(locale: Locale): string {
-  if (locale === "zh") return "README.md";
+  if (locale === "en") return "README.md";
   return `README.${locale}.md`;
 }
 
@@ -178,7 +178,7 @@ function rewriteChapterMarkdown(
   let next = content;
 
   next = next.replace(
-    /^\[中文\]\(README\.md\)\s*.\s*\[English\]\(README\.en\.md\)\s*.\s*\[日本語\]\(README\.ja\.md\)\n\n?/m,
+    /^\[中文\]\(README\.zh\.md\)\s*.\s*\[English\]\(README\.md\)\s*.\s*\[日本語\]\(README\.ja\.md\)\n\n?/m,
     ""
   );
 

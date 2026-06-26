@@ -16,7 +16,7 @@ Changes from s11:
 
 Note: Teaching code keeps a basic agent loop to stay focused on the task
 system. S11's full error recovery (RecoveryState, backoff, escalation,
-reactive compact, fallback model) is omitted — in real CC, tasks.ts and
+reactive compact, fallback model) is omitted — in real Claude Code, tasks.ts and
 withRetry are independent layers that compose naturally.
 """
 

@@ -1,52 +1,52 @@
-# s12: Task System — 目标太大，拆成小任务
+# s12: Task System — Break Big Goals into Small Tasks
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s10 → s11 → `s12` → [s13](../s13_background_tasks/) → s14 → ... → s20
 
-> *"大目标拆成小任务, 排好序, 持久化"* — 文件持久化的任务图, 多 agent 协作的基础。
+> *"Break big goals into small tasks, order them, persist"* — File-persisted task graph, the basis for multi-agent collaboration.
 >
-> **Harness 层**: 任务 — 持久化的目标, 可恢复的进度。
+> **Harness Layer**: Tasks — Persisted goals, recoverable progress.
 
 ---
 
-## 问题
+## The Problem
 
-Agent 接到一个项目：搭数据库、写 API、加测试。它用 s05 的 TodoWrite 列了一张清单，然后开始写 API，写到一半发现没数据库表，回头补；加测试时发现 API 接口签名又变了...
+The agent receives a project: set up a database, write APIs, add tests. It uses s05's TodoWrite to create a checklist, then starts writing the API first, gets halfway through and realizes there are no database tables, goes back to fix them; when adding tests, discovers the API interface signatures have changed again...
 
-盖房子不能先盖屋顶再打地基。任务之间有先后。任务依赖应该形成有向无环图（DAG）；教学版只演示 `blockedBy` 检查，没有实现环检测。
+You can't build the roof before laying the foundation. Tasks have ordering. Task dependencies should form a Directed Acyclic Graph (DAG); the teaching version only demonstrates `blockedBy` checking, without cycle detection.
 
-s05 的 TodoWrite 是当前任务的执行清单，保存在会话内存中。这里需要的是**任务系统**：每个任务是一个 JSON 文件，任务之间有 `blockedBy` 依赖，跨会话持久化在磁盘上。
+s05's TodoWrite is an execution checklist for the current task, kept in session memory. What you need here is a **task system**: each task is a JSON file, tasks have `blockedBy` dependencies, and they persist across sessions on disk.
 
 ---
 
-## 解决方案
+## The Solution
 
 ![Task System Overview](images/task-system-overview.svg)
 
-教学代码保留基础 agent loop，为聚焦任务系统省略了 S11 的完整错误恢复（RecoveryState、退避、升级、reactive compact、fallback model）。新增 5 个任务工具 + `.tasks/` 目录持久化 + `blockedBy` 依赖检查。任务系统与错误恢复是独立层：CC 源码中 `utils/tasks.ts` 只管 CRUD，`query.ts` 的 with_retry/RecoveryState 管错误恢复，互不耦合。
+Teaching code keeps a basic agent loop, omitting S11's full error recovery (RecoveryState, backoff, escalation, reactive compact, fallback model) to stay focused on the task system. Added: 5 new task tools + `.tasks/` directory for persistence + `blockedBy` dependency checking. The task system and error recovery are independent layers: in Claude Code source, `utils/tasks.ts` only handles CRUD, while `query.ts`'s with_retry/RecoveryState handles error recovery, with no coupling between them.
 
-TodoWrite vs Task System：
+TodoWrite vs Task System:
 
 | | TodoWrite (s05) | Task System (s12) |
 |---|---|---|
-| 定位 | 当前任务的执行清单 | 可恢复的任务系统 |
-| 存储 | 进程内 / 会话状态 | `.tasks/{id}.json` |
-| 依赖 | 无 | `blockedBy` / `blocks` 依赖图 |
-| 生命周期 | 当前会话 / 当前任务 | 跨会话保留 |
-| 分工 | 不负责任务认领 | `owner` / claim |
-| 状态 | pending / in_progress / completed | pending / in_progress / completed |
-| 粒度 | Agent 自己的步骤 | 可被认领、追踪、解锁的任务 |
+| Role | Execution checklist for the current task | Recoverable task system |
+| Storage | In-process / session state | `.tasks/{id}.json` |
+| Dependencies | None | `blockedBy` / `blocks` graph |
+| Lifecycle | Current session / current task | Cross-session |
+| Coordination | No task claiming | `owner` / claim |
+| Status | pending / in_progress / completed | pending / in_progress / completed |
+| Granularity | The agent's own steps | Tasks that can be claimed, tracked, and unblocked |
 
 ---
 
-## 工作原理
+## How It Works
 
 ![Task DAG](images/task-dag.svg)
 
-### Task: 数据结构
+### Task: Data Structure
 
-每个任务是一个 JSON 文件，存于 `.tasks/` 目录：
+Each task is a JSON file, stored in the `.tasks/` directory:
 
 ```python
 @dataclass
@@ -55,13 +55,13 @@ class Task:
     subject: str
     description: str
     status: str          # pending | in_progress | completed
-    owner: str | None    # Agent 名（多 Agent 场景）
-    blockedBy: list[str] # 依赖的任务 ID 列表
+    owner: str | None    # Agent name (multi-agent scenarios)
+    blockedBy: list[str] # List of dependency task IDs
 ```
 
-ID 用 `timestamp + random hex` 生成，简单但够用。CC 用顺序 ID + highwatermark 文件防止 ID 重用，是更严谨的设计。
+IDs are generated with `timestamp + random hex`, simple but sufficient. Claude Code uses sequential IDs + a highwatermark file to prevent ID reuse, which is a more rigorous design.
 
-### create_task: 创建任务
+### create_task: Create Tasks
 
 ```python
 def create_task(subject: str, description: str = "",
@@ -76,11 +76,11 @@ def create_task(subject: str, description: str = "",
     return task
 ```
 
-创建时自动 `save_task` 到 `.tasks/{id}.json`。`blockedBy` 声明依赖，比如 "写 API" 的 `blockedBy` 是 `["task_schema"]`。
+Automatically calls `save_task` on creation to write `.tasks/{id}.json`. `blockedBy` declares dependencies, for example "write API" has `blockedBy: ["task_schema"]`.
 
-### can_start: 依赖检查
+### can_start: Dependency Check
 
-一个任务只能在它的 `blockedBy` **全部 completed** 之后才能开始：
+A task can only start after all its `blockedBy` dependencies are **completed**:
 
 ```python
 def can_start(task_id: str) -> bool:
@@ -94,11 +94,11 @@ def can_start(task_id: str) -> bool:
     return True
 ```
 
-`can_start` 是 `claim_task` 的前置检查：`blockedBy` 里有任何一个不是 completed，就不能认领。不存在的依赖视为 blocked，避免引用错误 ID 时崩溃。
+`can_start` is a prerequisite check for `claim_task`: if any `blockedBy` dependency is not completed, the task cannot be claimed. Missing dependencies are treated as blocked, avoiding crashes from referencing wrong IDs.
 
-### claim_task: 认领任务
+### claim_task: Claim a Task
 
-Agent 开始做一个任务时，调用 `claim_task`：设置 `owner`，状态从 `pending` → `in_progress`。`owner` 字段记录谁在做这个任务，多 Agent 场景下防止重复认领：
+When the agent starts working on a task, it calls `claim_task`: sets `owner`, changes status from `pending` → `in_progress`. The `owner` field records who is working on the task, preventing duplicate claims in multi-agent scenarios:
 
 ```python
 def claim_task(task_id: str, owner: str = "agent") -> str:
@@ -115,18 +115,18 @@ def claim_task(task_id: str, owner: str = "agent") -> str:
     return f"Claimed {task_id} ({task.subject})"
 ```
 
-如果任务已被别人认领（`status != "pending"`），或者依赖没完成（`can_start` 返回 False），拒绝认领。
+If the task is already claimed by someone else (`status != "pending"`), or dependencies aren't met (`can_start` returns False), the claim is rejected.
 
-### complete_task: 完成与解锁
+### complete_task: Complete and Unblock
 
-任务做完后，设为 `completed`。同时扫描所有其他任务，找出**刚刚被解锁**的下游任务：
+When a task is done, set it to `completed`. Simultaneously scan all other tasks to find downstream tasks that were **just unblocked**:
 
 ```python
 def complete_task(task_id: str) -> str:
     task = load_task(task_id)
     task.status = "completed"
     save_task(task)
-    # 找出被解锁的下游任务
+    # Find newly unblocked downstream tasks
     unblocked = [t.subject for t in list_tasks()
                  if t.status == "pending" and t.blockedBy
                  and can_start(t.id)]
@@ -136,11 +136,11 @@ def complete_task(task_id: str) -> str:
     return msg
 ```
 
-完成 "schema" 后，"endpoints" 和 "docs" 的 `can_start` 返回 True，它们可以开始。
+After completing "schema", `can_start` returns True for "endpoints" and "docs"; they can begin.
 
-### get_task: 查看完整细节
+### get_task: View Full Details
 
-`list_tasks` 只显示一行摘要。`get_task` 返回完整的任务 JSON，包括 description 和依赖细节。跨会话恢复时，Agent 需要读取完整描述才能继续工作：
+`list_tasks` only shows a one-line summary. `get_task` returns the full task JSON, including description and dependency details. When recovering across sessions, the agent needs to read the full description to continue work:
 
 ```python
 def get_task(task_id: str) -> str:
@@ -148,134 +148,134 @@ def get_task(task_id: str) -> str:
     return json.dumps(asdict(task), indent=2)
 ```
 
-### 状态机: 两个动作，三个状态
+### State Machine: Two Actions, Three States
 
 ```
 pending ──claim──→ in_progress ──complete──→ completed
 ```
 
-这里的 `claim` / `complete` 是动作，`pending` / `in_progress` / `completed` 是状态：
+Here `claim` / `complete` are actions, while `pending` / `in_progress` / `completed` are states:
 
-- **claim_task**: `pending` → `in_progress`。设置 owner，开始工作。
-- **complete_task**: `in_progress` → `completed`。把任务标记为完成，并解锁下游。
+- **claim_task**: `pending` → `in_progress`. Sets owner, begins work.
+- **complete_task**: `in_progress` → `completed`. Marks the task done and unblocks downstream.
 
-CC 没有 `in_progress → pending` 的 release 路径。如果 teammate 终止或 shutdown，CC 会把它未完成的任务 unassign（清除 owner），并将 status 重置为 `pending`，方便其他 agent 重新认领。教学版省略了这一恢复路径。
+Claude Code has no `in_progress → pending` release path. If a teammate terminates or shuts down, Claude Code unassigns its unfinished tasks (clears owner) and resets status to `pending`, allowing other agents to reclaim them. The teaching version omits this recovery path.
 
-### 合起来跑
+### Putting It Together
 
 ```python
-# 创建有依赖的任务
+# Create tasks with dependencies
 schema = create_task("setup database schema")
 endpoints = create_task("create API endpoints", blockedBy=[schema.id])
 tests = create_task("write tests", blockedBy=[endpoints.id])
 docs = create_task("write docs", blockedBy=[schema.id])
 
-# Agent 认领第一个可做的任务
-claim_task(schema.id)       # ✓ Claimed (无依赖)
-complete_task(schema.id)    # ✓ Completed → 解锁 endpoints, docs
+# Agent claims the first available task
+claim_task(schema.id)       # ✓ Claimed (no dependencies)
+complete_task(schema.id)    # ✓ Completed → unblocks endpoints, docs
 
-claim_task(endpoints.id)    # ✓ Claimed (schema 已完成)
-complete_task(endpoints.id) # ✓ Completed → 解锁 tests
+claim_task(endpoints.id)    # ✓ Claimed (schema completed)
+complete_task(endpoints.id) # ✓ Completed → unblocks tests
 
-claim_task(docs.id)         # ✓ Claimed (schema 已完成)
+claim_task(docs.id)         # ✓ Claimed (schema completed)
 complete_task(docs.id)      # ✓ Completed
 
-claim_task(tests.id)        # ✓ Claimed (endpoints 已完成)
+claim_task(tests.id)        # ✓ Claimed (endpoints completed)
 complete_task(tests.id)     # ✓ Completed
 ```
 
-每个 `create_task` 写一个 JSON 文件，每个 `claim_task` / `complete_task` 更新文件。跨会话时，`.tasks/` 目录还在，Agent 读文件就能恢复进度。
+Each `create_task` writes a JSON file, each `claim_task` / `complete_task` updates the file. Across sessions, the `.tasks/` directory persists; the agent reads the files to recover progress.
 
 ---
 
-## 相对 s11 的变更
+## Changes from s11
 
-| 组件 | 之前 (s11) | 之后 (s12) |
-|------|-----------|-----------|
-| 任务管理 | 无 | Task dataclass + 5 个工具 |
-| 新类型 | — | Task（id, subject, description, status, owner, blockedBy） |
-| 存储 | 无持久化 | `.tasks/{id}.json` 跨会话 |
-| 依赖 | 无 | `blockedBy` 图 + `can_start` 检查 |
-| 工具 | bash, read_file, write_file (3) | + create_task, list_tasks, get_task, claim_task, complete_task (8) |
-| 生命周期 | — | pending → in_progress → completed（无 release 回退） |
+| Component | Before (s11) | After (s12) |
+|-----------|-------------|-------------|
+| Task management | None | Task dataclass + 5 tools |
+| New types | — | Task (id, subject, description, status, owner, blockedBy) |
+| Storage | No persistence | `.tasks/{id}.json` cross-session |
+| Dependencies | None | `blockedBy` graph + `can_start` check |
+| Tools | bash, read_file, write_file (3) | + create_task, list_tasks, get_task, claim_task, complete_task (8) |
+| Lifecycle | — | pending → in_progress → completed (no release rollback) |
 
 ---
 
-## 试一下
+## Try It
 
 ```sh
 cd learn-claude-code
 python s12_task_system/code.py
 ```
 
-试试这些 prompt：
+Try these prompts:
 
 1. `Create tasks: setup database schema, create API endpoints (depends on schema), write tests (depends on endpoints), write docs (depends on schema)`
 2. `List all tasks and their statuses`
 3. `Claim the first unblocked task and complete it`
 4. `List tasks again — which ones are now unblocked?`
 
-观察重点：`.tasks/` 目录下是否生成了 JSON 文件？完成任务后，被阻塞的任务是否解锁？
+What to observe: Are JSON files generated in the `.tasks/` directory? After completing a task, are the blocked tasks unblocked?
 
 ---
 
-## 接下来
+## What's Next
 
-任务图有了。但有些任务要跑很久——比如全量测试、部署到服务器。Agent 调 LLM 按量计费，不能干等一个慢操作。
+The task graph is in place. But some tasks take a long time — like running full test suites or deploying to a server. The agent calls the LLM billed by token, it can't afford to wait on a slow operation.
 
-s13 Background Tasks → 慢操作放后台。Agent 继续处理其他任务，后台跑完了通知它。
+s13 Background Tasks → Slow operations go to the background. The agent continues processing other tasks, and gets notified when the background work is done.
 
 <details>
-<summary>深入 CC 源码</summary>
+<summary>Deep Dive into Claude Code Source</summary>
 
-> 以下基于 CC 源码 `utils/tasks.ts`（862 行）、`tools/TaskCreateTool/TaskCreateTool.ts`（138 行）、`tools/TaskUpdateTool/TaskUpdateTool.ts`（406 行）、`tools/TaskGetTool/TaskGetTool.ts`（128 行）、`tools/TaskListTool/TaskListTool.ts`（116 行）、`hooks/useTaskListWatcher.ts`（221 行）的分析。
+> The following is a complete analysis based on Claude Code source code `utils/tasks.ts` (862 lines), `tools/TaskCreateTool/TaskCreateTool.ts` (138 lines), `tools/TaskUpdateTool/TaskUpdateTool.ts` (406 lines), `tools/TaskGetTool/TaskGetTool.ts` (128 lines), `tools/TaskListTool/TaskListTool.ts` (116 lines), `hooks/useTaskListWatcher.ts` (221 lines).
 
-### 一、TaskRecord 的完整字段
+### 1. TaskRecord's Full Fields
 
-教学版只讲了 id、subject、status、owner、blockedBy。CC 实际有 9 个字段（`utils/tasks.ts:76-89`）：
+The tutorial only covers id, subject, status, owner, blockedBy. Claude Code actually has 9 fields (`utils/tasks.ts:76-89`):
 
-| 字段 | 类型 | 用途 |
-|------|------|------|
-| `id` | string | 递增整数 ID |
-| `subject` | string | 简短标题 |
-| `description` | string | 自由格式描述 |
-| `activeForm` | string? | 进行时态，in_progress 时在 spinner 显示 |
-| `owner` | string? | 分配的 agent ID |
-| `status` | pending/in_progress/completed | 生命周期 |
-| `blocks` | string[] | 此任务阻塞的任务 ID（下游） |
-| `blockedBy` | string[] | 阻塞此任务的任务 ID（上游） |
-| `metadata` | Record? | 任意扩展键值对 |
+| Field | Type | Purpose |
+|------|------|---------|
+| `id` | string | Incrementing integer ID |
+| `subject` | string | Short title |
+| `description` | string | Free-form description |
+| `activeForm` | string? | Present tense form, shown in spinner when in_progress |
+| `owner` | string? | Assigned agent ID |
+| `status` | pending/in_progress/completed | Lifecycle |
+| `blocks` | string[] | Task IDs blocked by this task (downstream) |
+| `blockedBy` | string[] | Task IDs blocking this task (upstream) |
+| `metadata` | Record? | Arbitrary extension key-value pairs |
 
-存储位置：`~/.claude/tasks/{taskListId}/{id}.json`。每个任务一个文件。
+Storage location: `~/.claude/tasks/{taskListId}/{id}.json`. One file per task.
 
-### 二、不是 TodoWrite 的升级，是两个独立系统
+### 2. Not a TodoWrite Upgrade — Two Independent Systems
 
-CC 中 Task System 和 TodoWrite **同时存在**，通过 `isTodoV2Enabled()` 切换（`utils/tasks.ts:133`）——交互式会话默认启用 Task（V2），非交互式/SDK 默认用 TodoWrite。环境变量 `CLAUDE_CODE_ENABLE_TASKS` 可强制启用 Task。Task 有 TodoWrite 没有的：文件锁并发保护、依赖强制执行、ownership、fs.watch 响应式监听、生命周期 hooks。
+In Claude Code, Task System and TodoWrite **coexist**, toggled by `isTodoV2Enabled()` (`utils/tasks.ts:133`): interactive sessions default to Task (V2), non-interactive/SDK sessions default to TodoWrite. The `CLAUDE_CODE_ENABLE_TASKS` env var can force-enable Task. Task has what TodoWrite lacks: file-lock concurrency protection, dependency enforcement, ownership, fs.watch reactive monitoring, lifecycle hooks.
 
-### 三、并发认领的锁机制
+### 3. Concurrent Claim Locking
 
-`claimTask()`（`utils/tasks.ts:541-612`）用双重锁防竞争：
+`claimTask()` (`utils/tasks.ts:541-612`) uses dual locking to prevent races:
 
-**任务文件锁**：`proper-lockfile` 锁住 `{taskId}.json`（最多重试 30 次，指数退避 5-100ms）。锁内：
-1. 重新读取任务（防 TOCTOU）
-2. 检查已被他人认领 → `already_claimed`
-3. 检查已完成 → `already_resolved`
-4. 检查上游未完成 → `blocked`
-5. 设置 owner
+**Task file lock**: `proper-lockfile` locks `{taskId}.json` (up to 30 retries, exponential backoff 5-100ms). Inside the lock:
+1. Re-read task (prevent TOCTOU)
+2. Check already claimed by another → `already_claimed`
+3. Check already completed → `already_resolved`
+4. Check upstream not completed → `blocked`
+5. Set owner
 
-**列表级锁**（agent busy 检查时）：`.lock` 文件，原子性扫描所有任务并检查该 agent 是否已有其他 open task。
+**List-level lock** (agent busy check): `.lock` file, atomic scan of all tasks to check if the agent already has other open tasks.
 
-注意：教学版把 claim 和开始工作合成一步（claim = set owner + in_progress）；真实 CC 的 `claimTask` 主要解决 owner 竞争，只设 owner 不改 status，状态更新由 `TaskUpdate` 完成。
+Note: The teaching version combines claiming and starting work into one step (claim = set owner + in_progress); real Claude Code's `claimTask` primarily resolves owner competition: it only sets owner without changing status. Status updates are handled by `TaskUpdate`.
 
-### 四、高水位标防 ID 重用
+### 4. High-Water Mark to Prevent ID Reuse
 
-`.highwatermark` 文件记录曾分配过的最高任务 ID。即使任务被删除，ID 也不会被重用。
+The `.highwatermark` file records the highest task ID ever assigned. Even if a task is deleted, its ID won't be reused.
 
-### 五、四个 Task 工具
+### 5. Four Task Tools
 
-CC 的任务系统有四个工具（不是教学版的一个通用 Task 工具）：`TaskCreate`、`TaskGet`、`TaskUpdate`、`TaskList`。全部设置 `isConcurrencySafe: true` 和 `shouldDefer: true`（工具 schema 不在初始 prompt 中，需 ToolSearch 后才可见）。
+Claude Code's task system has four tools (not the tutorial's single generic Task tool): `TaskCreate`, `TaskGet`, `TaskUpdate`, `TaskList`. All set `isConcurrencySafe: true` and `shouldDefer: true` (tool schemas aren't in the initial prompt; only visible after ToolSearch).
 
-教学版的 `create_task(blockedBy=...)` 在创建时直接声明依赖，是合理简化。真实 CC 的 `TaskCreate` 只接受 subject/description/activeForm/metadata，依赖关系由 `TaskUpdate` 的 `addBlocks/addBlockedBy` 维护。
+The teaching version's `create_task(blockedBy=...)` declares dependencies at creation time, which is a reasonable simplification. Real Claude Code's `TaskCreate` only accepts subject/description/activeForm/metadata; dependencies are maintained via `TaskUpdate`'s `addBlocks/addBlockedBy`.
 
 </details>
 

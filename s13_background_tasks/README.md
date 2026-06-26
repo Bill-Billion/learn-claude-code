@@ -1,47 +1,47 @@
-# s13: Background Tasks — 慢操作放后台
+# s13: Background Tasks — Slow Operations Go to the Background
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s11 → s12 → `s13` → [s14](../s14_cron_scheduler/) → s15 → ... → s20
 
-> *"慢操作丢后台, agent 继续处理"* — 后台线程跑命令, 完成后注入通知。
+> *"Slow operations go to the background, agent continues processing"* — Background threads run commands, inject notifications when done.
 >
-> **Harness 层**: 后台 — 异步执行, 不阻塞主循环。
+> **Harness Layer**: Background — Async execution, doesn't block the main loop.
 
 ---
 
-## 问题
+## The Problem
 
-你用过洗衣机吗？把衣服扔进去，按下启动，然后去干别的——做饭、回消息、看论文。30 分钟后洗衣机"滴滴滴"提醒你：好了。你不会站在洗衣机前面干等 30 分钟。
+Ever used a washing machine? Throw clothes in, press start, then go do other things — cook, reply to messages, read papers. 30 minutes later the machine beeps: done. You don't stand there waiting for 30 minutes.
 
-Agent 的 bash 工具也一样。`pip install torch` 要 10 分钟，`npm run build` 要 3 分钟。这些命令一跑，Agent 就在等 bash 工具返回，没法利用这段时间处理别的任务。
+The agent's bash tool is the same. `pip install torch` takes 10 minutes, `npm run build` takes 3 minutes. While these commands run, the agent waits for bash to return, unable to use that time to process other tasks.
 
-读文件是毫秒级，不等。`git status` 一秒内返回，不等。但 `npm install`？分钟级。Agent 等 10 分钟什么都不做，而 LLM 按 token 计费，空转就是浪费。
+Reading files is milliseconds, no wait. `git status` returns in under a second, no wait. But `npm install`? Minutes. The agent waits 10 minutes doing nothing, and LLM calls are billed by token — idle time is waste.
 
 ---
 
-## 解决方案
+## The Solution
 
 ![Background Tasks Overview](images/background-tasks-overview.svg)
 
-教学代码沿用 S12 的简化任务系统和 prompt 组装；为了聚焦后台任务，省略完整错误恢复、记忆和技能系统。唯一的变动：慢操作扔到后台线程，Agent 继续跑循环，后台完成后把通知注入到对话里。
+Teaching code carries forward S12's simplified task system and prompt assembly; to stay focused on background tasks, it omits full error recovery, memory, and skill systems. The only change: tool calls dispatch to background threads, and results are injected as notifications when they finish.
 
-同步 vs 后台：
+Sync vs Background:
 
-| | 同步 (s12) | 后台 (s13) |
+| | Sync (s12) | Background (s13) |
 |---|---|---|
-| 慢操作 | Agent 干等 | 后台线程执行 |
-| Agent 空闲 | 是 | 否，继续处理 |
-| 结果 | 立即返回 | 下轮注入通知 |
-| 判断标准 | — | `run_in_background` 参数（模型显式请求），启发式兜底 |
+| Slow operations | Agent waits | Background thread executes |
+| Agent idle | Yes | No, continues processing |
+| Result | Immediate return | Notification injected next turn |
+| Decision criteria | — | `run_in_background` param (model explicit request), heuristic fallback |
 
 ---
 
-## 工作原理
+## How It Works
 
-### should_run_background: 显式请求优先，启发式兜底
+### should_run_background: Explicit Request First, Heuristic Fallback
 
-模型通过 bash 工具的 `run_in_background` 参数显式请求后台执行。如果模型没指定，教学版用关键词启发式兜底：
+The model explicitly requests background execution via the bash tool's `run_in_background` parameter. If the model doesn't specify, the teaching version falls back to keyword heuristics:
 
 ```python
 def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
@@ -61,11 +61,11 @@ def should_run_background(tool_name: str, tool_input: dict) -> bool:
     return is_slow_operation(tool_name, tool_input)
 ```
 
-CC 的 bash 工具 schema 里有 `run_in_background: boolean` 参数（`BashTool.tsx:241`）。模型自己决定哪些命令丢后台，不靠关键词猜。教学版保留启发式作为兜底，但主路径是模型显式请求。
+Claude Code's bash tool schema has a `run_in_background: boolean` parameter (`BashTool.tsx:241`). The model decides which commands go to background, no keyword guessing. The teaching version keeps heuristics as fallback, but the primary path is explicit model request.
 
-### start_background_task: 后台执行与生命周期
+### start_background_task: Background Execution and Lifecycle
 
-把工具调用包装成 worker 函数，扔到 daemon 线程里执行。每个后台任务有唯一 ID，状态存在 `background_tasks` 字典里：
+Wraps the tool call in a worker function, dispatches to a daemon thread. Each background task gets a unique ID, with state tracked in the `background_tasks` dict:
 
 ```python
 _bg_counter = 0
@@ -96,11 +96,11 @@ def start_background_task(block) -> str:
     return bg_id
 ```
 
-返回 `bg_id` 而不是只返回 `[Running in background...]`。`daemon=True` 确保 Agent 进程退出时线程跟着退出。教学版用内存字典追踪状态；真实 CC 有 `LocalShellTaskState`，输出重定向到文件，支持停止任务、读取后续输出等完整生命周期。
+Returns `bg_id` instead of just `[Running in background...]`. `daemon=True` ensures threads exit when the agent process exits. The teaching version uses in-memory dicts for tracking; real Claude Code has `LocalShellTaskState`, output redirected to files, with full lifecycle including stopping tasks and reading subsequent output.
 
-### collect_background_results: 通知收集
+### collect_background_results: Notification Collection
 
-后台任务完成后，收集结果并格式化为 `<task_notification>` 通知：
+When background tasks complete, results are collected and formatted as `<task_notification>` messages:
 
 ```python
 def collect_background_results() -> list[str]:
@@ -123,11 +123,11 @@ def collect_background_results() -> list[str]:
     return notifications
 ```
 
-通知不复用原始 `tool_use_id`。原始 tool call 已经用占位 `tool_result` 回复了，后台完成是独立事件，用 `task_notification` 格式注入。这符合 Messages API 的工具配对语义：一个 `tool_use` 只对应一个 `tool_result`。
+Notifications don't reuse the original `tool_use_id`. The original tool call was already answered with a placeholder `tool_result`; background completion is an independent event, injected in `task_notification` format. This respects Messages API tool pairing: one `tool_use` gets exactly one `tool_result`.
 
-### 循环中的集成
+### Loop Integration
 
-agent_loop 里，工具执行分两条路，通知和结果合并为一条 user 消息：
+In the agent loop, tool execution splits into two paths. Notifications and results merge into a single user message:
 
 ```python
 results = []
@@ -145,7 +145,7 @@ for block in response.content:
         results.append({"type": "tool_result",
             "tool_use_id": block.id, "content": output})
 
-# 通知和工具结果合入同一条 user 消息
+# Merge notifications and tool results into one user message
 user_content = []
 bg_notifications = collect_background_results()
 if bg_notifications:
@@ -155,11 +155,11 @@ user_content.extend(results)
 messages.append({"role": "user", "content": user_content})
 ```
 
-慢操作先回一个带 `bg_id` 的占位 tool_result，LLM 知道这个命令还在跑，可以先做别的事。后台完成后，通知作为独立 text block 和当前轮的 tool_result 一起组成 user 消息。
+Slow operations get a placeholder tool_result with `bg_id`, so the LLM knows this command is still running and can do other things first. When background completes, the notification is injected as an independent text block alongside the current turn's tool_results in one user message.
 
-教学版在 agent loop 继续运行时轮询后台结果。真实 CC 通过通知队列（`messageQueueManager.ts`）把后台完成事件送入后续 turn，不需要等工具循环。
+The teaching version polls background results while the agent loop continues running. Real Claude Code uses a notification queue (`messageQueueManager.ts`) to deliver background completion events to subsequent turns, without waiting for the tool loop.
 
-### 合起来跑
+### Putting It Together
 
 ```
 Turn 1:
@@ -175,69 +175,69 @@ Turn 2:
   → LLM sees: config file + install notification in one message
 ```
 
-Agent 没干等，npm install 跑后台的时候，它去读了配置文件。
+The agent didn't wait. While npm install ran in the background, it read the config file.
 
 ---
 
-## 相对 s12 的变更
+## Changes from s12
 
-| 组件 | 之前 (s12) | 之后 (s13) |
-|------|-----------|-----------|
-| 执行模型 | 全部同步 | 慢操作后台线程 + 通知注入 |
+| Component | Before (s12) | After (s13) |
+|-----------|-------------|-------------|
+| Execution model | All synchronous | Slow ops to background thread + notification injection |
 | bash schema | `command` | `command` + `run_in_background` |
-| 新函数 | — | `should_run_background`, `is_slow_operation`, `start_background_task`, `collect_background_results` |
-| 新类型 | — | `background_tasks: dict`, `background_results: dict`, `background_lock: Lock` |
-| 通知格式 | — | `<task_notification>`（不复用 tool_use_id） |
-| 循环行为 | 工具串行执行 | 慢操作异步，快操作同步，通知每轮收集 |
-| 工具 | 8 (s12) | 8（不变，执行策略变了） |
+| New functions | — | `should_run_background`, `is_slow_operation`, `start_background_task`, `collect_background_results` |
+| New types | — | `background_tasks: dict`, `background_results: dict`, `background_lock: Lock` |
+| Notification format | — | `<task_notification>` (doesn't reuse tool_use_id) |
+| Loop behavior | Tools execute serially | Slow ops async, fast ops sync, notifications collected each turn |
+| Tools | 8 (s12) | 8 (unchanged, execution strategy changed) |
 
 ---
 
-## 试一下
+## Try It
 
 ```sh
 cd learn-claude-code
 python s13_background_tasks/code.py
 ```
 
-试试这些 prompt：
+Try these prompts:
 
 1. `Run pip list in the background and find all Python files in this directory`
 2. `Run npm install (use run_in_background) and while waiting, read package.json`
 3. `Create a task to setup the project, then run pip list in the background`
 
-观察重点：慢操作有没有被送到后台？`bg_id` 是否返回？后台通知有没有以 `<task_notification>` 格式注入？
+What to observe: Are slow operations dispatched to background? Is a `bg_id` returned? Are background notifications injected in `<task_notification>` format?
 
 ---
 
-## 接下来
+## What's Next
 
-后台任务解决了"慢操作不阻塞"。但如果想定时做某件事呢？比如"每天早上 9 点跑测试"、"每 5 分钟检查一次服务器状态"。
+The agent no longer stalls on long-running commands. But what if you want to do something on a schedule? Like "run tests every morning at 9am" or "check server status every 5 minutes."
 
-s14 Cron Scheduler → 给 Agent 装一个闹钟。
+s14 Cron Scheduler → Give the agent an alarm clock.
 
 <details>
-<summary>深入 CC 源码</summary>
+<summary>Deep Dive into Claude Code Source</summary>
 
-> 以下基于 CC 源码 `query.ts`（211, 1054-1060, 1411-1482 行）、`services/toolUseSummary/toolUseSummaryGenerator.ts`（L15 prompt 文本）、`LocalShellTask.tsx`（L24-25 常量, L59-98 看门狗逻辑）、`messageQueueManager.ts`（通知队列）、`utils/task/framework.ts`（L267 `enqueueTaskNotification`）的完整分析。
+> The following is a complete analysis based on Claude Code source code `query.ts` (lines 211, 1054-1060, 1411-1482), `services/toolUseSummary/toolUseSummaryGenerator.ts` (L15 prompt text), `LocalShellTask.tsx` (L24-25 constants, L59-98 watchdog logic), `messageQueueManager.ts` (notification queue), `utils/task/framework.ts` (L267 `enqueueTaskNotification`).
 
-### 一、pendingToolUseSummary：Haiku 后台生成
+### 1. pendingToolUseSummary: Haiku Background Generation
 
-CC 在每批工具执行完后，启动一个 Haiku side-query 生成工具使用摘要。发起代码在 `query.ts:1411-1482`，prompt 文本定义在 `services/toolUseSummary/toolUseSummaryGenerator.ts:15`（变量名 `TOOL_USE_SUMMARY_SYSTEM_PROMPT`）。提示是 "Write a short summary label... think git-commit-subject, not sentence"，过去时态，约 30 字符。
+Claude Code starts a Haiku side-query after each batch of tool executions to generate a tool use summary. Initiated at `query.ts:1411-1482`, prompt text defined at `services/toolUseSummary/toolUseSummaryGenerator.ts:15` (variable `TOOL_USE_SUMMARY_SYSTEM_PROMPT`). The prompt is "Write a short summary label... think git-commit-subject, not sentence", past tense, ~30 characters.
 
-Haiku 摘要（~1s）在主模型流式生成（5-30s）期间完成。下一轮开始前，把摘要 yield 出去。SDK 消费这些摘要做移动端进度展示。
+Haiku summary (~1s) completes during the main model's streaming output (5-30s). Before the next turn starts, the summary is yielded. SDK consumers use these summaries for mobile progress display.
 
-### 二、线程模型：没有真正的线程
+### 2. Thread Model: No Real Threads
 
-CC 运行在 Node.js/Bun 单线程事件循环中。"后台"只是 "不 await"。`ShellCommand.background(taskId)` 把 stdout/stderr 重定向到文件，让进程独立运行。
+Claude Code runs on Node.js/Bun's single-threaded event loop. "Background" just means "don't await". `ShellCommand.background(taskId)` redirects stdout/stderr to files, letting the process run independently.
 
-### 三、七种后台任务类型
+### 3. Seven Background Task Types
 
-CC 定义了 7 种后台任务（`Task.ts:7-13`）：`local_bash`、`local_agent`、`remote_agent`、`in_process_teammate`、`local_workflow`、`monitor_mcp`、`dream`。每种有自己的注册、生命周期和通知机制。
+Claude Code defines 7 background task types (`Task.ts:7-13`): `local_bash`, `local_agent`, `remote_agent`, `in_process_teammate`, `local_workflow`, `monitor_mcp`, `dream`. Each has its own registration, lifecycle, and notification mechanism.
 
-### 四、通知注入：命令队列
+### 4. Notification Injection: Command Queue
 
-后台任务完成后通过 `enqueueTaskNotification`（`utils/task/framework.ts:267`）或 `enqueuePendingNotification`（`messageQueueManager.ts`）入队到共享命令队列。通知格式是结构化的 XML：
+When a background task completes, it's enqueued via `enqueueTaskNotification` (`utils/task/framework.ts:267`) or `enqueuePendingNotification` (`messageQueueManager.ts`) into a shared command queue. The notification format is structured XML:
 
 ```xml
 <task_notification>
@@ -246,15 +246,15 @@ CC 定义了 7 种后台任务（`Task.ts:7-13`）：`local_bash`、`local_agent
 </task_notification>
 ```
 
-优先级分 `next` > `later`（`messageQueueManager.ts`）。后台任务默认 `later`（不阻塞用户输入）。消费点在 `query.ts:1566-1593`。
+Priority is `next` > `later` (`messageQueueManager.ts`). Background tasks default to `later` (don't block user input). Consumption point at `query.ts:1566-1593`.
 
-### 五、停滞看门狗
+### 5. Stall Watchdog
 
-后台 bash 任务有一个看门狗（`LocalShellTask.tsx` L24-25 常量, L59-98 逻辑），定期检查输出是否停滞，45 秒无增长后检测交互式提示（`(y/n)` 等），防止后台任务卡在无人响应的交互式对话框。
+Background bash tasks have a watchdog (`LocalShellTask.tsx` L24-25 constants, L59-98 logic) that periodically checks if output has stalled. After 45 seconds with no growth, it detects interactive prompts (`(y/n)` etc.), preventing background tasks from getting stuck on unanswered interactive dialogs.
 
-### 六、并发限制
+### 6. Concurrency Limits
 
-前台工具调用：`CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`（默认 10 个并发安全工具）。后台 bash 任务：没有硬性限制，它们是独立的子进程。
+Foreground tool calls: `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` (default 10 concurrent safe tools). Background bash tasks: no hard limit, they're independent subprocesses.
 
 </details>
 

@@ -1,6 +1,6 @@
 # s14: Cron Scheduler — スケジュールに従って作業を生産
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s12 → s13 → `s14` → [s15](../s15_agent_teams/) → s16 → ... → s20
 > *"スケジュールに従って作業を生産、スケジューリングと実行を分離"* — cron スケジューリング、永続またはセッションレベル。
@@ -19,7 +19,7 @@ s13 で Agent は遅い操作をバックグラウンドで実行できるよう
 
 ## ソリューション
 
-![Cron Scheduler Overview](images/cron-scheduler-overview.ja.svg)
+![Cron Scheduler Overview](images/cron-scheduler-overview.svg)
 
 教学版は S13 の簡易タスクシステム、バックグラウンド実行、プロンプト組み立てを踏襲。スケジューラに集中するため、完全なエラーリカバリ、メモリ、スキルシステムは省略。追加：独立した cron スケジューラスレッド、1 秒ごとにポーリング、時間が来たらタスクを `cron_queue` に投入し、queue processor が Agent のアイドル時に自動配信。
 
@@ -45,7 +45,7 @@ cron スケジューリングは 4 層に分かれる：
 3. **Queue Processor**：キューが空でなく Agent がアイドルなら、一回の agent_loop を開始
 4. **Consumer**：agent_loop がキューから消費、messages に注入
 
-教学版は最小の queue processor を実装する。`agent_lock` で Agent がアイドルかを判定し、キューに入った cron 作業を自動配信する。実際の CC の `useQueueProcessor.ts` はさらに UI ブロック、キュープライオリティ、メッセージモードを扱う。
+教学版は最小の queue processor を実装する。`agent_lock` で Agent がアイドルかを判定し、キューに入った cron 作業を自動配信する。実際の Claude Code の `useQueueProcessor.ts` はさらに UI ブロック、キュープライオリティ、メッセージモードを扱う。
 
 ### CronJob: データ構造
 
@@ -247,20 +247,18 @@ python s14_cron_scheduler/code.py
 
 ## 次の章
 
-一つの Agent でできることは増えた。計画、圧縮、バックグラウンド、スケジューリング。しかし、一部のタスクは一つの Agent では大きすぎる。
+一つの Agent で計画、圧縮、バックグラウンド実行、スケジューリングができるようになった。しかし「バックエンド全体をリファクタリング」のように、認証モジュール、データベース層、API ルート、テストを全面的に刷新するタスクは、一つの Agent のコンテキストウィンドウに収まらない。
 
-「バックエンド全体をリファクタリング」、認証モジュール、データベース層、API ルート、テストを全面的に刷新。一つの Agent の注意力には限界がある。これにはチームが必要だ。
-
-s15 Agent Teams → 一人の Agent では足りない、チームを組もう。永続的なチームメイト + 非同期受信箱。
+s15 Agent Teams → 複数 Agent の協調、永続的なチームメイト + 非同期受信箱。
 
 <details>
-<summary>CC ソースコード深掘り</summary>
+<summary>Claude Code ソースコード深掘り</summary>
 
-> 以下は CC ソースコード `CronCreateTool.ts`、`cronScheduler.ts`、`cron.ts`、`cronTasks.ts`、`cronTasksLock.ts`、`useScheduledTasks.ts`（139 行）の完全分析に基づく。
+> 以下は Claude Code ソースコード `CronCreateTool.ts`、`cronScheduler.ts`、`cron.ts`、`cronTasks.ts`、`cronTasksLock.ts`、`useScheduledTasks.ts`（139 行）の完全分析に基づく。
 
 ### 一、3 つの Cron ツール
 
-CC はモデルに 3 つの cron ツールを公開：`CronCreate`、`CronDelete`、`CronList`。すべてコンパイル時ゲート `feature('AGENT_TRIGGERS')` とランタイム GrowthBook フラグ `tengu_kairos_cron` で制御。`CLAUDE_CODE_DISABLE_CRON` 環境変数でローカル上書きも可能。
+Claude Code はモデルに 3 つの cron ツールを公開：`CronCreate`、`CronDelete`、`CronList`。すべてコンパイル時ゲート `feature('AGENT_TRIGGERS')` とランタイム GrowthBook フラグ `tengu_kairos_cron` で制御。`CLAUDE_CODE_DISABLE_CRON` 環境変数でローカル上書きも可能。
 
 ### 二、ストレージ：`.claude/scheduled_tasks.json`
 
@@ -298,7 +296,7 @@ durable タスクはディスクに書き込み。session-only タスクは `STA
 
 ### 九、Queue Processor：自動配信
 
-実際の CC は `useQueueProcessor.ts:48-60` により、アクティブな query がなく、UI がブロックされておらず、キューが空でない場合に自動的に処理をトリガーする。`queueProcessor.ts:52-87` がキュープライオリティに従ってコマンドを `handlePromptSubmit()` にディスパッチ。教学版は `queue_processor_loop` で核心動作を保つ：キューに作業があり Agent がアイドルなら、自動的に一回の agent_loop を開始する。
+実際の Claude Code は `useQueueProcessor.ts:48-60` により、アクティブな query がなく、UI がブロックされておらず、キューが空でない場合に自動的に処理をトリガーする。`queueProcessor.ts:52-87` がキュープライオリティに従ってコマンドを `handlePromptSubmit()` にディスパッチ。教学版は `queue_processor_loop` で核心動作を保つ：キューに作業があり Agent がアイドルなら、自動的に一回の agent_loop を開始する。
 
 </details>
 

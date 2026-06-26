@@ -1,81 +1,81 @@
-# s14: Cron Scheduler — 按时间表生产工作
+# s14: Cron Scheduler — Producing Work on a Schedule
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s12 → s13 → `s14` → [s15](../s15_agent_teams/) → s16 → ... → s20
-> *"按时间表生产工作, 调度与执行解耦"* — cron 调度, 持久化或会话级。
+> *"Produce work on a schedule, decouple scheduling from execution"* — Cron scheduling, durable or session-level.
 >
-> **Harness 层**: 调度 — 独立线程判断时间, 队列传递触发。
+> **Harness Layer**: Scheduling — Independent thread checks time, queue delivers triggers.
 
 ---
 
-## 问题
+## The Problem
 
-闹钟不需要你盯着它才会响。你设好 7:00，到点它自己响，你在睡觉、在洗澡、在做饭，它都照响不误。
+An alarm clock doesn't need you to watch it. You set 7:00, it rings at 7:00. You could be sleeping, showering, cooking, it rings regardless.
 
-s13 让 Agent 能后台执行慢操作，但所有操作仍然是你手动触发的。你说一句，Agent 动一下。"每天早上 9 点跑测试"、"每 30 分钟检查 CI 状态"，这些周期性任务不该需要人每次来推。
+s13 lets the agent run slow operations in the background, but every operation is still triggered manually. You say something, the agent acts. "Run tests every morning at 9am", "Check CI status every 30 minutes": these recurring tasks shouldn't need a human to push them each time.
 
 ---
 
-## 解决方案
+## The Solution
 
 ![Cron Scheduler Overview](images/cron-scheduler-overview.svg)
 
-教学代码沿用 S13 的简化任务系统、后台执行和 prompt 组装；为了聚焦调度器，省略完整错误恢复、记忆和技能系统。新增：独立的 cron 调度线程，每秒检查一次，时间到了把任务塞进 `cron_queue`；再由 queue processor 在 Agent 空闲时自动交付。
+Teaching code carries forward S13's simplified task system, background execution, and prompt assembly; to stay focused on the scheduler, it omits full error recovery, memory, and skill systems. Added: an independent cron scheduler thread that polls every second, queues matching jobs into `cron_queue`, and a queue processor that delivers them when the agent is idle.
 
-手动 vs 定时：
+Manual vs Scheduled:
 
-| | 手动触发 (s13) | 定时触发 (s14) |
+| | Manual (s13) | Scheduled (s14) |
 |---|---|---|
-| 触发者 | 用户输入 | 调度线程 |
-| 触发时机 | 随时 | cron 表达式指定 |
-| 需要人参与 | 是 | 否（调度器自动入队，空闲时自动交付） |
-| 持久性 | — | durable 跨重启 |
+| Triggered by | User input | Scheduler thread |
+| Trigger timing | Anytime | Specified by cron expression |
+| Human involvement | Yes | No (scheduler auto-enqueues, idle agent auto-delivers) |
+| Persistence | — | Durable survives restart |
 
 ---
 
-## 工作原理
+## How It Works
 
-### 四层模型
+### Four-Layer Model
 
-Cron 调度分四层：
+Cron scheduling has four layers:
 
-1. **Scheduler**：daemon 线程，每秒轮询，判断时间到了没有
-2. **Queue**：`cron_queue`，调度线程写入已触发任务
-3. **Queue Processor**：发现队列非空且 Agent 空闲，启动一轮 agent_loop
-4. **Consumer**：agent_loop 从队列消费，注入到 messages
+1. **Scheduler**: daemon thread, polls every second, checks if it's time
+2. **Queue**: `cron_queue`, scheduler writes fired jobs
+3. **Queue Processor**: sees non-empty queue and idle agent, starts one agent_loop turn
+4. **Consumer**: agent_loop consumes queue and injects into messages
 
-教学版实现的是最小 queue processor：用 `agent_lock` 判断 Agent 是否空闲，空闲时自动交付定时任务。真实 CC 的 `useQueueProcessor.ts` 还会处理 UI 阻塞、队列优先级和不同消息模式。
+The teaching version implements a minimal queue processor: `agent_lock` tells whether the agent is idle, and queued cron work is delivered automatically. Real Claude Code's `useQueueProcessor.ts` also handles UI blocking, queue priority, and different message modes.
 
-### CronJob: 数据结构
+### CronJob: Data Structure
 
-每个 cron 任务是一个 `CronJob` 对象：
+Each cron task is a `CronJob` object:
 
 ```python
 @dataclass
 class CronJob:
     id: str
-    cron: str        # "0 9 * * *" (五段式 cron 表达式)
-    prompt: str      # 触发时注入给 Agent 的消息
-    recurring: bool  # True=周期性，False=一次性
-    durable: bool    # True=写磁盘，跨会话保留
+    cron: str        # "0 9 * * *" (5-field cron expression)
+    prompt: str      # Message injected to the agent when fired
+    recurring: bool  # True=recurring, False=one-shot
+    durable: bool    # True=write to disk, survives sessions
 ```
 
-Cron 表达式，五段式，Unix 用了 50 年：
+Cron expression, 5 fields, used by Unix for 50 years:
 
 ```
-分钟  小时  日  月  星期
-  *    *   *   *   *      每分钟
-  0    9   *   *   *      每天早上 9:00
- */5    *   *   *   *      每 5 分钟
-  0    9   *   *  1-5     工作日早上 9:00
+min  hour  dom  month  dow
+ *    *     *     *     *      Every minute
+ 0    9     *     *     *      Every day at 9:00
+*/5    *     *     *     *      Every 5 minutes
+ 0    9     *     *    1-5     Weekdays at 9:00
 ```
 
-支持 `*`、`*/N`、`N`、`N-M`、`N,M,...`。
+Supports `*`, `*/N`, `N`, `N-M`, `N,M,...`.
 
-### cron_matches: 五段式匹配
+### cron_matches: 5-Field Matching
 
-标准 cron 语义：分钟、小时、月必须全部匹配；日（DOM）和星期（DOW）同时被约束时任一匹配即可（OR）：
+Standard cron semantics: minute, hour, month must all match; day-of-month (DOM) and day-of-week (DOW) use OR when both are constrained:
 
 ```python
 def cron_matches(cron_expr: str, dt: datetime) -> bool:
@@ -105,9 +105,9 @@ def cron_matches(cron_expr: str, dt: datetime) -> bool:
     return dom_ok or dow_ok
 ```
 
-### 独立调度线程: 每秒轮询
+### Independent Scheduler Thread: 1-Second Polling
 
-调度器跑在独立的 daemon 线程里，不依赖 agent_loop 是否在执行。单个 job 异常不会杀掉整个线程：
+The scheduler runs in an independent daemon thread, not dependent on whether agent_loop is executing. Individual job errors don't kill the entire thread:
 
 ```python
 def cron_scheduler_loop():
@@ -130,15 +130,15 @@ def cron_scheduler_loop():
                     print(f"[cron error] {job.id}: {e}")
 ```
 
-关键设计：
-- **独立于 agent_loop**：即使 agent_loop 没在跑，调度器也在后台检查时间
-- **date-aware minute_marker**：用 `"YYYY-MM-DD HH:MM"` 防止同一分钟重复触发，同时不会在第二天跳过
-- **单 job try/except**：一个坏 job 不会拖垮整个调度线程
-- **一次性任务**：触发后自动从 scheduled_jobs 里删除
+Key design:
+- **Independent of agent_loop**: scheduler checks time in background even when agent_loop isn't running
+- **Date-aware minute_marker**: uses `"YYYY-MM-DD HH:MM"` to prevent same-minute double-fire while not skipping on the next day
+- **Per-job try/except**: one bad job doesn't crash the scheduler thread
+- **One-shot jobs**: auto-removed from scheduled_jobs after firing
 
-### Queue Processor + agent_loop: 交付端
+### Queue Processor + agent_loop: Delivery
 
-queue processor 不检查时间，只负责在队列有任务且 Agent 空闲时拉起一轮执行：
+The queue processor does not check time. It only starts a turn when queued work exists and the agent is idle:
 
 ```python
 def queue_processor_loop():
@@ -155,7 +155,7 @@ def queue_processor_loop():
             agent_lock.release()
 ```
 
-agent_loop 也不负责检查时间，它只从 `cron_queue` 里拿已触发的任务，注入到 messages 里：
+agent_loop also doesn't check time. It only takes fired tasks from `cron_queue` and injects them into messages:
 
 ```python
 fired = consume_cron_queue()
@@ -164,11 +164,11 @@ for job in fired:
                      "content": f"[Scheduled] {job.prompt}"})
 ```
 
-生产者（调度线程）、交付者（queue processor）和消费者（agent_loop）通过 `cron_queue`、`cron_lock`、`agent_lock` 解耦。
+Producer (scheduler thread), deliverer (queue processor), and consumer (agent_loop) are decoupled via `cron_queue`, `cron_lock`, and `agent_lock`.
 
-### 校验：防止坏 cron 杀掉调度器
+### Validation: Prevent Bad Cron from Killing the Scheduler
 
-`schedule_job` 在注册前校验 cron 表达式，非法的直接返回错误：
+`schedule_job` validates the cron expression before registering, returning an error for invalid input:
 
 ```python
 def schedule_job(cron, prompt, recurring=True, durable=True):
@@ -178,127 +178,125 @@ def schedule_job(cron, prompt, recurring=True, durable=True):
     # ... register job
 ```
 
-从磁盘加载 durable job 时也会跳过非法表达式，避免单个坏任务拖垮启动。
+Loading durable jobs from disk also skips invalid expressions, preventing a single bad task from breaking startup.
 
 ### Durable vs Session-only
 
-- **Durable**：任务定义写进 `.scheduled_tasks.json`。Agent 重启后加载文件，恢复任务。
-- **Session-only**：只在内存里。Agent 关闭就没了。
+- **Durable**: Task definition written to `.scheduled_tasks.json`. Loaded on agent restart.
+- **Session-only**: In-memory only. Gone when the agent closes.
 
-> **重要前提**：cron 调度器必须在 Agent 进程内跑。进程关闭，调度也停。Durable 只意味着任务定义跨重启保留，下次 Agent 启动时调度器才会发现"该触发了"并触发。如果需要"即使应用关闭也能定时跑"，请用系统 crontab 或 systemd timer。
+> **Important caveat**: The cron scheduler must run inside the agent process. Process exits, scheduler stops. Durable only means the task definition survives restarts. Next time the agent starts, the scheduler checks whether a job is overdue and fires it. If you need "run even when the app is closed", use system crontab or systemd timer.
 
-### 合起来跑
+### Putting It Together
 
 ```
-1. 启动时：
-   load_durable_jobs() → 从 .scheduled_tasks.json 恢复持久化任务
-   Thread(cron_scheduler_loop, daemon=True).start() → 调度线程开始轮询
-   Thread(queue_processor_loop, daemon=True).start() → 队列处理器等待交付
+1. On startup:
+   load_durable_jobs() → restore durable tasks from .scheduled_tasks.json
+   Thread(cron_scheduler_loop, daemon=True).start() → scheduler begins polling
+   Thread(queue_processor_loop, daemon=True).start() → processor waits to deliver
 
-2. 注册任务：
+2. Register a task:
    schedule_cron(cron="*/2 * * * *", prompt="run date", durable=True)
-   → CronJob 写入 scheduled_jobs + .scheduled_tasks.json
+   → CronJob written to scheduled_jobs + .scheduled_tasks.json
 
-3. 每 2 分钟：
-   调度线程检查 → cron_matches 返回 True → cron_queue.append(job)
-   → queue processor 发现 Agent 空闲 → agent_loop consume_cron_queue
-   → 注入 "[Scheduled] run date"
-   → LLM 收到消息，执行 date 命令
+3. Every 2 minutes:
+   Scheduler checks → cron_matches returns True → cron_queue.append(job)
+   → queue processor sees idle agent → agent_loop consume_cron_queue
+   → injects "[Scheduled] run date"
+   → LLM receives message, runs date command
 
-4. 关闭进程：
-   调度线程跟着停（daemon=True）
-   .scheduled_tasks.json 还在磁盘上
-   下次启动 → load_durable_jobs → 任务恢复
+4. Process shutdown:
+   Scheduler thread stops (daemon=True)
+   .scheduled_tasks.json stays on disk
+   Next startup → load_durable_jobs → tasks restored
 ```
 
 ---
 
-## 相对 s13 的变更
+## Changes from s13
 
-| 组件 | 之前 (s13) | 之后 (s14) |
-|------|-----------|-----------|
-| 触发方式 | 用户手动触发 | 调度线程自动入队 |
-| 新类型 | — | CronJob dataclass (id, cron, prompt, recurring, durable) |
-| 新函数 | — | cron_matches, validate_cron, schedule_job, cancel_job, cron_scheduler_loop, queue_processor_loop |
-| 新存储 | — | .scheduled_tasks.json (durable) + 内存 (session-only) |
-| 线程 | 后台执行线程 | + 调度线程 (daemon, 1s 轮询) + queue processor 线程 |
-| 队列 | background_results | + cron_queue (调度线程写, queue processor 交付, agent_loop 消费) |
-| 工具 | 8 (s12/s13) | + schedule_cron, list_crons, cancel_cron (11) |
+| Component | Before (s13) | After (s14) |
+|-----------|-------------|-------------|
+| Trigger method | User manual trigger | Scheduler thread auto-enqueues |
+| New types | — | CronJob dataclass (id, cron, prompt, recurring, durable) |
+| New functions | — | cron_matches, validate_cron, schedule_job, cancel_job, cron_scheduler_loop, queue_processor_loop |
+| New storage | — | .scheduled_tasks.json (durable) + memory (session-only) |
+| Threads | Background execution thread | + Scheduler thread (daemon, 1s polling) + queue processor thread |
+| Queue | background_results | + cron_queue (scheduler writes, queue processor delivers, agent_loop consumes) |
+| Tools | 8 (s12/s13) | + schedule_cron, list_crons, cancel_cron (11) |
 
 ---
 
-## 试一下
+## Try It
 
 ```sh
 cd learn-claude-code
 python s14_cron_scheduler/code.py
 ```
 
-试试这些 prompt：
+Try these prompts:
 
 1. `Schedule a task to print the current date every 2 minutes`
 2. `List all cron jobs`
 3. `Create a one-shot reminder in 1 minute to check the build status`
 4. `Cancel the recurring job and verify with list_crons`
 
-观察重点：调度线程是否在独立运行？cron 任务是否在正确的时间点触发？不输入新 prompt 时，是否也出现 `[queue processor]` 并自动执行？durable job 是否写入了 `.scheduled_tasks.json`？
+What to observe: Is the scheduler thread running independently? Do cron tasks fire at the correct time? Without a new prompt, do you see `[queue processor]` and automatic execution? Is the durable job written to `.scheduled_tasks.json`?
 
 ---
 
-## 接下来
+## What's Next
 
-一个 Agent 能做很多事了，能计划、能压缩、能后台、能定时。但有些任务太大了，不是一个 Agent 能搞定的。
+One agent can plan, compress, background, and schedule. But some tasks are too big: "refactor the entire backend" means overhauling auth, database layer, API routes, and tests. One agent's context window can't hold all of that.
 
-"重构整个后端"，把认证模块、数据库层、API 路由、测试全部翻新。一个 Agent 的注意力是有限的，这需要一个团队。
-
-s15 Agent Teams → 一个 Agent 不够，组队吧。持久队友 + 异步收件箱。
+s15 Agent Teams → Multiple agents, persistent teammates + async inboxes.
 
 <details>
-<summary>深入 CC 源码</summary>
+<summary>Deep Dive into Claude Code Source</summary>
 
-> 以下基于 CC 源码 `CronCreateTool.ts`、`cronScheduler.ts`、`cron.ts`、`cronTasks.ts`、`cronTasksLock.ts`、`useScheduledTasks.ts`（139 行）的完整分析。
+> The following is a complete analysis based on Claude Code source code `CronCreateTool.ts`, `cronScheduler.ts`, `cron.ts`, `cronTasks.ts`, `cronTasksLock.ts`, `useScheduledTasks.ts` (139 lines).
 
-### 一、三个 Cron 工具
+### 1. Three Cron Tools
 
-CC 暴露了三个 cron 工具给模型：`CronCreate`、`CronDelete`、`CronList`。全部由编译时门控 `feature('AGENT_TRIGGERS')` 和运行时 GrowthBook 标志 `tengu_kairos_cron` 控制。还有一个 `CLAUDE_CODE_DISABLE_CRON` 环境变量做本地覆盖。
+Claude Code exposes three cron tools to the model: `CronCreate`, `CronDelete`, `CronList`. All controlled by compile-time gate `feature('AGENT_TRIGGERS')` and runtime GrowthBook flag `tengu_kairos_cron`. There's also a `CLAUDE_CODE_DISABLE_CRON` env var for local override.
 
-### 二、存储：`.claude/scheduled_tasks.json`
+### 2. Storage: `.claude/scheduled_tasks.json`
 
 ```json
 { "tasks": [{ "id": "abc12345", "cron": "0 9 * * *", "prompt": "...", "recurring": true, "durable": true, "createdAt": 1714567890000 }] }
 ```
 
-Durable 任务写磁盘；session-only 任务存于 `STATE.sessionCronTasks` 内存数组（进程重启丢失）。还有一个 `.scheduled_tasks.lock` 文件防止同项目的多个 session 重复触发。
+Durable tasks write to disk; session-only tasks live in `STATE.sessionCronTasks` memory array (lost on process restart). A `.scheduled_tasks.lock` file prevents duplicate firing across multiple sessions of the same project.
 
-### 三、调度器：1 秒轮询
+### 3. Scheduler: 1-Second Polling
 
-`cronScheduler.ts` 每秒检查一次（`CHECK_INTERVAL_MS = 1000`）。谁持有锁谁触发文件任务；所有 session 都触发仅 session 任务。还有一个 `chokidar` 文件观察者监视 `scheduled_tasks.json` 变更。
+`cronScheduler.ts` checks every second (`CHECK_INTERVAL_MS = 1000`). Whoever holds the lock triggers file tasks; all sessions trigger session-only tasks. A `chokidar` file watcher monitors `scheduled_tasks.json` changes.
 
-### 四、Cron 表达式：标准 5 字段
+### 4. Cron Expression: Standard 5 Fields
 
-分钟 小时 日 月 星期。支持 `*`、`*/N`、`N`、`N-M`、`N-M/S`、`N,M,...`。不支持 `L`、`W`、`?`。所有时间以本地时区解释。Day-of-month 和 day-of-week 同时约束时用 OR 语义。
+Minute hour day month weekday. Supports `*`, `*/N`, `N`, `N-M`, `N-M/S`, `N,M,...`. Doesn't support `L`, `W`, `?`. All times interpreted in local timezone. Day-of-month and day-of-week use OR semantics when both are constrained.
 
-### 五、抖动（防惊群效应）
+### 5. Jitter (Thundering Herd Prevention)
 
-- 重复性任务：触发延迟最多可达期间的 10%（上限 15 分钟），基于任务 ID 的确定性哈希
-- 一次性任务：当触发时间落在 `:00` 或 `:30` 时，最多提前 90 秒触发
-- 抖动配置可通过 GrowthBook 实时调整，60 秒刷新一次
+- Recurring tasks: trigger delay up to 10% of period (max 15 min), deterministic hash based on task ID
+- One-shot tasks: up to 90s early when firing time falls on `:00` or `:30`
+- Jitter config adjustable via GrowthBook, refreshed every 60 seconds
 
-### 六、自动过期
+### 6. Auto-Expiration
 
-重复性任务 7 天后自动过期（可配置，上限 30 天）。过期前最后一次触发，触发后自动删除。
+Recurring tasks auto-expire after 7 days (configurable, max 30 days). Fire one last time before expiry, then auto-delete.
 
-### 七、作业数上限
+### 7. Job Limit
 
-`MAX_JOBS = 50`（`CronCreateTool.ts:25`）。超限时返回错误："Too many scheduled jobs (max 50). Cancel one first."
+`MAX_JOBS = 50` (`CronCreateTool.ts:25`). Returns error when exceeded: "Too many scheduled jobs (max 50). Cancel one first."
 
-### 八、触发注入
+### 8. Trigger Injection
 
-触发后通过 `enqueuePendingNotification()` 以 `priority: 'later'` 入队命令队列。标记 `workload: WORKLOAD_CRON`，API 在容量紧张时以更低的 QoS 为 cron 发起的请求服务。
+After firing, enqueued via `enqueuePendingNotification()` with `priority: 'later'` into the command queue. Tagged `workload: WORKLOAD_CRON` — API serves cron-initiated requests at lower QoS when capacity is tight.
 
-### 九、Queue Processor：自动交付
+### 9. Queue Processor: Automatic Delivery
 
-真实 CC 通过 `useQueueProcessor.ts:48-60` 在无 query、无阻塞 UI、队列非空时自动触发处理。`queueProcessor.ts:52-87` 按队列优先级把命令交给 `handlePromptSubmit()`。教学版用 `queue_processor_loop` 保留核心行为：队列有任务且 Agent 空闲时，自动启动一轮 agent_loop。
+Real Claude Code auto-triggers processing through `useQueueProcessor.ts:48-60` when no query is active, UI isn't blocked, and queue is non-empty. `queueProcessor.ts:52-87` dispatches commands to `handlePromptSubmit()` by queue priority. The teaching version keeps the core behavior with `queue_processor_loop`: when queued work exists and the agent is idle, it starts one agent_loop turn automatically.
 
 </details>
 

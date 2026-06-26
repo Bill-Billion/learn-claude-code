@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="580" rx="8" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="480" y="30" text-anchor="middle" fill="#1a1a1a" font-size="19" font-weight="700">Workflow Runtime — one tool_use launches a background orchestration</text>
+  <text x="480" y="50" text-anchor="middle" fill="#888888" font-size="12">the main loop calls Workflow like any tool; a deterministic runtime fans out subagents in the background and can resume</text>
+
+  <!-- ===== Lane 1: Main session loop (canonical agent loop) ===== -->
+  <rect x="20" y="66" width="920" height="160" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="40" y="86" fill="#1a1a1a" font-size="13" font-weight="700">Main session loop</text>
+
+  <!-- loop-back over the top: back into messages[] -->
+  <path d="M 828 130 L 828 102 L 99 102 L 99 130" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+  <text x="463" y="97" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">append tool_result / notification -&gt; messages[]  (loop continues)</text>
+  <circle cx="828" cy="130" r="3" fill="#22c55e"/>
+  <circle cx="99" cy="130" r="3" fill="#22c55e"/>
+
+  <!-- messages[] -->
+  <rect x="40" y="130" width="118" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="99" y="152" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700" font-family="monospace">messages[]</text>
+  <text x="99" y="169" text-anchor="middle" fill="#888888" font-size="9">message history</text>
+  <line x1="158" y1="156" x2="176" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- LLM -->
+  <rect x="178" y="130" width="86" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="221" y="152" text-anchor="middle" fill="#1a1a1a" font-size="13" font-weight="700">LLM</text>
+  <text x="221" y="169" text-anchor="middle" fill="#888888" font-size="9">tool_use?</text>
+  <line x1="264" y1="156" x2="282" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- Workflow tool_use -->
+  <rect x="284" y="130" width="196" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="382" y="151" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700" font-family="monospace">Workflow({script, args})</text>
+  <text x="382" y="169" text-anchor="middle" fill="#888888" font-size="8.5" font-family="monospace">(or name | scriptPath) · resumeFromRunId</text>
+  <line x1="480" y1="156" x2="518" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- tool_result -->
+  <rect x="520" y="130" width="156" height="52" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="598" y="151" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">tool_result</text>
+  <text x="598" y="169" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">async_launched</text>
+
+  <!-- later (dashed gap) -->
+  <line x1="676" y1="156" x2="734" y2="156" stroke="#888888" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-gray)"/>
+  <text x="705" y="148" text-anchor="middle" fill="#888888" font-size="8">later</text>
+
+  <!-- task_notification -->
+  <rect x="738" y="130" width="180" height="52" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="828" y="151" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">task_notification</text>
+  <text x="828" y="169" text-anchor="middle" fill="#888888" font-size="9">completed · final report</text>
+
+  <!-- ===== Lane 2: Background workflow runtime ===== -->
+  <rect x="20" y="270" width="920" height="244" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="40" y="290" fill="#1a1a1a" font-size="13" font-weight="700">Background workflow runtime — local_workflow</text>
+
+  <!-- spine: WorkflowTool.call -> LocalWorkflowTask -> Script VM -->
+  <rect x="44" y="316" width="158" height="66" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="123" y="338" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700" font-family="monospace">WorkflowTool.call</text>
+  <text x="123" y="355" text-anchor="middle" fill="#888888" font-size="9">validate meta · permission</text>
+  <text x="123" y="370" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">runId · taskId</text>
+  <line x1="202" y1="349" x2="220" y2="349" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <rect x="222" y="316" width="158" height="66" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="301" y="338" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">LocalWorkflowTask</text>
+  <text x="301" y="355" text-anchor="middle" fill="#888888" font-size="9">status · usage</text>
+  <text x="301" y="370" text-anchor="middle" fill="#888888" font-size="9">progress events</text>
+  <line x1="380" y1="349" x2="398" y2="349" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <rect x="400" y="316" width="200" height="66" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="500" y="338" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">Script VM — runs the script</text>
+  <text x="500" y="356" text-anchor="middle" fill="#888888" font-size="9.5" font-family="monospace">phase · agent()</text>
+  <text x="500" y="371" text-anchor="middle" fill="#888888" font-size="9.5" font-family="monospace">parallel · pipeline</text>
+
+  <!-- agent() cycle: VM -> Subagents -> Journal -> (resume) -> VM -->
+  <!-- Subagents (× N, fan-out: stacked) -->
+  <rect x="666" y="308" width="170" height="58" rx="6" fill="#f3f4f6" stroke="#d0d0d0" stroke-width="1.2"/>
+  <rect x="662" y="312" width="170" height="58" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="747" y="334" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">Subagents × N</text>
+  <text x="747" y="350" text-anchor="middle" fill="#888888" font-size="9">isolated ctx</text>
+  <text x="747" y="363" text-anchor="middle" fill="#888888" font-size="9">schema output</text>
+
+  <!-- Journal -->
+  <rect x="662" y="420" width="170" height="58" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="747" y="442" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">Journal</text>
+  <text x="747" y="458" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">started / result</text>
+  <text x="747" y="471" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">per agent()</text>
+
+  <!-- VM -> Subagents: agent() spawns -->
+  <line x1="600" y1="341" x2="660" y2="341" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="630" y="333" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="600">agent()</text>
+  <text x="630" y="356" text-anchor="middle" fill="#888888" font-size="8">spawns</text>
+
+  <!-- Subagents -> Journal: record -->
+  <line x1="747" y1="370" x2="747" y2="418" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="757" y="398" fill="#22c55e" font-size="9" font-weight="600">record</text>
+
+  <!-- Journal -> Script VM: resume cached -->
+  <path d="M 662 449 L 500 449 L 500 382" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-gray)"/>
+  <text x="556" y="443" text-anchor="middle" fill="#888888" font-size="9" font-weight="600">resumeFromRunId -&gt; cached agent()</text>
+
+  <!-- ===== Cross arrows between lanes ===== -->
+  <!-- launch (outer Workflow tool_use -> inner runtime), left side -->
+  <path d="M 382 182 L 382 248 L 123 248 L 123 316" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+  <text x="152" y="242" fill="#22c55e" font-size="9" font-weight="600">launch (async)</text>
+
+  <!-- progress / notification (inner task -> outer notification), routed just below launch -->
+  <path d="M 301 316 L 301 256 L 828 256 L 828 182" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-gray)"/>
+  <text x="600" y="250" text-anchor="middle" fill="#888888" font-size="9" font-weight="600">task_progress: workflow_phase · workflow_agent · workflow_log</text>
+
+  <!-- ===== Bottom note ===== -->
+  <text x="480" y="548" text-anchor="middle" fill="#888888" font-size="10">The runtime result stays on the task (scriptPath · transcripts · journal · output) — only the launch + final notification re-enter messages[].</text>
+</svg>

@@ -1,125 +1,156 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 480" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 740" font-family="system-ui, -apple-system, sans-serif">
   <defs>
-    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#1e3a5f"/><stop offset="100%" stop-color="#4f46e5"/>
-    </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
     </marker>
-    <marker id="arrow-indigo" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4f46e5"/>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
+    </marker>
+    <marker id="arrow-magenta" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c026d3"/>
     </marker>
   </defs>
 
-  <rect width="760" height="480" fill="#fafbfc" rx="8"/>
+  <!-- Background -->
+  <rect width="820" height="740" fill="#ffffff" rx="8"/>
 
   <!-- Title -->
-  <rect x="0" y="0" width="760" height="44" fill="url(#header)" rx="8"/>
-  <rect x="0" y="36" width="760" height="8" fill="url(#header)"/>
-  <text x="380" y="28" fill="#fff" font-size="15" font-weight="700" text-anchor="middle">Cron Scheduler — 独立调度线程 + cron_queue 注入点</text>
+  <text x="410" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Cron Scheduler</text>
+  <text x="410" y="50" fill="#888888" font-size="12" text-anchor="middle">Scheduler produces · Queue Processor triggers · agent_loop consumes — via cron_queue</text>
 
-  <!-- Legend -->
-  <rect x="40" y="56" width="12" height="10" rx="2" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/>
-  <text x="58" y="66" fill="#64748b" font-size="10" font-weight="600">s10-s13 保留</text>
-  <rect x="160" y="56" width="12" height="10" rx="2" fill="#eef2ff" stroke="#4f46e5" stroke-width="1"/>
-  <text x="178" y="66" fill="#4f46e5" font-size="10" font-weight="600">s14 新增</text>
+  <!-- ===== Row 1: Agent Loop Chain ===== -->
+  <rect x="20" y="70" width="780" height="130" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="40" y="90" fill="#1a1a1a" font-size="14" font-weight="700">Agent Loop</text>
 
-  <!-- ===== Row 1: Full Agent Loop Chain ===== -->
+  <!-- consume_cron_queue -->
+  <rect x="40" y="104" width="108" height="48" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="94" y="124" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">consume</text>
+  <text x="94" y="138" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">cron_queue</text>
 
-  <!-- consume_cron_queue (s14 new, indigo) -->
-  <rect x="30" y="100" width="95" height="48" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
-  <text x="77" y="120" fill="#312e81" font-size="9" font-weight="700" text-anchor="middle">consume</text>
-  <text x="77" y="134" fill="#312e81" font-size="9" font-weight="700" text-anchor="middle">cron_queue</text>
-  <text x="77" y="144" fill="#94a3b8" font-size="7" text-anchor="middle">★ s14 注入点</text>
+  <line x1="148" y1="128" x2="173" y2="128" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <line x1="125" y1="124" x2="143" y2="124" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="180" y="104" width="88" height="48" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="224" y="132" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">messages</text>
 
-  <!-- messages (s10) -->
-  <rect x="146" y="100" width="80" height="48" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>
-  <text x="186" y="128" fill="#1e3a5f" font-size="10" font-weight="600" text-anchor="middle">messages</text>
+  <line x1="268" y1="128" x2="293" y2="128" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <line x1="226" y1="124" x2="244" y2="124" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="300" y="100" width="128" height="56" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="364" y="124" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">prompt + cache</text>
+  <text x="364" y="140" fill="#888888" font-size="10" text-anchor="middle" font-family="monospace">assemble_prompt()</text>
 
-  <!-- prompt + cache (s10) -->
-  <rect x="247" y="94" width="115" height="60" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>
-  <text x="304" y="116" fill="#1e3a5f" font-size="9" font-weight="600" text-anchor="middle">prompt + cache</text>
-  <text x="304" y="130" fill="#94a3b8" font-size="8" text-anchor="middle">assemble_system_prompt</text>
-  <text x="304" y="142" fill="#94a3b8" font-size="8" text-anchor="middle">(s10)</text>
+  <line x1="428" y1="128" x2="453" y2="128" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <line x1="362" y1="124" x2="380" y2="124" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="460" y="100" width="108" height="56" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="514" y="124" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">LLM call</text>
+  <text x="514" y="140" fill="#888888" font-size="10" text-anchor="middle" font-family="monospace">with_retry()</text>
 
-  <!-- LLM call (s11 retry) -->
-  <rect x="383" y="94" width="100" height="60" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>
-  <text x="433" y="116" fill="#1e3a5f" font-size="9" font-weight="600" text-anchor="middle">LLM (try/except)</text>
-  <text x="433" y="130" fill="#94a3b8" font-size="8" text-anchor="middle">with_retry</text>
-  <text x="433" y="142" fill="#94a3b8" font-size="8" text-anchor="middle">(s11)</text>
+  <line x1="568" y1="128" x2="593" y2="128" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <line x1="483" y1="124" x2="501" y2="124" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="600" y="96" width="180" height="64" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="690" y="114" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">TOOL DISPATCH</text>
+  <text x="616" y="128" fill="#888888" font-size="10" font-family="monospace">fast: bash, read, write</text>
+  <text x="616" y="141" fill="#888888" font-size="10" font-family="monospace">slow: background thread</text>
+  <text x="616" y="154" fill="#22c55e" font-size="10" font-family="monospace">cron: sched, list, cancel</text>
 
-  <!-- TOOL DISPATCH (expanded) -->
-  <rect x="504" y="88" width="220" height="72" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.2"/>
-  <text x="614" y="106" fill="#1e3a5f" font-size="10" font-weight="600" text-anchor="middle">TOOL DISPATCH</text>
-  <text x="519" y="122" fill="#2563eb" font-size="8">fast → sync (bash, read, write)</text>
-  <text x="519" y="134" fill="#ea580c" font-size="8">slow → background thread (s13)</text>
-  <text x="519" y="146" fill="#4f46e5" font-size="8" font-weight="600">cron → schedule_cron, list, cancel (s14)</text>
-  <text x="519" y="156" fill="#2563eb" font-size="8">task → create, list, claim, complete (s12)</text>
+  <!-- Loop back arrow (dashed green) -->
+  <path d="M 780 128 Q 796 128 796 144 L 796 180 Q 796 192 784 192 L 238 192 Q 224 192 224 180 L 224 152" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+  <circle cx="780" cy="128" r="3" fill="#22c55e"/>
+  <text x="511" y="188" fill="#888888" font-size="11" text-anchor="middle">loop back: tool_results → next turn</text>
 
-  <!-- Loop back arrow -->
-  <path d="M 724 124 L 748 124 L 748 170 L 77 170 L 77 148" fill="none" stroke="#94a3b8" stroke-width="1" marker-end="url(#arrow)" stroke-dasharray="5,4"/>
-  <text x="400" y="183" fill="#94a3b8" font-size="9" text-anchor="middle">loop back: tool_results → next turn</text>
+  <!-- ===== Trigger + Consume arrows up to Agent Loop ===== -->
+  <!-- (4) consume: cron_queue -> consume_cron_queue (DATA flow, green solid) -->
+  <circle cx="90" cy="240" r="3" fill="#22c55e"/>
+  <path d="M 90 240 L 90 152" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <circle cx="22" cy="220" r="6" fill="#22c55e"/>
+  <text x="22" y="223" fill="#ffffff" font-size="9" font-weight="700" text-anchor="middle">4</text>
+  <text x="84" y="224" fill="#22c55e" font-size="10" font-weight="600" text-anchor="end">consume</text>
 
-  <!-- ===== Row 2: Cron Scheduler Thread (indigo) ===== -->
-  <rect x="30" y="206" width="250" height="90" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
-  <text x="155" y="226" fill="#312e81" font-size="11" font-weight="700" text-anchor="middle">cron_scheduler_loop（独立 daemon 线程）</text>
-  <text x="48" y="244" fill="#4f46e5" font-size="9">time.sleep(1) → cron_matches(job.cron, now)</text>
-  <text x="48" y="258" fill="#4f46e5" font-size="9">匹配 → cron_queue.append(job)</text>
-  <text x="48" y="272" fill="#6b7280" font-size="8">minute_marker 防同分钟重复触发</text>
-  <text x="48" y="286" fill="#6b7280" font-size="8">一次性任务触发后自动删除</text>
+  <!-- (3) start turn: Queue Processor -> consume_cron_queue (CONTROL signal, magenta dashed) -->
+  <circle cx="400" cy="240" r="3" fill="#c026d3"/>
+  <path d="M 400 240 L 400 218 L 118 218 L 118 152" fill="none" stroke="#c026d3" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arrow-magenta)"/>
+  <circle cx="416" cy="228" r="6" fill="#c026d3"/>
+  <text x="416" y="231" fill="#ffffff" font-size="9" font-weight="700" text-anchor="middle">3</text>
+  <text x="427" y="232" fill="#c026d3" font-size="10" font-weight="600">start turn (trigger · no data)</text>
 
-  <!-- Arrow: scheduler → cron_queue -->
-  <path d="M 155 296 L 155 330" fill="none" stroke="#4f46e5" stroke-width="1.5" marker-end="url(#arrow-indigo)"/>
+  <!-- Legend: data vs control -->
+  <line x1="648" y1="210" x2="673" y2="210" stroke="#22c55e" stroke-width="2"/>
+  <text x="679" y="214" fill="#888888" font-size="9">data flow (jobs · messages)</text>
+  <line x1="648" y1="226" x2="673" y2="226" stroke="#c026d3" stroke-width="2" stroke-dasharray="5,3"/>
+  <text x="679" y="230" fill="#888888" font-size="9">control (trigger · no data)</text>
 
-  <!-- cron_queue (indigo) -->
-  <rect x="60" y="333" width="200" height="38" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
-  <text x="160" y="352" fill="#312e81" font-size="10" font-weight="700" text-anchor="middle">cron_queue</text>
-  <text x="160" y="364" fill="#4f46e5" font-size="8" text-anchor="middle">cron_lock 保护 · 调度线程写 · agent_loop 读</text>
+  <!-- ===== Flow row: cron_queue (center) -> Queue Processor (right) ===== -->
+  <rect x="40" y="240" width="250" height="60" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="165" y="266" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">cron_queue</text>
+  <text x="165" y="286" fill="#888888" font-size="10" text-anchor="middle">cron_lock protected</text>
 
-  <!-- Arrow: cron_queue → consume_cron_queue (connects to top row) -->
-  <path d="M 77 333 L 77 318 L 18 318 L 18 124 L 30 124" fill="none" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow-indigo)"/>
-  <text x="72" y="313" fill="#4f46e5" font-size="8" font-weight="600" text-anchor="middle">下次 agent_loop 消费</text>
+  <!-- (2) cron_queue -> Queue Processor -->
+  <line x1="290" y1="270" x2="354" y2="270" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <circle cx="296" cy="259" r="6" fill="#22c55e"/>
+  <text x="296" y="262" fill="#ffffff" font-size="9" font-weight="700" text-anchor="middle">2</text>
+  <text x="307" y="262" fill="#888888" font-size="10">non-empty?</text>
 
-  <!-- ===== Row 2 Right: CronJob + Storage ===== -->
-  <rect x="320" y="206" width="410" height="90" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="2"/>
-  <text x="525" y="226" fill="#312e81" font-size="11" font-weight="700" text-anchor="middle">CronJob + 持久化</text>
-  <text x="338" y="244" fill="#4f46e5" font-size="9" font-weight="600">CronJob dataclass:</text>
-  <text x="455" y="244" fill="#6b7280" font-size="8">id, cron, prompt, recurring, durable</text>
-  <text x="338" y="260" fill="#4f46e5" font-size="9" font-weight="600">Durable → .scheduled_tasks.json</text>
-  <text x="560" y="260" fill="#6b7280" font-size="8">重启后 load_durable_jobs 恢复</text>
-  <text x="338" y="276" fill="#4f46e5" font-size="9" font-weight="600">Session-only → 内存 only</text>
-  <text x="530" y="276" fill="#6b7280" font-size="8">进程关闭即丢</text>
-  <text x="338" y="292" fill="#ef4444" font-size="9" font-weight="600">⚠ 进程关闭 = 调度停止（不是 OS 级 crontab）</text>
+  <rect x="360" y="240" width="280" height="60" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="500" y="266" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">Queue Processor</text>
+  <text x="500" y="286" fill="#888888" font-size="11" text-anchor="middle">polls 200ms · agent_lock</text>
 
-  <!-- ===== Row 3: 5-field cron reference ===== -->
-  <rect x="30" y="390" width="700" height="76" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="60" y="412" fill="#1e3a5f" font-size="11" font-weight="600">五段式 Cron 表达式</text>
-  <rect x="60" y="422" width="52" height="16" rx="3" fill="#eef2ff" stroke="#4f46e5" stroke-width="1"/>
-  <text x="86" y="434" fill="#4f46e5" font-size="9" text-anchor="middle">*</text>
-  <rect x="118" y="422" width="52" height="16" rx="3" fill="#eef2ff" stroke="#4f46e5" stroke-width="1"/>
-  <text x="144" y="434" fill="#4f46e5" font-size="9" text-anchor="middle">*</text>
-  <rect x="176" y="422" width="52" height="16" rx="3" fill="#eef2ff" stroke="#4f46e5" stroke-width="1"/>
-  <text x="202" y="434" fill="#4f46e5" font-size="9" text-anchor="middle">*</text>
-  <rect x="234" y="422" width="52" height="16" rx="3" fill="#eef2ff" stroke="#4f46e5" stroke-width="1"/>
-  <text x="260" y="434" fill="#4f46e5" font-size="9" text-anchor="middle">*</text>
-  <rect x="292" y="422" width="52" height="16" rx="3" fill="#eef2ff" stroke="#4f46e5" stroke-width="1"/>
-  <text x="318" y="434" fill="#4f46e5" font-size="9" text-anchor="middle">*</text>
-  <text x="60" y="455" fill="#94a3b8" font-size="8">分钟</text>
-  <text x="130" y="455" fill="#94a3b8" font-size="8">小时</text>
-  <text x="194" y="455" fill="#94a3b8" font-size="8">日</text>
-  <text x="254" y="455" fill="#94a3b8" font-size="8">月</text>
-  <text x="310" y="455" fill="#94a3b8" font-size="8">星期</text>
+  <!-- (1) Scheduler -> cron_queue (append) -->
+  <circle cx="165" cy="330" r="3" fill="#22c55e"/>
+  <path d="M 165 330 L 165 300" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <circle cx="178" cy="314" r="6" fill="#22c55e"/>
+  <text x="178" y="317" fill="#ffffff" font-size="9" font-weight="700" text-anchor="middle">1</text>
+  <text x="189" y="318" fill="#22c55e" font-size="10" font-weight="600">append</text>
 
-  <text x="380" y="434" fill="#475569" font-size="9">*/5 * * * * → 每 5 分钟</text>
-  <text x="380" y="450" fill="#475569" font-size="9">0 9 * * 1-5 → 工作日 9:00</text>
-  <text x="560" y="434" fill="#475569" font-size="9">0 9 * * * → 每天 9:00</text>
-  <text x="560" y="450" fill="#475569" font-size="9">支持: *, */N, N, N-M, N,M,...</text>
+  <!-- ===== Scheduler Thread (producer) ===== -->
+  <rect x="40" y="330" width="370" height="160" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="56" y="354" fill="#1a1a1a" font-size="14" font-weight="700">Scheduler Thread (daemon)</text>
+  <text x="56" y="372" fill="#888888" font-size="12">Polls every 1 second, independent of agent_loop</text>
+  <rect x="56" y="386" width="338" height="92" rx="4" fill="#2d2d2d"/>
+  <text x="68" y="404" fill="#22c55e" font-size="11" font-family="monospace">time.sleep(1)</text>
+  <text x="68" y="420" fill="#22c55e" font-size="11" font-family="monospace">if cron_matches(job.cron, now):</text>
+  <text x="68" y="436" fill="#22c55e" font-size="11" font-family="monospace">  cron_queue.append(job)</text>
+  <text x="68" y="452" fill="#22c55e" font-size="10" font-family="monospace">  minute_marker prevents duplicate fire</text>
+  <text x="68" y="468" fill="#22c55e" font-size="10" font-family="monospace">  one-shot jobs auto-removed after fire</text>
+
+  <!-- ===== CronJob + Persistence (reference) ===== -->
+  <rect x="430" y="330" width="370" height="160" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="446" y="354" fill="#1a1a1a" font-size="14" font-weight="700">CronJob + Persistence</text>
+  <rect x="446" y="366" width="338" height="58" rx="4" fill="#2d2d2d"/>
+  <text x="458" y="384" fill="#22c55e" font-size="11" font-family="monospace">CronJob(id, cron, prompt,</text>
+  <text x="458" y="400" fill="#22c55e" font-size="11" font-family="monospace">        recurring, durable)</text>
+  <text x="458" y="416" fill="#22c55e" font-size="10" font-family="monospace">@dataclass</text>
+  <text x="446" y="444" fill="#1a1a1a" font-size="11" font-weight="600">Durable</text>
+  <text x="510" y="444" fill="#888888" font-size="11">→ .scheduled_tasks.json (survives restart)</text>
+  <text x="446" y="462" fill="#1a1a1a" font-size="11" font-weight="600">Session</text>
+  <text x="510" y="462" fill="#888888" font-size="11">→ in-memory only (lost on exit)</text>
+  <text x="446" y="482" fill="#888888" font-size="10">Process exit = scheduler stops (not OS crontab)</text>
+
+  <!-- ===== 5-field Cron Expression Reference ===== -->
+  <rect x="20" y="510" width="780" height="220" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="40" y="536" fill="#1a1a1a" font-size="14" font-weight="700">5-Field Cron Expression</text>
+
+  <rect x="40" y="550" width="70" height="28" rx="4" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="75" y="569" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle" font-family="monospace">*</text>
+  <text x="75" y="596" fill="#888888" font-size="11" text-anchor="middle">minute</text>
+
+  <rect x="130" y="550" width="70" height="28" rx="4" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="165" y="569" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle" font-family="monospace">*</text>
+  <text x="165" y="596" fill="#888888" font-size="11" text-anchor="middle">hour</text>
+
+  <rect x="220" y="550" width="70" height="28" rx="4" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="255" y="569" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle" font-family="monospace">*</text>
+  <text x="255" y="596" fill="#888888" font-size="11" text-anchor="middle">day</text>
+
+  <rect x="310" y="550" width="70" height="28" rx="4" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="345" y="569" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle" font-family="monospace">*</text>
+  <text x="345" y="596" fill="#888888" font-size="11" text-anchor="middle">month</text>
+
+  <rect x="400" y="550" width="70" height="28" rx="4" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="435" y="569" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle" font-family="monospace">*</text>
+  <text x="435" y="596" fill="#888888" font-size="11" text-anchor="middle">weekday</text>
+
+  <rect x="40" y="616" width="740" height="96" rx="4" fill="#2d2d2d"/>
+  <text x="56" y="636" fill="#22c55e" font-size="12" font-family="monospace">*/5 *   *   *   *     Every 5 minutes</text>
+  <text x="56" y="656" fill="#22c55e" font-size="12" font-family="monospace">0   9   *   *   *     Every day at 9:00</text>
+  <text x="56" y="676" fill="#22c55e" font-size="12" font-family="monospace">0   9   *   *   1-5   Weekdays at 9:00</text>
+  <text x="56" y="696" fill="#22c55e" font-size="12" font-family="monospace">Supports: *, */N, N, N-M, N,M,...</text>
 </svg>

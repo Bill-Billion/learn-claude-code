@@ -232,3 +232,14 @@ test_providers.py
 # Internal analysis artifacts (not learning material)
 analysis/
 analysis_progress.md
+
+# Local scratch repo copies (not part of the course; contain .venv/node_modules)
+/learn-claude-code/
+/learn-pi-agent/
+
+# Local Claude Code config & skills (keep local, not published)
+.claude/
+
+# Local SVG style notes (not published)
+/docs/svg-style-guide.md
+.runtime/

@@ -1,11 +1,11 @@
 # s10: System Prompt — 実行時アセンブリ、ハードコードなし
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s08 → s09 → `s10` → [s11](../s11_error_recovery/) → s12 → ... → s20
-> *"prompt は組み立てるもの、固定するものではない"* — セグメント + オンデマンド結合 + キャッシュ。
+> *"prompt は組み立てるもの、固定するものではない"*。セグメント + オンデマンド結合 + キャッシュ。
 >
-> **Harness レイヤー**: プロンプト — 実行時組み立て、ハードコードなし。
+> **Harness レイヤー**: プロンプトの実行時組み立て。
 
 ---
 
@@ -42,7 +42,7 @@ System prompt は、実行時の現在状態に基づいて組み立てられる
 
 ## ソリューション
 
-![System Prompt Overview](images/system-prompt-overview.ja.svg)
+![System Prompt Overview](images/system-prompt-overview.svg)
 
 s10 は prompt アセンブリ機構に焦点を当てる。s08-s09 の能力を背景とするが、圧縮や記憶システムは再実装しない。核心の変更：ハードコードされた `SYSTEM` を独立セクションに分割し、実行時に実際の状態に基づいてオンデマンドで組み立て、結果をキャッシュして再組み立てを回避。
 
@@ -54,8 +54,6 @@ s10 は prompt アセンブリ機構に焦点を当てる。s08-s09 の能力を
 | tools | 常に | 利用可能ツール一覧 | `enabled_tools` |
 | workspace | 常に | 作業ディレクトリ | 常に存在 |
 | memory | オンデマンド | 関連記憶内容 | `.memory/MEMORY.md` が存在するか |
-
-重要な設計：セクションをロードするかどうかは実際の状態（ツールが存在するか、ファイルが存在するか）で決まり、メッセージ内のキーワードではない。
 
 ---
 
@@ -118,11 +116,11 @@ def get_system_prompt(context: dict) -> str:
 
 `hash()` ではなく `json.dumps` を使用：Python 組み込みの `hash()` にはプロセスランダム化があり（安定したキャッシュキーに不適切）、list/dict で `unhashable type` エラーになる。
 
-注意：このキャッシュは「プロセス内での文字列再組み立ての回避」のみ。CC の API prompt cache とは別物。CC の prompt cache は `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` で静的/動的部分を分離し、静的部分が global cache に命中する。動的内容が変化しても静的部分は無効化されない。
+注意：このキャッシュは「プロセス内での文字列再組み立ての回避」のみ。Claude Code の API prompt cache とは別物。Claude Code の prompt cache は `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` で静的/動的部分を分離し、静的部分が global cache に命中する。動的内容が変化しても静的部分は無効化されない。
 
 ### context: 実際の状態、キーワード推測ではない
 
-context は現在の実行時状態の実際の状態を反映：
+context は現在の実行時状態を反映：
 
 ```python
 def update_context(context: dict, messages: list) -> dict:
@@ -138,7 +136,7 @@ def update_context(context: dict, messages: list) -> dict:
     }
 ```
 
-`enabled_tools` は実際に登録されたツールを一覧。`memories` は `.memory/MEMORY.md` が存在するかを確認。セクションの読み込みはこの実際の状態に基づき、メッセージ内のキーワード検索ではない。
+`enabled_tools` は実際に登録されたツールを一覧。`memories` は `.memory/MEMORY.md` が存在するかを確認。セクションの読み込みはこれらのフィールドに基づく。
 
 ### 組み合わせて実行
 
@@ -198,11 +196,11 @@ System prompt を実行時に組み立てられるようになった。しかし
 s11 Error Recovery → 4 つのリカバリパス。token のアップグレード、コンテキスト圧縮、指数バックオフ、モデル切り替え。
 
 <details>
-<summary>CC ソースコードの詳細</summary>
+<summary>Claude Code ソースコードの詳細</summary>
 
-> 以下は CC ソースコード `constants/prompts.ts`（914 行）、`constants/systemPromptSections.ts`（68 行）、`context.ts`（189 行）、`utils/api.ts`（718 行）、`utils/systemPrompt.ts`（123 行）、`bootstrap/state.ts` の分析に基づく。
+> 以下は Claude Code ソースコード `constants/prompts.ts`（914 行）、`constants/systemPromptSections.ts`（68 行）、`context.ts`（189 行）、`utils/api.ts`（718 行）、`utils/systemPrompt.ts`（123 行）、`bootstrap/state.ts` の分析に基づく。
 
-### CC の system prompt にはいくつのセクションがあるか？
+### Claude Code の system prompt にはいくつのセクションがあるか？
 
 数は固定されておらず、feature flag、output style、KAIROS/Proactive モード、ユーザータイプ、token 予算などに影響される。大まかに 2 つのカテゴリ：
 
@@ -224,7 +222,7 @@ getSystemPrompt(tools, model, additionalWorkingDirs?, mcpClients?): Promise<stri
 
 global cache boundary が有効な場合、静的セクションは 1 つの global cache block にマージされ、動的セクションは global cache を使用しない（`cacheScope: null`）。boundary なしまたは global cache をスキップするパスでのみ org scope にフォールバック。
 
-教学版のキャッシュは文字列の再組み立てを回避するのみ。CC の 3 層キャッシュ：
+教学版のキャッシュは文字列の再組み立てを回避するのみ。Claude Code の 3 層キャッシュ：
 
 1. **lodash memoize**: `getSystemContext` と `getUserContext` がセッション中キャッシュ（`context.ts`）
 2. **セクション登録キャッシュ**: `STATE.systemPromptSectionCache` が動的セクションの結果をキャッシュ、`/clear` や `/compact` でクリア

@@ -1,48 +1,44 @@
-# s06: Subagent — 大任务拆小，每个拿到的都是干净上下文
+# s06: Subagent — Break Large Tasks into Small Ones with Clean Context
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → `s06` → [s07](../s07_skill_loading/) → s08 → ... → s20
 
-> *"大任务拆小, 每个小任务干净的上下文"* — Subagent 用独立 messages[], 不污染主对话。
+> *"Break large tasks small, each with clean context"* — Subagent uses an independent messages[], no pollution in the main conversation.
 >
-> **Harness 层**: 子 Agent — 上下文隔离, 注意力不漂移。
+> **Harness Layer**: Sub-Agent — Context isolation, attention doesn't drift.
 
 ---
 
-## 问题
+## The Problem
 
-Agent 在修一个 bug。它读了 30 个文件来追踪调用链，中间聊了 60 轮。messages 列表涨到 120 条，其中大部分是"追踪调用链"的中间过程，和"修 bug"这个最终目标无关。
+The Agent is fixing a bug. It reads 30 files to trace the call chain, chatting for 60 rounds along the way. The messages list grows to 120 entries, most of which are intermediate steps from "tracing the call chain," unrelated to the final goal of "fixing the bug."
 
-这些中间过程占着上下文位置，让 Agent 越来越"健忘"，它记不住最初的问题是什么了。
+These intermediate steps occupy context space, pushing early information out of the effective window and degrading the model's response quality for the original problem.
 
-换个角度：你修 bug 的时候，会"开一个新终端"来追踪调用链。追踪完了，终端关掉，结果写进笔记，回到原来的终端继续修 bug。Agent 也需要这个能力：开一个独立的子进程，给它一个独立的消息列表，让它专心做一件事。
+Think of it differently: when you fix a bug, you'd "open a new terminal" to trace the call chain. When done, close the terminal, write the result into your notes, and return to the original terminal to keep fixing. The Agent needs the same capability: spawn an independent sub-process with its own message list, scoped to a single task.
 
 ---
 
-## 解决方案
+## The Solution
 
 ![Subagent Overview](images/subagent-overview.svg)
 
-保留上一章的最小 hook 结构和 `todo_write` 工具，本章重点转向新增的 `task` 工具。调用它时，spawn 一个子 Agent，拥有全新的 `messages[]`，跑自己的循环，结束后只把摘要文本回传给主 Agent。对话上下文被丢弃，但文件系统的副作用（写文件、改文件、跑命令）保留在工作目录中。
+The minimal hook structure and `todo_write` tool from the previous chapter are preserved; this chapter focuses on the new `task` tool. When called, it spawns a sub-Agent with a fresh `messages[]`, running its own loop, and returning only a summary text to the main Agent. Conversation context is discarded, but file system side effects (writes, edits, commands) remain in the working directory.
 
-子 Agent 的工具受限：有 bash/read/write/edit/glob，但没有 task，不能递归 spawn 新的子 Agent。子 Agent 的工具调用仍经过权限 hook，安全策略不因上下文隔离而跳过。
+The sub-Agent's tools are restricted: it has bash/read/write/edit/glob, but no task, preventing recursive spawning. The sub-Agent's tool calls still go through permission hooks; context isolation does not bypass security.
 
 ---
 
-## 工作原理
+## How It Works
 
-**spawn_subagent**，给子 Agent 一个全新的 messages 列表，跑自己的循环，只回传结论：
+**spawn_subagent**, gives the sub-Agent a fresh messages list, runs its own loop, returns only the conclusion:
 
 ```python
 def spawn_subagent(description: str) -> str:
-    # 子 Agent 的工具：基础工具，但没有 task（禁止递归）
-    sub_tools = [
-        {"name": "bash", ...}, {"name": "read_file", ...},
-        {"name": "write_file", ...}, {"name": "edit_file", ...},
-        {"name": "glob", ...},
-    ]
-    messages = [{"role": "user", "content": description}]  # 全新 messages[]
+    # Sub-Agent tools: base tools, but no task (no recursion)
+    sub_tools = [...]
+    messages = [{"role": "user", "content": description}]  # fresh messages[]
 
     for _ in range(30):  # safety limit
         response = client.messages.create(
@@ -65,11 +61,11 @@ def spawn_subagent(description: str) -> str:
                 results.append({... "content": output})
         messages.append({"role": "user", "content": results})
 
-    # 只返回最后的文本结论，中间过程全部丢弃
+    # Return only the final text conclusion, all intermediate steps discarded
     return extract_text(messages[-1]["content"])
 ```
 
-主 Agent 调用时，跟调其他工具一样：
+The main Agent calls it just like any other tool:
 
 ```python
 TOOLS = [
@@ -79,7 +75,7 @@ TOOLS = [
     {"name": "edit_file", ...},
     {"name": "glob", ...},
     {"name": "todo_write", ...},
-    # s06: 新增 task 工具
+    # s06: new task tool
     {"name": "task",
      "description": "Launch a subagent to handle a complex subtask. Returns only the final conclusion.",
      "input_schema": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]}},
@@ -88,106 +84,106 @@ TOOLS = [
 TOOL_HANDLERS["task"] = spawn_subagent
 ```
 
-三个关键设计决策：
+Three key design decisions:
 
-| 决策 | 选择 | 原因 |
-|------|------|------|
-| 上下文隔离 | 全新 `messages[]` | 子 Agent 的中间过程不污染主 Agent 的上下文 |
-| 只回传结论 | `extract_text(last_message)` | 不是回传整个 messages 列表 |
-| 禁止递归 | 子 Agent 无 task 工具 | 防止子 Agent 再 spawn 新的子 Agent |
-| 安全策略不跳过 | 子 Agent 工具调用也走 PreToolUse hook | 上下文隔离不代表权限隔离 |
+| Decision | Choice | Reason |
+|----------|--------|--------|
+| Context isolation | Fresh `messages[]` | Sub-Agent's intermediate steps don't pollute main Agent's context |
+| Return only conclusion | `extract_text(last_message)` | Not returning the entire messages list |
+| No recursion | Sub-Agent has no task tool | Prevents sub-Agent from spawning further sub-Agents |
+| Security not bypassed | Sub-Agent tool calls go through PreToolUse hook | Context isolation does not mean permission isolation |
 
-dispatch 机制不变，task 工具通过 `TOOL_HANDLERS[block.name]` 分发。子 Agent 有独立的 `SUB_SYSTEM` 提示，明确要求"直接完成任务，不要再委派"。
-
----
-
-## 相对 s05 的变更
-
-| 组件 | 之前 (s05) | 之后 (s06) |
-|------|-----------|-----------|
-| 工具数量 | 6 (bash, read, write, edit, glob, todo_write) | 7 (+task) |
-| 新函数 | — | spawn_subagent（独立 messages[] + 30 轮安全限制） |
-| 上下文隔离 | 全部在主对话中 | 子 Agent 用全新的 messages[] |
-| 循环 | 不变 | dispatch 不变，子 Agent 有独立 SUB_SYSTEM 和 hook 保护的循环 |
+The dispatch mechanism is unchanged; the task tool is routed through `TOOL_HANDLERS[block.name]`. The sub-Agent has its own `SUB_SYSTEM` prompt, explicitly instructing "complete the task, do not delegate further."
 
 ---
 
-## 试一下
+## Changes from s05
+
+| Component | Before (s05) | After (s06) |
+|-----------|-------------|-------------|
+| Tool count | 6 (bash, read, write, edit, glob, todo_write) | 7 (+task) |
+| New function | — | spawn_subagent (independent messages[] + 30-round safety limit) |
+| Context isolation | Everything in the main conversation | Sub-Agent uses fresh messages[] |
+| Loop | Unchanged | Dispatch unchanged, sub-Agent has independent SUB_SYSTEM and hook-protected loop |
+
+---
+
+## Try It
 
 ```sh
 cd learn-claude-code
 python s06_subagent/code.py
 ```
 
-试试这些 prompt：
+Try these prompts:
 
-1. `Use a subtask to find what testing framework this project uses`（子 Agent 去读文件，主 Agent 只收结论）
+1. `Use a subtask to find what testing framework this project uses` (sub-Agent reads files, main Agent receives only the conclusion)
 2. `Delegate: read all .py files in agents/ and summarize what each one does`
 3. `Use a task to create s06_subagent/example/string_tools.py with a slugify(text: str) function, then verify it from the parent agent`
 
-观察重点：是否出现 `[Subagent spawned]` / `[Subagent done]`？子 Agent 的工具调用是否以 `[sub] ...` 输出？主 Agent 最后是否只继续处理子 Agent 返回的摘要？
+What to watch for: Do `[Subagent spawned]` / `[Subagent done]` appear? Do sub-Agent tool calls print as `[sub] ...`? Does the parent Agent continue with only the summary returned by the sub-Agent?
 
 ---
 
-## 接下来
+## What's Next
 
-Agent 现在能拆任务了。但每个任务需要的知识不一样：改前端组件需要知道 React 规范，写 SQL 需要知道表结构。这些知识全塞进 system prompt，上下文直接爆了。
+The Agent can now break tasks apart. But different tasks require different knowledge: editing frontend components needs React conventions, writing SQL needs table schemas. Stuffing all this knowledge into the system prompt would blow up the context.
 
-s07 Skill Loading → 技能按需注入，不在 system prompt 里堆文档。用到的时候才加载，和读文件一样自然。
+→ s07 Skill Loading: Inject skills on demand instead of piling documents into the system prompt. Load only when needed, as natural as reading a file.
 
 <details>
-<summary>深入 CC 源码</summary>
+<summary>Dive into Claude Code Source Code</summary>
 
-> 以下基于 CC 源码 `AgentTool.tsx`、`runAgent.ts`、`forkSubagent.ts`、`forkedAgent.ts` 的完整分析。
+> The following is based on a complete analysis of Claude Code source code `AgentTool.tsx`, `runAgent.ts`, `forkSubagent.ts`, and `forkedAgent.ts`.
 
-### 一、不是一种模式，是三种
+### 1. Not One Pattern, but Three
 
-教学版只讲了"全新的 messages[]"。CC 实际有三种执行模式：
+The teaching version covers only "fresh messages[]". Claude Code actually has three execution modes:
 
-| 模式 | 触发条件 | 上下文 |
-|------|---------|--------|
-| **Normal Subagent** | 指定了 `subagent_type`（normal path） | 全新 messages[]，只有 prompt |
-| **Fork Subagent** | 没指定 `subagent_type`，fork gate 开启 | 通过 `buildForkedMessages()` 构造 cache-friendly 前缀，共享 prompt cache |
-| **General-Purpose** | 没指定 `subagent_type`，fork gate 关闭 | 同 Normal |
+| Mode | Trigger | Context |
+|------|---------|---------|
+| **Normal Subagent** | `subagent_type` specified (normal path) | Truly fresh messages[], only the prompt |
+| **Fork Subagent** | No `subagent_type`, fork gate enabled | Constructs cache-friendly prefix via `buildForkedMessages()`, shares prompt cache |
+| **General-Purpose** | No `subagent_type`, fork gate disabled | Same as Normal |
 
-### 二、Fork 模式：为了共享 Prompt Cache
+### 2. Fork Mode: Sharing Prompt Cache
 
-这是教学版没有的核心概念。Fork 模式（`forkSubagent.ts:60-71`）不创建全新上下文，而是通过 `buildForkedMessages()`（`forkSubagent.ts:107-168`）构造 cache-friendly 消息前缀，保留父 assistant message 并生成 placeholder tool results。目的不是隔离，而是让 Anthropic API 的 prompt cache 命中：父子 Agent 的 system prompt、tools、messages 前缀完全一致，API 端不需要重算。
+This is a core concept the teaching version omits. Fork mode (`forkSubagent.ts:60-71`) doesn't create a fresh context. Instead, it constructs a cache-friendly message prefix via `buildForkedMessages()` (`forkSubagent.ts:107-168`), preserving the parent assistant message and generating placeholder tool results. The goal isn't isolation, but making the Anthropic API's prompt cache hit: parent and child Agent's system prompt, tools, and message prefix are byte-identical, so the API doesn't need to recompute.
 
-缓存命中的五个关键组件（`forkedAgent.ts:57-68`）：system prompt、tools、model、messages 前缀、thinking config，必须字节级一致。
+Five key components for cache hit (`forkedAgent.ts:57-68`): system prompt, tools, model, message prefix, thinking config, must be byte-identical.
 
-### 三、Context Isolation 的精确粒度
+### 3. Context Isolation's Precise Granularity
 
-`createSubagentContext()`（`forkedAgent.ts:345-462`）创建子 Agent 的 `ToolUseContext`：
+`createSubagentContext()` (`forkedAgent.ts:345-462`) creates the sub-Agent's `ToolUseContext`:
 
-| 字段 | 行为 |
-|------|------|
-| `abortController` | 新的 child controller，父 abort 向下传播 |
-| `setAppState` | 默认 no-op；但 sync agent 通过 `shareSetAppState` 共享（`runAgent.ts:697-714`） |
-| `readFileState` | **从父克隆**（避免重复读相同文件） |
-| `queryTracking` | 新 chainId，`depth = parentDepth + 1` |
+| Field | Behavior |
+|-------|----------|
+| `abortController` | New child controller; parent abort propagates down |
+| `setAppState` | Default no-op; but sync agents share via `shareSetAppState` (`runAgent.ts:697-714`) |
+| `readFileState` | **Cloned from parent** (avoids re-reading same files) |
+| `queryTracking` | New chainId, `depth = parentDepth + 1` |
 
-子 Agent 不是完全隔离的：文件读取状态是共享的。UI 和通知的隔离程度取决于执行路径（sync/async/fork/teammate 各不同）。
+The sub-Agent isn't fully isolated: file read state is shared. The degree of UI and notification isolation varies by execution path (sync/async/fork/teammate differ).
 
-### 四、递归 Fork 防护
+### 4. Recursive Fork Protection
 
-教学版用"子 Agent 不给 task 工具"表达递归保护。真实实现更精细：`isInForkChild()`（`forkSubagent.ts:78-89`）检查对话历史中是否有 `FORK_BOILERPLATE_TAG`，有就拒绝。但 `constants/tools.ts:36-46` 中 `Agent` 工具默认在所有 agent 的禁用集合里，`USER_TYPE === 'ant'` 时例外；`forkSubagent.ts:73-89` 针对 fork child 有专门的递归保护；`agentToolUtils.ts:100-110` 在 teammate 场景下有特殊放行。不是简单的"禁止新的子 Agent"。
+The teaching version uses "sub-Agent has no task tool" for recursion protection. The real implementation is more nuanced: `isInForkChild()` (`forkSubagent.ts:78-89`) checks for `FORK_BOILERPLATE_TAG` in history. But `constants/tools.ts:36-46` defaults `Agent` to all agents' disabled set (with `USER_TYPE === 'ant'` exception); `forkSubagent.ts:73-89` has fork-child-specific recursion protection; `agentToolUtils.ts:100-110` has special allowances in teammate scenarios. Not simply "no further sub-Agents."
 
-### 五、Permission Bubbling
+### 5. Permission Bubbling
 
-Fork Agent 的 `permissionMode: 'bubble'`（`forkSubagent.ts:67`）意味着子 Agent 的权限弹窗冒泡到父终端，用户在主终端里审批子 Agent 的操作。
+Fork Agent's `permissionMode: 'bubble'` (`forkSubagent.ts:67`) means the sub-Agent's permission prompts bubble up to the parent terminal: the user approves sub-Agent operations in the main terminal.
 
-### 六、Async vs Sync
+### 6. Async vs Sync
 
-教学版只展示了同步子 Agent（父等着子跑完）。CC 还支持异步路径（`AgentTool.tsx:686-764`）：`run_in_background: true` 时异步启动，返回 `{ status: 'async_launched' }` 立即给父 Agent，子 Agent 完成后通过通知机制告知父 Agent。实际触发条件不止 `run_in_background`，还有 auto-background、assistant force async、coordinator/proactive 等路径。
+The teaching version only shows synchronous sub-Agents (parent waits for child to finish). Claude Code also supports async paths (`AgentTool.tsx:686-764`): when `run_in_background: true`, the sub-Agent launches asynchronously, returning `{ status: 'async_launched' }` immediately to the parent, and notifies the parent when complete. Actual triggers go beyond `run_in_background`, including auto-background, assistant force async, and coordinator/proactive paths.
 
-### 教学版的简化是刻意的
+### Teaching Version Simplifications Are Intentional
 
-- 三种模式 → 一种（fresh messages）：概念清晰
-- Prompt cache 共享 → 省略：教学版不涉及 API 层优化
-- 递归 fork 防护 → 简化为"子 Agent 无 task 工具"
-- Async → 省略（留给 s13）：s06 先理解同步模型
+- Three modes → one (fresh messages): conceptually clear
+- Prompt cache sharing → omitted: teaching version doesn't involve API-layer optimization
+- Recursive fork protection → simplified to "sub-Agent has no task tool"
+- Async → omitted (left for s13): s06 focuses on the synchronous model first
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v1, en@v1, ja@v1 -->

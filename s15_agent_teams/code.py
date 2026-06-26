@@ -11,7 +11,7 @@ Changes from s14:
   - Teammate runs own simplified agent_loop (bash, read, write, send_message)
   - Lead tools: spawn_teammate, send_message, check_inbox (3 new)
   - Lead inbox: teammate messages injected into history (not just printed)
-  - Teaching version: teammates limited to 10 rounds (real CC uses idle loop)
+  - Teaching version: teammates limited to 10 rounds (real Claude Code uses idle loop)
 
 ASCII flow:
   Lead: cron_queue → messages → prompt → LLM → TOOLS ────→ loop
@@ -593,7 +593,7 @@ def run_cancel_cron(job_id: str) -> str:
 
 # ── MessageBus (s15 new) ──
 # Teaching version uses simple file append + unlink.
-# Real CC uses proper-lockfile for concurrent write safety.
+# Real Claude Code uses proper-lockfile for concurrent write safety.
 
 MAILBOX_DIR = WORKDIR / ".mailboxes"
 MAILBOX_DIR.mkdir(exist_ok=True)
@@ -602,7 +602,7 @@ MAILBOX_DIR.mkdir(exist_ok=True)
 class MessageBus:
     """File-based message bus. Each agent has a .jsonl inbox.
     Read is destructive: read_text + unlink (consumes messages).
-    Teaching version: no file locking; real CC uses proper-lockfile."""
+    Teaching version: no file locking; real Claude Code uses proper-lockfile."""
 
     def send(self, from_agent: str, to_agent: str, content: str,
              msg_type: str = "message"):
@@ -643,7 +643,7 @@ active_teammates: dict[str, bool] = {}
 def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
     """Spawn a teammate agent in a background thread.
     Teaching version: max 10 rounds per teammate.
-    Real CC: teammates use idle loop (wait for inbox, work, repeat)
+    Real Claude Code: teammates use idle loop (wait for inbox, work, repeat)
     until shutdown_request."""
     if name in active_teammates:
         return f"Teammate '{name}' already exists"
@@ -855,7 +855,7 @@ def update_context(context: dict, messages: list) -> dict:
 
 # ── Agent Loop ──
 # Teaching code keeps a basic agent loop. S11's full error recovery is omitted.
-# Cron queue is consumed when agent_loop is called; real CC auto-wakes via
+# Cron queue is consumed when agent_loop is called; real Claude Code auto-wakes via
 # queue processor (useQueueProcessor.ts) when items arrive.
 
 def agent_loop(messages: list, context: dict):

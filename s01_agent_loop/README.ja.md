@@ -1,6 +1,6 @@
 # s01: Agent Loop — ループ一つで十分
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 `s01` → [s02](../s02_tool_use/) → s03 → s04 → ... → s20
 > *"One loop & Bash is all you need"* — ツール一つ + ループ一つ = 一つの Agent。
@@ -13,7 +13,7 @@
 
 モデルにこう頼んだとする：「ディレクトリ内のファイル一覧を取得して、XXX.py を実行して」。
 
-モデルは bash コマンドを出力できるが、出力が終わると止まってしまう — 自分で実行することも、結果を見て推論を続けることもない。
+モデルは bash コマンドを出力できるが、出力が終わると止まってしまう。自分で実行することも、結果を見て推論を続けることもない。
 
 手動で実行し、出力をチャットに貼り付ければ、モデルは続きを生成できる。次のコマンドが出たら、また実行して貼り付ける。
 
@@ -23,14 +23,14 @@
 
 ## ソリューション
 
-![Agent Loop](images/agent-loop.ja.svg)
+![Agent Loop](images/agent-loop.svg)
 
 一つの `while True` ループ — モデルがツールを呼べば続き、呼ばなければ停止。全体でたった 2 つのシグナル：
 
 | シグナル | 意味 | ループの動作 |
 |----------|------|-------------|
-| `stop_reason == "tool_use"` | モデルが「ツールが必要」と挙手 | 実行 → 結果を戻す → 続行 |
-| `stop_reason != "tool_use"` | モデルが「完了」と宣言 | ループ終了 |
+| `stop_reason == "tool_use"` | モデルがツール呼び出しを要求 | 実行 → 結果を戻す → 続行 |
+| `stop_reason != "tool_use"` | モデルがツール呼び出しなしで生成終了 | ループ終了 |
 
 ---
 
@@ -107,7 +107,7 @@ def agent_loop(messages):
         messages.append({"role": "user", "content": results})
 ```
 
-30 行未満 — これが最小実行可能な agent harness のカーネルだ。これは知能そのものではなく、モデルが継続的に行動できるための最小ランタイムフレームワーク。モデルが決定し（ツールを呼ぶか、どれを呼ぶか）、harness が実行する（呼ばれたら実行し、結果を戻す）。次の 18 章はすべてこのループの上に仕組みを積み重ねていく。ループ自体は永遠に変わらない。
+30 行未満、これが最小実行可能な agent harness のカーネルだ。これは知能そのものではなく、モデルが継続的に行動できるための最小ランタイムフレームワーク。モデルが決定し（ツールを呼ぶか、どれを呼ぶか）、harness が実行する（呼ばれたら実行し、結果を戻す）。次の 18 章はすべてこのループの上に仕組みを積み重ねていく。ループ自体は永遠に変わらない。
 
 ---
 
@@ -146,16 +146,16 @@ python s01_agent_loop/code.py
 → s02 Tool Use：5 つの本格的なツールを与えたらどうなる？ モデルは複数のツールを同時に呼び出すか？ 並列実行で競合は起きないか？
 
 <details>
-<summary>CC ソースコードを深掘り</summary>
+<summary>Claude Code ソースコードを深掘り</summary>
 
-> 以下は CC ソースコード `src/query.ts`（1729 行）の検証に基づく。核心的な違いは二つ：CC はループ継続の判断に `stop_reason` フィールドを頼らず、コンテンツに `tool_use` ブロックが含まれるかをチェックする（ストリーミングレスポンスでは `stop_reason` が信頼できないため）。CC には本番環境向けのより多くの終了パスとリカバリ戦略がある。
+> 以下は Claude Code ソースコード `src/query.ts`（1729 行）の検証に基づく。核心的な違いは二つ：Claude Code はループ継続の判断に `stop_reason` フィールドを頼らず、コンテンツに `tool_use` ブロックが含まれるかをチェックする（ストリーミングレスポンスでは `stop_reason` が信頼できないため）。Claude Code には本番環境向けのより多くの終了パスとリカバリ戦略がある。
 
-**教育版の 30 行 `while True` が CC の 1729 行の核心。** 以下の各項目は、すべてその核心の上に積み重ねられた保護機構である。
+以下の各項目は、すべて教育版のループの上に積み重ねられた保護機構である。
 
 <details>
 <summary>一、ループ構造の違い</summary>
 
-教育版は `response.stop_reason` をチェックする。CC はこれをループ継続の唯一の根拠として使わない — ストリーミングレスポンスでは、`stop_reason` がまだ更新されていなくても、コンテンツに既に `tool_use` ブロックが含まれている可能性がある。CC は `needsFollowUp` フラグを使用する：ストリーミングメッセージの受信時（`query.ts:830-834`）に、`tool_use` ブロックが検出されると `true` に設定される。`QueryEngine.ts` は `message_delta` から実際の `stop_reason` を取得して他の処理に利用するが、query loop 自体は `needsFollowUp` に依存する。
+教育版は `response.stop_reason` をチェックする。Claude Code はこれをループ継続の唯一の根拠として使わない — ストリーミングレスポンスでは、`stop_reason` がまだ更新されていなくても、コンテンツに既に `tool_use` ブロックが含まれている可能性がある。Claude Code は `needsFollowUp` フラグを使用する：ストリーミングメッセージの受信時（`query.ts:830-834`）に、`tool_use` ブロックが検出されると `true` に設定される。`QueryEngine.ts` は `message_delta` から実際の `stop_reason` を取得して他の処理に利用するが、query loop 自体は `needsFollowUp` に依存する。
 
 ```typescript
 // query.ts:554-558
@@ -196,11 +196,11 @@ let needsFollowUp = false
 <details>
 <summary>四、ストリーミングツール実行と QueryEngine</summary>
 
-CC の `StreamingToolExecutor`（`query.ts:561`）は、モデルがまだ生成中にツールの実行を開始できる（concurrency-safe なツールは並列、それ以外は排他実行）。`QueryEngine.ts` はさらに、コスト超過や構造化出力の検証失敗などの保護を追加する。教育版はこれらを実装しない — 目標は概念の明確さであり、極限のパフォーマンスではない。
+Claude Code の `StreamingToolExecutor`（`query.ts:561`）は、モデルがまだ生成中にツールの実行を開始できる（concurrency-safe なツールは並列、それ以外は排他実行）。`QueryEngine.ts` はさらに、コスト超過や構造化出力の検証失敗などの保護を追加する。教育版はこれらを実装しない — 目標は概念の明確さであり、極限のパフォーマンスではない。
 
 </details>
 
-**一言で**: query.ts の 1729 行の核心は 30 行の `while True`。複雑なフィールドや終了パスはすべて保護機構だ。まず核心のループを理解すれば、その後のすべては自然に理解できる。
+複雑なフィールドや終了パスはすべて保護機構であり、核心のループを理解していれば読み解きやすい。
 
 </details>
 

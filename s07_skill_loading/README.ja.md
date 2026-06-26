@@ -1,6 +1,6 @@
 # s07: Skill Loading — 必要なときにだけ読み込む
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_compact/) → s09 → ... → s20
 > *"Load when needed, don't stuff the prompt"* — tool_result で注入、system prompt には詰め込まない。
@@ -11,7 +11,7 @@ s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_c
 
 ## 課題
 
-プロジェクトには React コンポーネント仕様、SQL スタイルガイド、API 設計ドキュメントがある。Agent にこれらの仕様を自動的に守らせたい。最も直接的な方法 — すべて system prompt に詰め込む：
+プロジェクトには React コンポーネント仕様、SQL スタイルガイド、API 設計ドキュメントがある。Agent にこれらの仕様を自動的に守らせたい。最も直接的な方法は、すべて system prompt に詰め込むこと：
 
 ```python
 SYSTEM = (
@@ -22,13 +22,13 @@ SYSTEM = (
 )
 ```
 
-6500 行の system prompt。Agent は LLM を呼び出すたびにこれらのドキュメントを運ぶ — CSS の色を変えるときも SQL クエリを修正するときも。99% の内容が現在のタスクと無関係で、トークンを無駄に消費する。
+6500 行の system prompt。Agent は LLM を呼び出すたびにこれらのドキュメントを運ぶ。CSS の色を変えるときも SQL クエリを修正するときも同様だ。99% の内容が現在のタスクと無関係で、トークンを無駄に消費する。
 
 ---
 
 ## ソリューション
 
-![Skill Overview](images/skill-overview.ja.svg)
+![Skill Overview](images/skill-overview.svg)
 
 前章の最小フック構造、`todo_write`、サブ Agent を維持し、本章は新規の `load_skill` ツールに注目する。起動時にスキルカタログを SYSTEM prompt に注入し、実行時に完全な内容を読み込むツールを登録する。使ったときだけトークンを消費。
 
@@ -100,7 +100,7 @@ def load_skill(name: str) -> str:
     return skill["content"]
 ```
 
-重要な違い：スキル内容は system prompt の一部ではなく、ツール結果として現在の messages に入る。後続の呼び出しでは履歴とともに携帯され、コンテキスト圧縮、切り捨て、またはセッション終了まで保持される。これは s08 の compact と自然に接続する：オンデマンド読み込みで「運ぶべきでないものは運ばない」を解決し、compact が「捨てるべきものをどう捨てるか」を解決する。
+重要な違い：スキル内容は system prompt の一部ではなく、ツール結果として現在の messages に入る。後続の呼び出しでは履歴とともに携帯され、コンテキスト圧縮、切り捨て、またはセッション終了まで保持される。これは s08 の compact と自然に接続する：オンデマンド読み込みにより、無関係なドキュメントが system prompt に入らなくなる。compact が「捨てるべきものをどう捨てるか」を解決する。
 
 ---
 
@@ -135,22 +135,22 @@ python s07_skill_loading/code.py
 
 ## 次へ
 
-オンデマンド読み込みで「運ぶべきでないものは運ばない」問題は解決した。しかし別の問題が待っている：Agent が 30 分連続で作業すると、messages リストが中間プロセスで埋め尽くされる。古い tool_result、期限切れのファイル内容、コンテキストを占領しているが価値を生まない。
+load_skill で起動時のトークン浪費は解消した。しかし別の問題が待っている：Agent が 30 分連続で作業すると、messages リストが中間プロセスで埋め尽くされる。古い tool_result、期限切れのファイル内容、コンテキストを占領しているが価値を生まない。
 
 → s08 Context Compact：4 層圧縮戦略。安価な層を先に実行、高価な層を後に実行。
 
 <details>
-<summary>CC ソースコードを深掘り</summary>
+<summary>Claude Code ソースコードを深掘り</summary>
 
-> 以下は CC ソースコード `loadSkillsDir.ts`、`SkillTool.ts`、`bundledSkills.ts`、`commands.ts` の分析に基づく。
+> 以下は Claude Code ソースコード `loadSkillsDir.ts`、`SkillTool.ts`、`bundledSkills.ts`、`commands.ts` の分析に基づく。
 
 ### 一、スキルソース：skills/ ディレクトリだけではない
 
-教育版はすべてのスキルが `skills/` ディレクトリにあると想定している。CC は実際に複数のファイルに分散したソースから読み込む：`loadSkillsDir.ts` は user/project/`--add-dir` ディレクトリと legacy commands（`.claude/commands/`）を担当、`bundledSkills.ts` は組み込みスキル、`SkillTool.ts` は MCP リモートスキル、`commands.ts` はコマンド集約を担当。タイプには managed/policy skills、user skills（`~/.claude/skills/`）、project skills（`.claude/skills/`）、`--add-dir` skills、legacy commands、dynamic skills、conditional skills（`paths` frontmatter を持ち、ファイルパスでアクティベート）、bundled skills、plugin skills、MCP skills が含まれる。
+教育版はすべてのスキルが `skills/` ディレクトリにあると想定している。Claude Code は実際に複数のファイルに分散したソースから読み込む：`loadSkillsDir.ts` は user/project/`--add-dir` ディレクトリと legacy commands（`.claude/commands/`）を担当、`bundledSkills.ts` は組み込みスキル、`SkillTool.ts` は MCP リモートスキル、`commands.ts` はコマンド集約を担当。タイプには managed/policy skills、user skills（`~/.claude/skills/`）、project skills（`.claude/skills/`）、`--add-dir` skills、legacy commands、dynamic skills、conditional skills（`paths` frontmatter を持ち、ファイルパスでアクティベート）、bundled skills、plugin skills、MCP skills が含まれる。
 
 ### 二、SKILL.md Frontmatter の一般的なフィールド
 
-CC の SKILL.md YAML frontmatter は `parseSkillFrontmatterFields()`（`loadSkillsDir.ts`）で解析される。一般的なフィールド：
+Claude Code の SKILL.md YAML frontmatter は `parseSkillFrontmatterFields()`（`loadSkillsDir.ts`）で解析される。一般的なフィールド：
 
 | フィールド | 用途 |
 |-----------|------|

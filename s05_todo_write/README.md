@@ -1,38 +1,38 @@
-# s05: TodoWrite — 没有计划的 Agent，做着做着就偏了
+# s05: TodoWrite — An Agent Without a Plan Drifts Off Course
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → `s05` → [s06](../s06_subagent/) → s07 → ... → s20
 
-> *"没有计划的 agent 走哪算哪"* — 先列步骤再动手，长任务更不容易漏项。
+> *"An agent without a plan goes wherever the wind blows"* — List the steps first, then execute. Complex tasks are less likely to miss steps.
 >
-> **Harness 层**: 规划 — 让 Agent 在动手之前先想清楚。
+> **Harness Layer**: Planning — maintain a stateful task list via todo_write.
 
 ---
 
-## 问题
+## The Problem
 
-给 Agent 一个复杂任务："把所有 Python 文件改成 snake_case 命名，然后跑测试，修好失败。"
+Give the Agent a complex task: "Rename all Python files to snake_case, run tests, and fix failures."
 
-Agent 开始干活，改了 3 个文件，跑了个测试，发现 2 个失败，开始修。修着修着，它忘了最初是"改成 snake_case"，测试失败把注意力全吸走了。
+The Agent starts working, renames 3 files, runs a test, finds 2 failures, starts fixing. While fixing, it forgets the original goal was "rename to snake_case", the test failures have consumed all its attention.
 
-对话越长越严重：工具结果不断填满上下文，系统提示的影响力被稀释。一个 10 步重构，做完 1-3 步就开始即兴发挥，因为 4-10 步已经被挤出注意力了。
+The longer the conversation, the worse it gets: tool results keep filling the context, diluting the system prompt's influence. A 10-step refactoring: after steps 1-3, the Agent starts improvising because steps 4-10 have been pushed out of its attention.
 
 ---
 
-## 解决方案
+## The Solution
 
 ![Todo Overview](images/todo-overview.svg)
 
-保留上一章的最小 hook 结构，重点看新增的 `todo_write` 工具和 reminder 机制。`todo_write` 本身不做任何实际工作，不能读文件、不能跑命令，只是让 Agent 在动手之前先理清思路。
+The minimal hook structure from the previous chapter is preserved, focusing on the new `todo_write` tool and reminder mechanism. `todo_write` does no actual work, can't read files or run commands, it simply maintains a stateful task list.
 
-dispatch 机制不变，新工具仍然走 `TOOL_HANDLERS[block.name]` 分发。但为了演示 todo reminder，循环里加了一个计数器：连续 3 轮没调 `todo_write` 就注入一条提醒。
+The dispatch mechanism is unchanged; the new tool is still routed through `TOOL_HANDLERS[block.name]`. However, to demonstrate the todo reminder, a counter was added to the loop: after 3 consecutive rounds without calling `todo_write`, a reminder is injected.
 
 ---
 
-## 工作原理
+## How It Works
 
-**todo_write 工具**，接收一个带状态的列表，保存在当前进程内存中，同时在终端显示进度：
+**The todo_write tool** accepts a list with statuses, keeps it in the current process memory, and displays progress in the terminal:
 
 ```python
 CURRENT_TODOS: list[dict] = []
@@ -49,7 +49,7 @@ def run_todo_write(todos: list) -> str:
     return f"Updated {len(CURRENT_TODOS)} tasks"
 ```
 
-工具定义和其他 5 个工具一起加入 dispatch map：
+The tool definition joins the other 5 in the dispatch map:
 
 ```python
 TOOLS = [
@@ -58,7 +58,7 @@ TOOLS = [
     {"name": "write_file", ...},
     {"name": "edit_file",  ...},
     {"name": "glob",       ...},
-    # s05: 新增一条
+    # s05: new entry
     {"name": "todo_write", "description": "Create and manage a task list ...",
      "input_schema": {
          "type": "object",
@@ -81,7 +81,7 @@ TOOLS = [
 TOOL_HANDLERS["todo_write"] = run_todo_write
 ```
 
-**Nag reminder**，模型连续 3 轮没调 `todo_write` 时，自动注入一条提醒（教学版机制，CC 源码中没有这个固定轮数逻辑）：
+**Nag reminder**, when the model hasn't called `todo_write` for 3 consecutive rounds, a reminder is automatically injected:
 
 ```python
 if rounds_since_todo >= 3 and messages:
@@ -92,66 +92,68 @@ if rounds_since_todo >= 3 and messages:
     rounds_since_todo = 0
 ```
 
-Agent 收到任务后的典型流程：先调 `todo_write` 列出所有步骤（全 `pending`）→ 做一个步骤，改成 `in_progress` → 做完改成 `completed` → 看下一个 `pending` → 继续。连续 3 轮没有调用 `todo_write` 时，循环会在下一次 LLM 调用前追加一条 reminder。
+Typical flow when the Agent receives a task: first call `todo_write` to list all steps (all `pending`) → pick one step, set it to `in_progress` → complete it, set to `completed` → look at the next `pending` → continue. After 3 rounds without `todo_write`, the loop appends a reminder before the next LLM call.
 
-**关键洞察**：todo_write 不给 Agent 增加任何**执行能力**。它增加的是**规划能力**。
+todo_write doesn't give the Agent any additional execution capability. It just adds a stateful list.
 
----
-
-## 相对 s04 的变更
-
-| 组件 | 之前 (s04) | 之后 (s05) |
-|------|-----------|-----------|
-| 工具数量 | 5 (bash, read, write, edit, glob) | 6 (+todo_write) |
-| 规划能力 | 无 | 带状态的 TODO 列表 + nag reminder |
-| SYSTEM 提示 | 通用提示 | 加入 "先计划再执行" 引导 |
-| 循环 | 不变 | dispatch 不变，新增 rounds_since_todo 计数器和 reminder 注入 |
+Whether to call `todo_write` — and which steps to list — is entirely the model's own decision, based on task complexity. The harness never plans for the model: the SYSTEM prompt only nudges, and the nag reminder merely injects a text message into `messages[]`. The model is still free to update its todos on the next round.
 
 ---
 
-## 试一下
+## Changes from s04
+
+| Component | Before (s04) | After (s05) |
+|-----------|-------------|-------------|
+| Tool count | 5 (bash, read, write, edit, glob) | 6 (+todo_write) |
+| Planning | None | Stateful TODO list + nag reminder |
+| SYSTEM prompt | Generic prompt | Added todo_write usage guidance |
+| Loop | Unchanged | Dispatch unchanged, added rounds_since_todo counter and reminder injection |
+
+---
+
+## Try It
 
 ```sh
 cd learn-claude-code
 python s05_todo_write/code.py
 ```
 
-试试这些 prompt：
+Try these prompts:
 
-1. `Refactor s05_todo_write/example/hello.py: add type hints, docstrings, and a main guard`（先列 3 步再执行）
+1. `Refactor s05_todo_write/example/hello.py: add type hints, docstrings, and a main guard` (should list 3 steps first, then execute)
 2. `Create a Python package under s05_todo_write/example/demo_pkg with __init__.py, utils.py, and tests/test_utils.py`
 3. `Review Python files under s05_todo_write/example and fix any style issues`
 
-观察重点：第一次工具调用是不是 `todo_write`？TODO 列了几步？执行过程中状态有没有从 `pending` 变成 `in_progress` / `completed`？
+What to watch for: Was the first tool call `todo_write`? How many TODO steps were listed? Did statuses move from `pending` to `in_progress` / `completed` during execution?
 
 ---
 
-## 接下来
+## What's Next
 
-Agent 能计划了。但如果一个任务太大，比如"重构整个认证模块"，光靠 TODO 列表不够。这个任务本身就是几十个小任务的集合，放在同一个对话里会被上下文淹没。
+The Agent can plan now. But if a task is too large, say "refactor the entire auth module", a TODO list alone isn't enough. That task is itself a collection of dozens of subtasks that would drown in a single conversation's context.
 
-s06 Subagent → 把大任务拆成子任务，每个子任务派一个独立的 Agent。它们有自己的干净上下文，不会互相污染。
+→ s06 Subagent: Break large tasks into subtasks, each handled by an independent Agent with its own clean context, no cross-contamination.
 
 <details>
-<summary>深入 CC 源码</summary>
+<summary>Dive into Claude Code Source Code</summary>
 
-CC 中有两套任务系统并存（`tasks.ts:133-139`）：
+Claude Code has two task systems coexisting (`tasks.ts:133-139`):
 
-- **TodoWrite（V1）**：一个简单的列表工具，数据在内存 AppState 中维护（`TodoWriteTool.ts:65-103`）。教学版也保存在进程内存里，退出后清空
-- **Task System（V2 = s12）**：文件持久化、依赖图、并发锁、ownership
+- **TodoWrite (V1)**: A simple list tool, data maintained in memory AppState (`TodoWriteTool.ts:65-103`). The teaching version also keeps it in process memory and clears it on exit.
+- **Task System (V2 = s12)**: File-persisted, dependency graph, concurrency locks, ownership.
 
-切换由 `isTodoV2Enabled()` 控制。当前源码的实现逻辑：交互式会话中 V2 默认启用，非交互式会话（SDK）中 V1 默认启用；设置 `CLAUDE_CODE_ENABLE_TASKS` 环境变量可强制启用 V2。注意源码注释 "Force-enable tasks in non-interactive mode" 描述的是 env var 路径的用途，和默认分支的返回值语义不同，阅读时需区分。
+The switch is controlled by `isTodoV2Enabled()`. In the current source: V2 is enabled by default in interactive sessions, V1 in non-interactive (SDK) sessions; setting `CLAUDE_CODE_ENABLE_TASKS` forces V2 regardless. Note the source comment "Force-enable tasks in non-interactive mode" describes the env var path's purpose, not the default branch's return semantics.
 
-教学版省略了真实源码中的 `activeForm` 字段（`utils/todo/types.ts:8-15`）。CC 用它给 UI spinner 展示"正在做什么"，教学版只有终端输出，不需要这个字段。
+The teaching version omits the `activeForm` field from the real source (`utils/todo/types.ts:8-15`). Claude Code uses it for the UI spinner to show "what's being done"; the teaching version only has terminal output and doesn't need this field.
 
-教学版的 nag reminder（3 轮未更新就注入提醒）是教学机制。CC 源码中没有固定的"3 轮"逻辑，更接近的是 `TodoWriteTool.ts:72-107` 中当 3 个以上 todo 全部完成但没有 verification 项时，追加 verification nudge。
+The teaching version's nag reminder (3 rounds without update triggers injection) is an educational mechanism. The Claude Code source has no fixed "3 rounds" logic; the closest is `TodoWriteTool.ts:72-107` which appends a verification nudge when 3+ todos are all completed without a verification item.
 
-Task System 相比 TodoWrite 的核心增量：
-- 文件持久化（Claude 配置目录下 `tasks/{taskListId}/{taskId}.json`）而非内存列表
-- `blockedBy` 依赖图而非平铺列表
-- `proper-lockfile` 并发安全而非无锁
-- 四个独立工具（Create/Get/Update/List）而非一个
-- TaskCreated / TaskCompleted hooks（`TaskCreateTool.ts:80-129`、`TaskUpdateTool.ts:231-260`）供外部系统集成
+Core increments of the Task System over TodoWrite:
+- File persistence (Claude config directory `tasks/{taskListId}/{taskId}.json`) instead of in-memory list
+- `blockedBy` dependency graph instead of flat list
+- `proper-lockfile` concurrency safety instead of no locking
+- Four separate tools (Create/Get/Update/List) instead of one
+- TaskCreated / TaskCompleted hooks (`TaskCreateTool.ts:80-129`, `TaskUpdateTool.ts:231-260`) for external system integration
 
 </details>
 

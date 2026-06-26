@@ -1,98 +1,145 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 440" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 660" font-family="system-ui, -apple-system, sans-serif">
   <defs>
-    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#1e3a5f"/><stop offset="100%" stop-color="#dc2626"/>
-    </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
     </marker>
-    <marker id="arrow-red" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
     </marker>
-    <linearGradient id="l1" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#fef3c7"/><stop offset="100%" stop-color="#fde68a"/>
-    </linearGradient>
-    <linearGradient id="l2" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#fed7aa"/><stop offset="100%" stop-color="#fdba74"/>
-    </linearGradient>
-    <linearGradient id="l3" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#fecaca"/><stop offset="100%" stop-color="#fca5a5"/>
-    </linearGradient>
   </defs>
 
-  <rect width="760" height="440" fill="#fafbfc" rx="8"/>
+  <!-- Background -->
+  <rect width="860" height="660" fill="#ffffff"/>
 
   <!-- Title -->
-  <rect x="0" y="0" width="760" height="44" fill="url(#header)" rx="8"/>
-  <rect x="0" y="36" width="760" height="8" fill="url(#header)"/>
-  <text x="380" y="28" fill="#fff" font-size="15" font-weight="700" text-anchor="middle">Error Recovery — try/except 包裹 LLM 调用，三种恢复模式</text>
+  <text x="430" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Error Recovery</text>
+  <text x="430" y="50" fill="#888888" font-size="12" text-anchor="middle">try/except wraps LLM calls — three recovery patterns</text>
 
-  <!-- Legend -->
-  <rect x="40" y="56" width="12" height="10" rx="2" fill="#f0f4ff" stroke="#2563eb" stroke-width="1"/>
-  <text x="58" y="66" fill="#2563eb" font-size="10" font-weight="600">s10 保留</text>
-  <rect x="140" y="56" width="12" height="10" rx="2" fill="#fef3c7" stroke="#d97706" stroke-width="1"/>
-  <text x="158" y="66" fill="#d97706" font-size="10" font-weight="600">s11 新增</text>
+  <!-- ===== Main Flow (top row) ===== -->
 
-  <!-- ===== s10 loop (compact) ===== -->
-  <rect x="30" y="92" width="80" height="40" rx="8" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="70" y="116" fill="#1e3a5f" font-size="10" font-weight="600" text-anchor="middle">messages</text>
+  <!-- messages box -->
+  <rect x="30" y="76" width="96" height="44" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="78" y="103" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle">messages</text>
 
-  <line x1="110" y1="112" x2="128" y2="112" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Arrow: messages → prompt assembly -->
+  <line x1="126" y1="98" x2="154" y2="98" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <rect x="131" y="86" width="90" height="52" rx="8" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="176" y="108" fill="#1e3a5f" font-size="9" font-weight="600" text-anchor="middle">prompt assembly</text>
-  <text x="176" y="122" fill="#94a3b8" font-size="8" text-anchor="middle">(s10)</text>
+  <!-- prompt assembly box -->
+  <rect x="160" y="76" width="120" height="44" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="220" y="95" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">prompt</text>
+  <text x="220" y="110" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">assembly</text>
 
-  <line x1="221" y1="112" x2="239" y2="112" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Arrow: prompt assembly → compress+load -->
+  <line x1="280" y1="98" x2="308" y2="98" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <rect x="242" y="86" width="100" height="52" rx="8" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="292" y="108" fill="#1e3a5f" font-size="9" font-weight="600" text-anchor="middle">compress + load</text>
-  <text x="292" y="122" fill="#94a3b8" font-size="8" text-anchor="middle">(s08-s09)</text>
+  <!-- compress + load box -->
+  <rect x="314" y="76" width="132" height="44" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="380" y="95" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">compress +</text>
+  <text x="380" y="110" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">load context</text>
 
-  <line x1="342" y1="112" x2="360" y2="112" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Arrow: compress+load → LLM -->
+  <line x1="446" y1="98" x2="474" y2="98" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <!-- LLM (wrapped in try/except) -->
-  <rect x="363" y="86" width="80" height="52" rx="8" fill="#fef2f2" stroke="#dc2626" stroke-width="2"/>
-  <text x="403" y="108" fill="#991b1b" font-size="11" font-weight="700" text-anchor="middle">LLM</text>
-  <text x="403" y="122" fill="#dc2626" font-size="8" text-anchor="middle">try/except</text>
+  <!-- LLM box (primary, black border, thicker) -->
+  <rect x="480" y="70" width="112" height="56" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="536" y="96" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">LLM</text>
+  <text x="536" y="112" fill="#888888" font-size="11" font-weight="600" text-anchor="middle" font-family="monospace">try/except</text>
 
-  <line x1="443" y1="112" x2="461" y2="112" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Arrow: LLM → TOOL_HANDLERS -->
+  <line x1="592" y1="98" x2="620" y2="98" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <rect x="464" y="86" width="110" height="52" rx="8" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="519" y="108" fill="#1e3a5f" font-size="9" font-weight="600" text-anchor="middle">TOOL_HANDLERS</text>
-  <text x="519" y="122" fill="#94a3b8" font-size="8" text-anchor="middle">bash · read · write</text>
+  <!-- TOOL_HANDLERS box -->
+  <rect x="626" y="76" width="164" height="44" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="708" y="95" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">TOOL_HANDLERS</text>
+  <text x="708" y="110" fill="#888888" font-size="11" text-anchor="middle">bash · read · write</text>
 
-  <!-- Arrow: LLM → Recovery -->
-  <path d="M 403 138 L 403 178" fill="none" stroke="#dc2626" stroke-width="1.5" marker-end="url(#arrow-red)"/>
-  <text x="415" y="164" fill="#dc2626" font-size="9">报错</text>
+  <!-- Loop-back arrow from TOOL_HANDLERS to messages (dashed green, goes below the row) -->
+  <circle cx="708" cy="120" r="3" fill="#22c55e"/>
+  <path d="M 708 120 L 708 138 L 78 138 L 78 120" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+  <text x="393" y="152" fill="#22c55e" font-size="10" font-weight="600" text-anchor="middle">tool result → append → next turn</text>
 
-  <!-- ===== Recovery Section ===== -->
-  <rect x="20" y="182" width="720" height="22" rx="4" fill="#f1f5f9"/>
-  <text x="55" y="197" fill="#64748b" font-size="11" font-weight="600">错误恢复（分类处理，恢复后回到 LLM 重试）</text>
+  <!-- ===== Error arrow from LLM down ===== -->
+  <path d="M 536 126 L 536 180" fill="none" stroke="#888888" stroke-width="2" marker-end="url(#arrow-gray)"/>
+  <text x="552" y="162" fill="#888888" font-size="10" font-weight="600">error</text>
 
-  <!-- Layer 1: max_tokens -->
-  <rect x="40" y="210" width="680" height="48" rx="7" fill="url(#l1)" stroke="#d97706" stroke-width="1.5"/>
-  <text x="60" y="230" fill="#92400e" font-size="12" font-weight="600">路径 1</text>
-  <text x="112" y="230" fill="#92400e" font-size="11" font-weight="700">max_tokens</text>
-  <text x="200" y="230" fill="#92400e" font-size="11">输出被截断 → 升级 8K→64K（一次）/ 续写提示（最多 3 次）</text>
-  <text x="200" y="246" fill="#b45309" font-size="9">触发: stop_reason == "max_tokens" · 代价: 0-1 API · 恢复后 continue</text>
+  <!-- ===== Recovery Section Header ===== -->
+  <rect x="30" y="188" width="800" height="28" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="430" y="207" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle">Error Recovery — classify and recover, then continue back to LLM</text>
 
-  <!-- Layer 2: prompt_too_long -->
-  <rect x="40" y="266" width="680" height="48" rx="7" fill="url(#l2)" stroke="#ea580c" stroke-width="1.5"/>
-  <text x="60" y="286" fill="#9a3412" font-size="12" font-weight="600">路径 2</text>
-  <text x="112" y="286" fill="#9a3412" font-size="11" font-weight="700">prompt_too_long</text>
-  <text x="230" y="286" fill="#9a3412" font-size="11">上下文超限 → reactive compact → 重试（一次机会）</text>
-  <text x="200" y="302" fill="#c2410c" font-size="9">触发: API 返回 413 · 代价: 1 API · 压缩过还是超 → 退出</text>
+  <!-- ===== Path 1: max_tokens ===== -->
+  <rect x="30" y="230" width="780" height="100" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
 
-  <!-- Layer 3: 429/529 -->
-  <rect x="40" y="322" width="680" height="48" rx="7" fill="url(#l3)" stroke="#dc2626" stroke-width="1.5"/>
-  <text x="60" y="342" fill="#991b1b" font-size="12" font-weight="600">路径 3</text>
-  <text x="112" y="342" fill="#991b1b" font-size="11" font-weight="700">429/529</text>
-  <text x="170" y="342" fill="#991b1b" font-size="11">临时故障 → 指数退避 + 抖动（最多 10 次）/ 3 次 529 → 切换模型</text>
-  <text x="200" y="358" fill="#b91c1c" font-size="9">触发: RateLimitError / OverloadedError · 公式: min(500×2^n, 32s) + jitter</text>
+  <!-- Path 1 header -->
+  <text x="50" y="254" fill="#1a1a1a" font-size="14" font-weight="700">Path 1</text>
+  <rect x="108" y="240" width="102" height="20" rx="4" fill="#2d2d2d"/>
+  <text x="159" y="254" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle" font-family="monospace">max_tokens</text>
 
-  <!-- ===== Bottom notes ===== -->
-  <rect x="40" y="388" width="680" height="40" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="60" y="406" fill="#475569" font-size="10">三种最常见的恢复模式。CC 实际有 13+ reason code（image_error、aborted_streaming 等），各有专门处理。</text>
-  <text x="60" y="422" fill="#94a3b8" font-size="9">所有路径恢复后 → continue 回到 LLM · 正常流程: 工具结果 → messages → 循环</text>
+  <!-- Path 1 description -->
+  <text x="50" y="278" fill="#1a1a1a" font-size="11">Trigger: <tspan font-family="monospace" font-size="11">stop_reason == "max_tokens"</tspan></text>
+  <text x="50" y="296" fill="#1a1a1a" font-size="11">Action: Escalate 8K → 64K (once) / continuation prompt (up to 3×)</text>
+  <text x="50" y="314" fill="#888888" font-size="11">Truncated output NOT appended on first escalation — same request retried with more tokens</text>
+
+  <!-- Path 1 terminal snippet -->
+  <rect x="590" y="244" width="200" height="44" rx="4" fill="#2d2d2d"/>
+  <text x="600" y="260" fill="#22c55e" font-size="10" font-family="monospace">max_tokens = 64000</text>
+  <text x="600" y="276" fill="#22c55e" font-size="10" font-family="monospace">continue  # retry</text>
+
+  <!-- Path 1 → recovery bus -->
+  <path d="M 810 300 L 830 300" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <circle cx="810" cy="300" r="3" fill="#22c55e"/>
+  <circle cx="830" cy="300" r="3" fill="#22c55e"/>
+
+  <!-- ===== Path 2: prompt_too_long ===== -->
+  <rect x="30" y="344" width="780" height="100" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+
+  <!-- Path 2 header -->
+  <text x="50" y="368" fill="#1a1a1a" font-size="14" font-weight="700">Path 2</text>
+  <rect x="108" y="354" width="136" height="20" rx="4" fill="#2d2d2d"/>
+  <text x="176" y="368" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle" font-family="monospace">prompt_too_long</text>
+
+  <!-- Path 2 description -->
+  <text x="50" y="392" fill="#1a1a1a" font-size="11">Trigger: API returns 413 / context exceeds limit</text>
+  <text x="50" y="410" fill="#1a1a1a" font-size="11">Action: Reactive compact → retry (one chance only)</text>
+  <text x="50" y="428" fill="#888888" font-size="11">If still over limit after compaction → exit (compacting again won't help)</text>
+
+  <!-- Path 2 terminal snippet -->
+  <rect x="548" y="358" width="244" height="58" rx="4" fill="#2d2d2d"/>
+  <text x="558" y="374" fill="#22c55e" font-size="10" font-family="monospace">messages[:] =</text>
+  <text x="558" y="390" fill="#22c55e" font-size="10" font-family="monospace">  reactive_compact(messages)</text>
+  <text x="558" y="406" fill="#22c55e" font-size="10" font-family="monospace">continue  # retry once</text>
+
+  <!-- Path 2 → recovery bus -->
+  <path d="M 810 414 L 830 414" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <circle cx="810" cy="414" r="3" fill="#22c55e"/>
+  <circle cx="830" cy="414" r="3" fill="#22c55e"/>
+
+  <!-- ===== Path 3: 429/529 ===== -->
+  <rect x="30" y="458" width="780" height="106" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+
+  <!-- Path 3 header -->
+  <text x="50" y="482" fill="#1a1a1a" font-size="14" font-weight="700">Path 3</text>
+  <rect x="108" y="468" width="74" height="20" rx="4" fill="#2d2d2d"/>
+  <text x="145" y="482" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle" font-family="monospace">429/529</text>
+
+  <!-- Path 3 description -->
+  <text x="50" y="506" fill="#1a1a1a" font-size="11">Trigger: <tspan font-family="monospace" font-size="11">RateLimitError / OverloadedError</tspan></text>
+  <text x="50" y="524" fill="#1a1a1a" font-size="11">Action: Exponential backoff + jitter (up to 10 retries)</text>
+  <text x="50" y="542" fill="#888888" font-size="11">3× consecutive 529 → fallback model. min(500×2^n, 32s) + jitter</text>
+
+  <!-- Path 3 terminal snippet -->
+  <rect x="548" y="472" width="244" height="76" rx="4" fill="#2d2d2d"/>
+  <text x="558" y="488" fill="#22c55e" font-size="10" font-family="monospace">delay = min(500*2**n, 32000)</text>
+  <text x="558" y="504" fill="#22c55e" font-size="10" font-family="monospace">delay += random(0, 25%)</text>
+  <text x="558" y="520" fill="#22c55e" font-size="10" font-family="monospace">time.sleep(delay / 1000)</text>
+  <text x="558" y="536" fill="#22c55e" font-size="10" font-family="monospace">continue  # retry</text>
+
+  <!-- Path 3 → recovery bus → single merged arrow back into LLM -->
+  <path d="M 810 534 L 830 534 L 830 63 L 536 63 L 536 70" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+  <circle cx="810" cy="534" r="3" fill="#22c55e"/>
+
+  <!-- ===== Bottom note ===== -->
+  <rect x="30" y="580" width="800" height="42" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="50" y="598" fill="#888888" font-size="11">These are the 3 most common recovery patterns. The system has 13+ reason codes</text>
+  <text x="50" y="613" fill="#888888" font-size="11">(image_error, aborted_streaming, etc.), each with dedicated handling. All recovery paths → continue back to LLM loop.</text>
+
 </svg>

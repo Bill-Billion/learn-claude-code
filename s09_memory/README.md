@@ -1,48 +1,48 @@
-# s09: Memory — 压缩会丢细节，要有一层不丢的
+# s09: Memory — Compression Loses Details, Keep a Layer That Doesn't
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s07 → s08 → `s09` → [s10](../s10_system_prompt/) → s11 → ... → s20
-> *"压缩会丢细节, 要有一层不丢的"* — 文件仓库 + 索引 + 按需加载，跨压缩、跨会话。
+> *"Compression loses details, keep a layer that doesn't"* — File store + index + on-demand loading, across compactions, across sessions.
 >
-> **Harness 层**: 记忆 — 跨压缩、跨会话的知识积累。
+> **Harness Layer**: Memory — knowledge that survives compaction and sessions.
 
 ---
 
-## 问题
+## The Problem
 
-s08 的 autoCompact 会把当前目标、剩余工作、用户约束写进摘要，但细节会丢失："用 tab 缩进不要用空格"可能被简化成"用户有代码风格偏好"。而且新开一个会话，连摘要也没了。
+s08's autoCompact preserves current goals, remaining work, and user constraints in the summary, but details get lost: "use tabs not spaces" might get simplified to "user has code style preferences". And when you start a new session, even the summary is gone.
 
-LLM 没有持久状态，所有信息都在上下文窗口里。上下文满了要压缩，压缩就有损。需要一层不参与压缩、跨会话保留的存储。
+LLMs have no persistent state; all information lives in the context window. When context fills up, it gets compressed, and compression is lossy. A storage layer outside the context window solves this.
 
 ---
 
-## 解决方案
+## The Solution
 
 ![Memory Overview](images/memory-overview.svg)
 
-s08 的压缩管线保留，聚焦记忆。存储选文件系统：`.memory/` 目录下，每个记忆一个 `.md` 文件，带 YAML frontmatter（`name` / `description` / `type`）。文件多了需要索引：`MEMORY.md` 一行一个链接，注入 SYSTEM。
+The s08 compression pipeline is preserved, focusing on memory. Storage uses the filesystem: a `.memory/` directory where each memory is a `.md` file with YAML frontmatter (`name` / `description` / `type`). When files accumulate, an index is needed: `MEMORY.md` holds one link per line and gets injected into the SYSTEM.
 
-关键设计：索引常驻 SYSTEM prompt（可被 prompt cache 缓存），文件内容按需注入到当前 user turn（按 filename/description 匹配当前对话，不破坏 cache）。写入由每轮结束后的提取器完成：用户显式说"记住"或表达稳定偏好时，提取器会保存为记忆。文件积累多了，定期整理去重。
+Key design: the index stays in SYSTEM prompt (cacheable by prompt cache), file content is injected on demand (matched by filename/description to the current conversation, without breaking the cache). Writing has two paths: the user explicitly says "remember", or extraction runs in the background after each turn. When files accumulate, periodic consolidation deduplicates.
 
-四类记忆，各有用途：
+Four memory types, each answering a different question:
 
-| 类型 | 回答什么 | 示例 |
-|------|---------|------|
-| user | 你是谁 | "用 tab 不用空格" |
-| feedback | 怎么做事 | "别 mock 数据库" |
-| project | 正在发生什么 | "auth 重写是合规驱动" |
-| reference | 东西在哪找 | "pipeline bug 在 Linear INGEST" |
+| Type | Answers | Example |
+|------|---------|---------|
+| user | Who you are | "Use tabs not spaces" |
+| feedback | How to work | "Don't mock the database" |
+| project | What's happening | "Auth rewrite is compliance-driven" |
+| reference | Where to find things | "Pipeline bugs are in Linear INGEST" |
 
 ---
 
-## 工作原理
+## How It Works
 
 ![Memory Subsystems](images/memory-subsystems.svg)
 
-### 存储：Markdown 文件 + 索引
+### Storage: Markdown Files + Index
 
-每个记忆是一个 `.md` 文件，YAML frontmatter 记录元数据：
+Each memory is a `.md` file with YAML frontmatter for metadata:
 
 ```markdown
 ---
@@ -56,13 +56,13 @@ User prefers using tabs, not spaces, for indentation.
 **How to apply:** Always use tabs when writing or editing files.
 ```
 
-`MEMORY.md` 是索引，一行一个链接：
+`MEMORY.md` is the index, one link per line:
 
 ```markdown
 - [user-preference-tabs](user-preference-tabs.md) — User prefers tabs for indentation
 ```
 
-写入新记忆时自动重建索引：
+Writing a new memory automatically rebuilds the index:
 
 ```python
 def write_memory_file(name, mem_type, description, body):
@@ -74,11 +74,11 @@ def write_memory_file(name, mem_type, description, body):
     _rebuild_index()
 ```
 
-### 加载：两条路径
+### Loading: Two Paths
 
-**路径一：索引常驻 SYSTEM。** `build_system()` 在每次用户请求开始时读取 `MEMORY.md`，把记忆清单注入。记忆提取和整理只在本轮结束时触发，因此同一轮用户请求中不需要重复重建 SYSTEM。
+**Path 1: Index in SYSTEM.** `build_system()` reads `MEMORY.md` once at the start of each user request and injects the memory catalog into the SYSTEM prompt. Memory extraction and consolidation run only when the turn ends, so SYSTEM does not need to be rebuilt repeatedly within the same user request.
 
-**路径二：相关记忆按需注入。** 每次用户请求开始时，`load_memories()` 把最近对话和记忆目录（name + description）一起发给 LLM 做一次轻量 side-query，选出相关的文件名，再读文件内容临时注入到当前 user turn。最多 5 条，控制开销。
+**Path 2: Relevant memories on demand.** At the start of each user request, `load_memories()` sends the recent conversation and the memory catalog (name + description) to the LLM as a lightweight side-query, selects relevant filenames, then reads and injects their contents. Capped at 5 to control cost.
 
 ```python
 def select_relevant_memories(messages, max_items=5):
@@ -93,28 +93,27 @@ def select_relevant_memories(messages, max_items=5):
         "content": f"Select relevant memory indices. Return JSON array.\n\n"
                    f"Recent conversation:\n{recent}\n\nMemory catalog:\n{catalog}"}],
         max_tokens=200)
-    text = extract_text(response.content).strip()
-    indices = json.loads(re.search(r'\[.*?\]', text).group())
+    indices = json.loads(re.search(r'\[.*?\]', response.content[0].text).group())
     return [files[i]["filename"] for i in indices if 0 <= i < len(files)]
 ```
 
-如果 side-query 失败（API 错误、JSON 解析失败），降级到关键词匹配 name + description。
+If the side-query fails (API error, JSON parse failure), it falls back to keyword matching on name + description.
 
-### 写入：每轮结束后提取
+### Writing: Extraction After Each Turn
 
-用户不会每次都说"记住这个"。偏好通常散落在正常对话中："用 tab 比空格好"、"以后都用单引号"。
+Users don't always say "remember this". Preferences are usually scattered across normal dialogue: "tabs are better than spaces", "let's use single quotes from now on".
 
-`extract_memories()` 在每轮结束时运行，条件是模型停止且没有 tool_use（说明对话告一段落）：
+`extract_memories()` runs when each turn ends, triggered when the model stops without a tool_use (indicating the conversation has reached a natural break):
 
 ```python
 # In agent_loop:
 if response.stop_reason != "tool_use":
-    extract_memories(pre_compress)   # 从压缩前快照提取新记忆
-    consolidate_memories()       # 检查是否需要整理
+    extract_memories(messages)   # Extract new memories from recent dialogue
+    consolidate_memories()       # Check if consolidation is needed
     return
 ```
 
-提取前先检查已有记忆，避免重复。提取 prompt 要求 LLM 返回 `{name, type, description, body}` 的 JSON 数组，只有确实有新信息时才写文件。
+Before extraction, existing memories are checked to avoid duplicates. The extraction prompt asks the LLM to return a JSON array of `{name, type, description, body}`, writing files only when genuinely new information is found.
 
 ```python
 def extract_memories(messages):
@@ -130,9 +129,9 @@ def extract_memories(messages):
     # ... parse response, write files ...
 ```
 
-### 整理：低频合并去重
+### Consolidation: Low-Frequency Deduplication
 
-记忆文件会积累。`consolidate_memories()` 在文件数达到阈值（默认 10）时触发，让 LLM 去重、合并矛盾、淘汰过时记忆：
+Memory files accumulate. `consolidate_memories()` triggers when the file count reaches a threshold (default 10), asking the LLM to deduplicate, merge contradictions, and prune stale memories:
 
 ```python
 CONSOLIDATE_THRESHOLD = 10
@@ -140,140 +139,140 @@ CONSOLIDATE_THRESHOLD = 10
 def consolidate_memories():
     files = list_memory_files()
     if len(files) < CONSOLIDATE_THRESHOLD:
-        return  # 太少，不值得整理
+        return  # Too few, not worth consolidating
     # Send all memories to LLM, get back deduplicated list
     # Replace all files with consolidated results
 ```
 
-CC 把这个过程叫 Dream，实际有四层门控：时间间隔、扫描节流、会话数、文件锁。教学版简化为文件数阈值。
+Claude Code calls this process **Dream**, with four gates in practice: time interval, scan throttle, session count, file lock. The teaching version simplifies to a file-count threshold.
 
-### Memory 适合保存什么
+### What Memory Stores
 
-Memory 保存跨会话仍然有用的信息：用户偏好、反复出现的反馈、项目背景、常用入口和排查线索。它关注“以后还会用到什么”，并通过索引 + 按需加载把这些信息带回当前对话。
+Memory stores user preferences, recurring feedback, project background, common entry points, and investigation clues. It brings them back through an index plus on-demand loading.
 
-session memory 关注同一会话内的连续性：compact 之后，当前会话还需要保留哪些上下文。两者配合使用：Memory 管长期知识，session memory 管当前会话的压缩续接。
-
----
-
-## 相对 s08 的变更
-
-| 组件 | 之前 (s08) | 之后 (s09) |
-|------|-----------|-----------|
-| 记忆能力 | 无（压缩后偏好随摘要退化） | 存储 + 加载 + 提取 + 整理 |
-| 新函数 | — | write_memory_file, select_relevant_memories, load_memories, extract_memories, consolidate_memories |
-| 存储 | — | .memory/MEMORY.md 索引 + .memory/*.md 文件 |
-| 工具 | bash, read, write, edit, glob, todo_write, task, load_skill, compact (9) | bash, read_file, write_file, edit_file, glob, task (6) |
-| 循环 | 每轮只做压缩 | 每轮注入记忆 + 压缩 + 每轮结束后提取 + 定期整理 |
+Session memory focuses on continuity inside one session: what context should survive after compaction. The two work together: Memory handles long-term knowledge; session memory handles the current session across compaction.
 
 ---
 
-## 试一下
+## Changes From s08
+
+| Component | Before (s08) | After (s09) |
+|-----------|-------------|-------------|
+| Memory capability | None (preferences degrade with compaction) | Storage + loading + extraction + consolidation |
+| New functions | — | write_memory_file, select_relevant_memories, load_memories, extract_memories, consolidate_memories |
+| Storage | — | .memory/MEMORY.md index + .memory/*.md files |
+| Tools | bash, read, write, edit, glob, todo_write, task, load_skill, compact (9) | bash, read_file, write_file, edit_file, glob, task (6) |
+| Loop | Only compression each turn | Memory injection + compression + post-turn extraction + periodic consolidation |
+
+---
+
+## Try It
 
 ```sh
 cd learn-claude-code
 python s09_memory/code.py
 ```
 
-试试这些 prompt（分多轮输入，观察记忆的累积和加载）：
+Try these prompts (enter across multiple turns, observe memory accumulation and loading):
 
 1. `I prefer using tabs for indentation, not spaces. Remember that.`
-2. `Create a Python file called test.py`（观察 Agent 是否用了 tab）
-3. `What did I tell you about my preferences?`（观察 Agent 是否记得）
+2. `Create a Python file called test.py` (observe whether the Agent uses tabs)
+3. `What did I tell you about my preferences?` (observe whether the Agent remembers)
 4. `I also prefer single quotes over double quotes for strings.`
 
-观察重点：每轮结束后是否出现 `[Memory: extracted N new memories]`？`.memory/` 目录下是否生成了 `.md` 文件？`MEMORY.md` 索引是否更新？新一轮对话时 Agent 是否自动加载了之前的记忆？
+What to watch for: Does `[Memory: extracted N new memories]` appear after each turn? Are `.md` files generated in `.memory/`? Is `MEMORY.md` index updated? Does the Agent automatically load previous memories in new conversations?
 
 ---
 
-## 接下来
+## What's Next
 
-记忆、压缩、工具都已就绪。但 system prompt 还是硬编码的一大段字符串。加了新工具要手动加描述，换了项目要重写整个 prompt。prompt 应该运行时组装。
+Memory, compression, and tools are all in place. But the system prompt is still a hardcoded string. Adding a new tool means manually adding a description; switching projects means rewriting the whole prompt. Prompts should be assembled at runtime.
 
-s10 System Prompt → 分段 + 运行时组装。不同项目、不同工具，拼出不同的 prompt。
+s10 System Prompt → segments + runtime assembly. Different projects, different tools, different prompts.
 
 <details>
-<summary>深入 CC 源码</summary>
+<summary>Deep Dive Into Claude Code Source Code</summary>
 
-> 以下基于 CC 源码 `src/` 下 `memdir/`、`services/`、`utils/`、`query/` 的分析，行号已对照核实。
+> The following is based on analysis of Claude Code source code under `src/` in `memdir/`, `services/`, `utils/`, `query/`. Line numbers verified against source.
 
-### 源码路径
+### Source Code Paths
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `memdir/memdir.ts` | 507 | 核心：MEMORY.md 定义（`34-38`）、记忆行为指令区分 memory/plan/tasks（`199-266`）、`loadMemoryPrompt()` 三条路径（`419-490`） |
-| `memdir/findRelevantMemories.ts` | 141 | Sonnet side-query 选记忆（`18-24` 系统提示、`97-122` 调用逻辑） |
-| `memdir/memoryTypes.ts` | 271 | 类型定义，frontmatter 字段 |
-| `memdir/memoryScan.ts` | — | 扫描 .md 文件，排除 MEMORY.md，读 frontmatter，最多 200 个，按 mtime 降序（`35-94`） |
-| `services/extractMemories/extractMemories.ts` | 615 | forked agent 提取记忆，受限权限，`skipTranscript: true`，`maxTurns: 5`（`371-427`） |
-| `services/autoDream/autoDream.ts` | 324 | Dream 整理，四层门控（`63-66` 默认值、`130-190` 门控、`224-233` forked agent） |
-| `services/SessionMemory/sessionMemory.ts` | 495 | 会话级记忆管理 |
-| `services/compact/sessionMemoryCompact.ts` | — | session memory 轻量摘要，阈值 10K/5/40K（`56-61`） |
-| `utils/attachments.ts` | — | 注入预算：200 行 / 4096 字节每文件，60KB 每 session（`269-288`）；按 query 找相关 memory（`2196-2241`） |
-| `query.ts` | — | memory prefetch 每轮启动（`301-304`），非阻塞收集（`1592-1614`） |
-| `query/stopHooks.ts` | — | stop hook fire-and-forget 触发提取和 Dream（`141-155`） |
+| File | Lines | Responsibility |
+|------|-------|---------------|
+| `memdir/memdir.ts` | 507 | Core: MEMORY.md definition (`34-38`), memory behavior instructions distinguishing memory/plan/tasks (`199-266`), `loadMemoryPrompt()` three paths (`419-490`) |
+| `memdir/findRelevantMemories.ts` | 141 | Sonnet side-query memory selection (`18-24` system prompt, `97-122` call logic) |
+| `memdir/memoryTypes.ts` | 271 | Type definitions, frontmatter fields |
+| `memdir/memoryScan.ts` | — | Scan .md files, exclude MEMORY.md, read frontmatter, max 200 files, sorted by mtime desc (`35-94`) |
+| `services/extractMemories/extractMemories.ts` | 615 | Forked agent extraction, restricted permissions, `skipTranscript: true`, `maxTurns: 5` (`371-427`) |
+| `services/autoDream/autoDream.ts` | 324 | Dream consolidation, four-layer gating (`63-66` defaults, `130-190` gating, `224-233` forked agent) |
+| `services/SessionMemory/sessionMemory.ts` | 495 | Session-level memory management |
+| `services/compact/sessionMemoryCompact.ts` | — | Session memory lightweight summary, thresholds 10K/5/40K (`56-61`) |
+| `utils/attachments.ts` | — | Injection budget: 200 lines / 4096 bytes per file, 60KB per session (`269-288`); find relevant memory by query (`2196-2241`) |
+| `query.ts` | — | Memory prefetch at start of each user turn (`301-304`), non-blocking collection (`1592-1614`) |
+| `query/stopHooks.ts` | — | Stop hook fire-and-forget triggers extraction and Dream (`141-155`) |
 
-### 记忆选择：LLM 选，不是 embedding
+### Memory Selection: LLM, Not Embedding
 
-CC 用 **Sonnet 本身来选**（`findRelevantMemories.ts`），不是 embedding 向量相似度：
+Claude Code uses **Sonnet itself to select** (`findRelevantMemories.ts`), not embedding vector similarity:
 
-1. `memoryScan.ts` 扫描 `.memory/` 下所有 `.md` 文件（排除 MEMORY.md），最多 200 个，按 mtime 降序
-2. 把 `name` + `description` 列成清单
-3. 发给 Sonnet side-query："根据名称和描述选出真正有用的记忆（最多 5 个）。不确定就不要选。"
-4. Sonnet 返回 `{ selected_memories: ["file1.md", ...] }`
-5. 选中文件读取完整内容（每文件 ≤ 200 行 / 4096 字节），注入上下文。单 session 总预算 60KB
+1. `memoryScan.ts` scans all `.md` files in `.memory/` (excluding MEMORY.md), max 200 files, sorted by mtime descending
+2. Lists all memory files' `name` + `description` as a catalog
+3. Sends to Sonnet side-query: "Select truly useful memories by name and description (max 5). Skip if unsure."
+4. Sonnet returns `{ selected_memories: ["file1.md", ...] }`
+5. Selected files' full contents are read (≤ 200 lines / 4096 bytes per file) and injected. Total session budget: 60KB
 
-每轮用户 turn 开始时，`query.ts:301-304` 启动 memory prefetch（异步）；工具执行后 `1592-1614` 非阻塞收集结果，不卡主流程。
+At the start of each user turn, `query.ts:301-304` starts memory prefetch (async); after tool execution, `1592-1614` collects completed results non-blocking.
 
-### 提取时机：stop hook，不是 autoCompact 后
+### Extraction Timing: Stop Hook, Not After autoCompact
 
-触发位置（`stopHooks.ts:141-155`）：在 `handleStopHooks()` 中，fire-and-forget 触发提取和 Dream。教学版把提取放在 `stop_reason != "tool_use"` 分支里，方向一致。
+Trigger location (`stopHooks.ts:141-155`): inside `handleStopHooks()`, fire-and-forget triggers extraction and Dream. The teaching version places extraction in the `stop_reason != "tool_use"` branch, matching the direction.
 
-CC 的提取通过 forked agent 执行（`extractMemories.ts:371-427`）：受限权限、`skipTranscript: true`、`maxTurns: 5`。还有重叠保护：如果主 Agent 已经写入了记忆文件，跳过提取。
+Claude Code's extraction runs via forked agent (`extractMemories.ts:371-427`): restricted permissions, `skipTranscript: true`, `maxTurns: 5`. Also has overlap protection: if the main Agent already wrote memory files, extraction is skipped.
 
-### 记忆文件格式
+### Memory File Format
 
-CC 用 Markdown + YAML frontmatter，和教学版一致。四种类型：`user`、`feedback`、`project`、`reference`。
+Claude Code uses Markdown + YAML frontmatter, consistent with the teaching version. Four types: `user`, `feedback`, `project`, `reference`.
 
-`memdir.ts:34-38` 定义索引约束：`MEMORY.md` 最多 200 行 / 25KB。`memdir.ts:199-266` 构建记忆行为指令，明确区分 memory、plan、tasks。存储位置：`~/.claude/projects/<sanitized-git-root>/memory/`。
+`memdir.ts:34-38` defines index constraints: `MEMORY.md` max 200 lines / 25KB. `memdir.ts:199-266` builds memory behavior instructions, explicitly distinguishing memory from plan and tasks. Storage location: `~/.claude/projects/<sanitized-git-root>/memory/`.
 
-### Dream：四层门控
+### Dream: Four-Layer Gating
 
-不是"空闲时触发"或"数量够了就合并"，而是四层门控（`autoDream.ts`，默认值 `63-66`，门控逻辑 `130-190`）：
+Not "triggered when idle" or "consolidate when count is enough", but four gates (`autoDream.ts`, defaults `63-66`, gating logic `130-190`):
 
-1. **时间门控**：距上次合并 ≥ 24 小时
-2. **扫描节流**：避免频繁扫描文件系统
-3. **会话门控**：自上次合并以来修改了 ≥ 5 个会话 transcript
-4. **锁门控**：没有其他进程正在合并（`.consolidate-lock` 文件）
+1. **Time gate**: ≥ 24 hours since last consolidation
+2. **Scan throttle**: Avoid frequent filesystem scans
+3. **Session gate**: ≥ 5 session transcripts modified since last consolidation
+4. **Lock gate**: No other process currently consolidating (`.consolidate-lock` file)
 
-合并本身通过 forked agent 执行（`224-233`）：定位 → 收集近期信号 → 合并写文件 → 剪枝更新索引。锁文件 mtime 就是 lastConsolidatedAt。崩溃恢复：1 小时后锁自动过期。
+The merge itself runs via forked agent (`224-233`): locate → collect recent signals → merge and write files → prune and update index. Lock file mtime serves as lastConsolidatedAt. Crash recovery: lock auto-expires after 1 hour.
 
 ### User Memory vs Session Memory
 
 | | User Memory | Session Memory |
 |---|---|---|
-| 持久性 | 跨会话 | 单会话 |
-| 存储 | `memory/` 下多个 .md 文件 | `session-memory/<id>/memory.md` |
-| 加载到 | system prompt | compact 摘要 |
-| 用途 | 跨会话的知识积累 | 跨 compact 的上下文连续性 |
+| Persistence | Cross-session | Single session |
+| Storage | Multiple .md files in `memory/` | `session-memory/<id>/memory.md` |
+| Loaded into | system prompt | compact summary |
+| Purpose | Cross-session knowledge accumulation | Cross-compact context continuity |
 
-sessionMemoryCompact（s08 中提到的机制）正是使用了 Session Memory：autoCompact 前先读 session memory 文件，如果内容足够（≥ 10K token、≥ 5 条文本消息、≤ 40K token，`sessionMemoryCompact.ts:56-61`），就用它做摘要，不调 LLM。
+sessionMemoryCompact (mentioned in s08) uses Session Memory: before autoCompact, it reads the session memory file and, if sufficient (≥ 10K tokens, ≥ 5 text messages, ≤ 40K tokens, `sessionMemoryCompact.ts:56-61`), uses it as a summary without calling the LLM.
 
-### 真实实现比教学版复杂的地方
+### Where the Real Implementation Is More Complex
 
-- **Feature flags**：记忆相关功能有多层 feature gate 控制
-- **Team memory**：团队共享记忆，`loadMemoryPrompt()` 有专门路径（教学版未涉及）
-- **KAIROS**：时机感知的记忆提取策略，`loadMemoryPrompt()` 中 daily-log 模式
-- **Prompt cache**：记忆注入需要考虑 prompt cache 的 TTL，避免每次都重写 system prompt 的大段内容
-- **文件锁**：多进程并发时的锁机制
-- **Memory prefetch**：异步预取，不阻塞主流程
+- **Feature flags**: Memory features have multiple feature gate layers
+- **Team memory**: Shared team memories, `loadMemoryPrompt()` has a dedicated path (not covered in teaching version)
+- **KAIROS**: Timing-aware memory extraction strategy, daily-log mode in `loadMemoryPrompt()`
+- **Prompt cache**: Memory injection must account for prompt cache TTL, avoiding full system prompt rewrites each turn
+- **File locks**: Concurrency control for multi-process scenarios
+- **Memory prefetch**: Async prefetch, non-blocking main flow
 
-### 教学版的简化是刻意的
+### Teaching Version Simplifications Are Intentional
 
-- LLM side-query → LLM side-query + 关键词降级：教学版保留了 LLM 选择，加了降级路径
-- 记忆 JSON → Markdown + frontmatter：教学版与 CC 一致
-- stop hook 触发 → `stop_reason != "tool_use"` 分支：方向一致
-- 四层门控 → 文件数阈值：教学版没有 transcript 系统和多会话概念
-- forked agent + 受限权限 → 直接调用：教学版没有子进程隔离
+- LLM side-query → LLM side-query + keyword fallback: teaching version keeps LLM selection, adds fallback path
+- Memory JSON → Markdown + frontmatter: teaching version matches Claude Code
+- Stop hook trigger → `stop_reason != "tool_use"` branch: same direction
+- Four-layer gating → file-count threshold: teaching version lacks transcript system and multi-session concepts
+- Forked agent + restricted permissions → direct call: teaching version has no subprocess isolation
 
 </details>
 

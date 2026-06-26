@@ -1,6 +1,6 @@
 # s20: Comprehensive Agent — すべての仕組みを 1 つのループへ
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s18 → s19 → `s20`
 
@@ -32,7 +32,7 @@ s01 → ... → s18 → s19 → `s20`
 
 ## 解決策
 
-![System Architecture](images/system-architecture.ja.svg)
+![System Architecture](images/system-architecture.svg)
 
 S20 は新しい単独 mechanism を発明しない。前章までの teaching component を 1 つの完全な harness に統合する：
 
@@ -52,7 +52,7 @@ user input
           → next round
 ```
 
-loop 自体は同じ構造のままだ。model を呼び、response に `tool_use` block があるかを見て、tool を実行し、結果を `messages` に戻す。CC source でも `stop_reason == "tool_use"` を直接信頼せず、実際に tool_use block が出たかを continuation signal として扱う。変わったのは、loop の周囲の harness が完成形になったことだけ。
+loop 自体は同じ構造のままだ。model を呼び、response に `tool_use` block があるかを見て、tool を実行し、結果を `messages` に戻す。Claude Code source でも `stop_reason == "tool_use"` を直接信頼せず、実際に tool_use block が出たかを continuation signal として扱う。変わったのは、loop の周囲の harness が完成形になったことだけ。
 
 ---
 
@@ -247,4 +247,8 @@ while True:
 
 Claude Code の複雑さは「別の agent brain」ではない。成熟した harness の複雑さだ。model は判断と action selection を担当する。harness は environment、tools、permissions、memory、teams、external capabilities を整理する。
 
-これが本コースの終点だ：仕組みは多い、ループは 1 つ。
+ここが s01–s20 の本流の収束点だ：すべての component が同じ loop に集結する。
+
+そしてその loop は常に単ステップで model 駆動だ——毎 round、model が tool を 1 つ選ぶ。オーケストレーションの形がすでに固定なら（parallel fan-out、item ごとの pipeline、中断からの resume）、model に round ごと駆動させるより、決定的で再開可能な script として書く。
+
+これから：[s21 Workflow Runtime](../s21_workflow_runtime/) — モデルは単ステップ、スクリプトはオーケストレーション。

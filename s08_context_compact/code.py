@@ -24,7 +24,7 @@ Four-layer compaction pipeline inserted before LLM calls:
     └─────────────────────────────────────────────────────────────┘
 
 Core principle: cheap first, expensive last.
-Execution order matches CC source: budget → snip → micro → auto.
+Execution order matches Claude Code source: budget → snip → micro → auto.
 
 Builds on s07 (skill loading). Usage:
 
@@ -455,7 +455,7 @@ def agent_loop(messages: list):
     reactive_retries = 0
     while True:
         # s08 change: three preprocessors (0 API calls, cheap first)
-        # Order matches CC source: budget → snip → micro
+        # Order matches Claude Code source: budget → snip → micro
         messages[:] = tool_result_budget(messages)    # L3: persist large results first
         messages[:] = snip_compact(messages)          # L1: trim middle
         messages[:] = micro_compact(messages)         # L2: old result placeholders
