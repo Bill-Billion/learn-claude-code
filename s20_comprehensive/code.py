@@ -2063,8 +2063,8 @@ def print_turn_assistants(messages: list, turn_start: int):
         if msg.get("role") != "assistant":
             continue
         for block in msg.get("content", []):
-            if getattr(block, "type", None) == "text":
-                terminal_print(block.text)
+            if block_type(block) == "text":
+                terminal_print(block["text"] if isinstance(block, dict) else block.text)
 
 
 def cron_autorun_loop(history: list, context: dict):
