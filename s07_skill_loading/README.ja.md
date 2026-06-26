@@ -70,8 +70,8 @@ def _scan_skills():
         if manifest.exists():
             raw = manifest.read_text()
             meta, body = _parse_frontmatter(raw)
-            name = meta.get("name", d.name)
-            desc = meta.get("description", raw.split("\n")[0].lstrip("#").strip())
+            name = meta.get("name") or d.name
+            desc = meta.get("description") or body.split("\n", 1)[0].lstrip("#").strip()
             SKILL_REGISTRY[name] = {"name": name, "description": desc, "content": raw}
 
 _scan_skills()  # runs once at startup
