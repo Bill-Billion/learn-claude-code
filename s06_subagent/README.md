@@ -4,7 +4,7 @@
 
 s01 → s02 → s03 → s04 → s05 → `s06` → [s07](../s07_skill_loading/) → s08 → ... → s20
 
-> *"Break large tasks small, each with clean context"* — Subagent uses an independent messages[], no pollution in the main conversation.
+> *"Break large tasks small, each with clean context"* — Subagent uses an independent `messages[]`, no pollution in the main conversation.
 >
 > **Harness Layer**: Sub-Agent — Context isolation, attention doesn't drift.
 
@@ -12,11 +12,11 @@ s01 → s02 → s03 → s04 → s05 → `s06` → [s07](../s07_skill_loading/) �
 
 ## The Problem
 
-The Agent is fixing a bug. It reads 30 files to trace the call chain, chatting for 60 rounds along the way. The messages list grows to 120 entries, most of which are intermediate steps from "tracing the call chain," unrelated to the final goal of "fixing the bug."
+The last chapter gave the Agent `todo_write`, which breaks a big task into a checklist and works through it step by step. But the subtasks it breaks out still run in the same `messages[]`.
 
-These intermediate steps occupy context space, pushing early information out of the effective window and degrading the model's response quality for the original problem.
+The Agent is fixing a bug: it reads 30 files to trace the call chain, goes back and forth for 60 rounds, and `messages` swells to 120 entries. Most of that is the "trace the call chain" intermediate work, no longer related to the final goal of "fixing the bug", yet still taking up context. Early key information gets pushed out of the effective window, and the model half-forgets the original bug description it started with.
 
-Think of it differently: when you fix a bug, you'd "open a new terminal" to trace the call chain. When done, close the terminal, write the result into your notes, and return to the original terminal to keep fixing. The Agent needs the same capability: spawn an independent sub-process with its own message list, scoped to a single task.
+Think of it differently: when you fix a bug you "open a new terminal" to trace the call chain, note down the result when done, close the terminal, and go back to the original one to keep fixing. The Agent needs the same ability: spawn an independent sub-process, give it its own message list, let it focus on one thing, and bring back only the conclusion.
 
 ---
 
@@ -24,15 +24,17 @@ Think of it differently: when you fix a bug, you'd "open a new terminal" to trac
 
 ![Subagent Overview](images/subagent-overview.svg)
 
-The minimal hook structure and `todo_write` tool from the previous chapter are preserved; this chapter focuses on the new `task` tool. When called, it spawns a sub-Agent with a fresh `messages[]`, running its own loop, and returning only a summary text to the main Agent. Conversation context is discarded, but file system side effects (writes, edits, commands) remain in the working directory.
+One intuitive approach is to let the main Agent trace the call chain itself and then keep fixing. But the tracing would all stay in the main conversation, which is exactly the problem above.
 
-The sub-Agent's tools are restricted: it has bash/read/write/edit/glob, but no task, preventing recursive spawning. The sub-Agent's tool calls still go through permission hooks; context isolation does not bypass security.
+So take a different angle: **outsource the grunt work, take back only a one-line conclusion.** The hook structure and `todo_write` from the previous chapter stay; this chapter adds a `task` tool. When the main Agent calls it, it spawns a sub-Agent with a fresh `messages[]` and lets it run its own loop; when done, only a summary text comes back, and those 60 intermediate rounds are discarded. The conversation context never enters the main Agent, but the actual changes the sub-Agent makes on the file system (writing files, editing files, running commands) stay in the working directory.
+
+The sub-Agent's tools are restricted: it has `bash`/`read`/`write`/`edit`/`glob`, but no `task`, so it can't recursively spawn more sub-Agents. And every one of its tool calls still goes through the permission hook; context isolation doesn't skip the security policy.
 
 ---
 
 ## How It Works
 
-**spawn_subagent**, gives the sub-Agent a fresh messages list, runs its own loop, returns only the conclusion:
+A sub-Agent is essentially another instance of that s01 loop, just with an empty `messages[]` and a narrower toolset:
 
 ```python
 def spawn_subagent(description: str) -> str:
@@ -65,7 +67,9 @@ def spawn_subagent(description: str) -> str:
     return extract_text(messages[-1]["content"])
 ```
 
-The main Agent calls it just like any other tool:
+Note a few key points in this loop: the toolset has no `task` (no more spawning, recursion stops here); `for _ in range(30)` caps the rounds (the sub-Agent runs at most 30, avoiding an infinite loop); every tool call still goes through the `PreToolUse` hook (context is isolated, but permissions are not); and at the end only `extract_text(messages[-1])` takes a single conclusion, discarding the whole intermediate process.
+
+On the main Agent's side, calling it is exactly like calling any other tool:
 
 ```python
 TOOLS = [
@@ -84,7 +88,7 @@ TOOLS = [
 TOOL_HANDLERS["task"] = spawn_subagent
 ```
 
-Three key design decisions:
+Four key design decisions:
 
 | Decision | Choice | Reason |
 |----------|--------|--------|
@@ -127,7 +131,7 @@ What to watch for: Do `[Subagent spawned]` / `[Subagent done]` appear? Do sub-Ag
 
 ## What's Next
 
-The Agent can now break tasks apart. But different tasks require different knowledge: editing frontend components needs React conventions, writing SQL needs table schemas. Stuffing all this knowledge into the system prompt would blow up the context.
+The Agent can now break tasks apart. But different tasks require different knowledge: editing frontend components needs React conventions, writing SQL needs table schemas. Stuffing all this knowledge into the system prompt could fill up the context outright.
 
 → s07 Skill Loading: Inject skills on demand instead of piling documents into the system prompt. Load only when needed, as natural as reading a file.
 
@@ -186,4 +190,4 @@ The teaching version only shows synchronous sub-Agents (parent waits for child t
 
 </details>
 
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
