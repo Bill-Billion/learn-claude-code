@@ -3,7 +3,7 @@
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_compact/) → s09 → ... → s20
-> *"Load when needed, don't stuff the prompt"* — tool_result で注入、system prompt には詰め込まない。
+> *"Load when needed, don't stuff the prompt"* — `tool_result` で注入、system prompt には詰め込まない。
 >
 > **Harness レイヤー**: 知識 — 必要に応じて読み込み、コンテキストに詰め込まない。
 
@@ -11,7 +11,9 @@ s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_c
 
 ## 課題
 
-プロジェクトには React コンポーネント仕様、SQL スタイルガイド、API 設計ドキュメントがある。Agent にこれらの仕様を自動的に守らせたい。最も直接的な方法は、すべて system prompt に詰め込むこと：
+前章では Agent が大きなタスクをサブ Agent に渡せるようになった。だがサブ Agent が引き継ぐとき、そのタスクの決まりを知る必要がある：React コンポーネントを変更するなら component spec を、SQL を書くなら style guide を守る。その決まりはどこから来るのか？
+
+プロジェクトには React コンポーネント仕様、SQL スタイルガイド、API 設計ドキュメントがある。最も直接的な方法は、すべて system prompt に詰め込むこと：
 
 ```python
 SYSTEM = (
@@ -30,7 +32,9 @@ SYSTEM = (
 
 ![Skill Overview](images/skill-overview.svg)
 
-前章の最小フック構造、`todo_write`、サブ Agent を維持し、本章は新規の `load_skill` ツールに注目する。起動時にスキルカタログを SYSTEM prompt に注入し、実行時に完全な内容を読み込むツールを登録する。使ったときだけトークンを消費。
+折衷案は、ドキュメントを複数のファイルに分け、必要なものを Agent 自身に `read_file` させることだ。だが Agent はそもそもどんなファイルが読めるか分からない。「何があるか」を先に知らなければ、「どれを使うか」は選べない。
+
+そこで 2 層に分ける：**カタログは常駐、内容はオンデマンド。** 前章のフック構造、`todo_write`、サブ Agent はそのまま残し、本章で `load_skill` ツールを 1 つ加える。起動時にスキルのカタログ（名前 + 一言の説明）を SYSTEM prompt に入れる。毎ターン携帯するが軽い。実行時に Agent が実際にあるスキルを使うとき、`load_skill` を呼んで完全な内容を取り出す。トークンを使うのはそのときだけだ。
 
 2 層設計：
 
@@ -90,6 +94,8 @@ def build_system() -> str:
 SYSTEM = build_system()
 ```
 
+だが Agent は毎ターン、名前と一言の説明しか受け取らない。実際に SQL スタイルガイドを使うとなると、あの 1500 行の完全な内容にはまだ手が届かない。→ 第 2 層。
+
 **第 2 層：load_skill**：Agent が「SQL スタイルガイドが必要」と判断し、`load_skill("sql-style")` を呼び出す。レジストリを通じて検索し、ファイルパスを経由しないため、パストラバーサルのリスクがない。SKILL.md の内容は `tool_result` を通じて注入され、既存の file および bash ツールを通じて、参照される `references/`、`scripts/`、`assets/` へのその後のアクセスも含められる。
 
 ```python
@@ -100,7 +106,7 @@ def load_skill(name: str) -> str:
     return skill["content"]
 ```
 
-重要な違い：スキル内容は system prompt の一部ではなく、ツール結果として現在の messages に入る。後続の呼び出しでは履歴とともに携帯され、コンテキスト圧縮、切り捨て、またはセッション終了まで保持される。これは s08 の compact と自然に接続する：オンデマンド読み込みにより、無関係なドキュメントが system prompt に入らなくなる。compact が「捨てるべきものをどう捨てるか」を解決する。
+重要な違い：スキル内容は system prompt の一部ではなく、ツール結果として現在の `messages` に入る。後続の呼び出しでは履歴とともに携帯され、コンテキスト圧縮、切り捨て、またはセッション終了まで保持される。これは s08 の compact と自然に接続する：スキル内容は system prompt ではなく `tool_result` として `messages` に入り、compact が「捨てるべきものをどう捨てるか」を解決する。
 
 ---
 
@@ -135,7 +141,7 @@ python s07_skill_loading/code.py
 
 ## 次へ
 
-load_skill で起動時のトークン浪費は解消した。しかし別の問題が待っている：Agent が 30 分連続で作業すると、messages リストが中間プロセスで埋め尽くされる。古い tool_result、期限切れのファイル内容、コンテキストを占領しているが価値を生まない。
+load_skill で起動時のトークン浪費は解消した。しかし別の問題が待っている：Agent が 30 分連続で作業すると、`messages` リストが中間プロセスで埋め尽くされる。古い `tool_result`、期限切れのファイル内容、コンテキストを占領しているが価値を生まない。
 
 → s08 Context Compact：4 層圧縮戦略。安価な層を先に実行、高価な層を後に実行。
 
@@ -179,4 +185,4 @@ Claude Code の SKILL.md YAML frontmatter は `parseSkillFrontmatterFields()`（
 
 </details>
 
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

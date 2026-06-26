@@ -3,7 +3,7 @@
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_compact/) → s09 → ... → s20
-> *"Load when needed, don't stuff the prompt"* — Inject via tool_result, not system prompt.
+> *"Load when needed, don't stuff the prompt"* — Inject via `tool_result`, not system prompt.
 >
 > **Harness Layer**: Knowledge — load on demand, don't fill the context.
 
@@ -11,7 +11,9 @@ s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_c
 
 ## The Problem
 
-Your project has a React component spec, a SQL style guide, and an API design doc. You want the Agent to follow these specs automatically. The most straightforward idea: stuff them all into the system prompt:
+The last chapter let the Agent hand a big task off to a sub-Agent. But when the sub-Agent takes over, it needs to know the rules of that task: editing React components means following the component spec, writing SQL means following the style guide. Where do those rules come from?
+
+Your project has a React component spec, a SQL style guide, and an API design doc. The most straightforward idea: stuff them all into the system prompt:
 
 ```python
 SYSTEM = (
@@ -30,7 +32,9 @@ SYSTEM = (
 
 ![Skill Overview](images/skill-overview.svg)
 
-The minimal hook structure, `todo_write`, and sub-Agent from the previous chapter are preserved. This chapter focuses on the new `load_skill` tool. At startup, inject the skill catalog into the SYSTEM prompt; at runtime, register one more tool to load full content, spending tokens only when used.
+A middle-ground idea is to split the docs into separate files and let the Agent `read_file` whichever it needs. But the Agent has no idea which files exist to read; it has to know "what's there" before it can pick "which one to use".
+
+So split it into two levels: **catalog always resident, content on demand.** The hook structure, `todo_write`, and sub-Agent from the previous chapter stay; this chapter adds a `load_skill` tool. At startup, the skill catalog (name + one-line description) goes into the SYSTEM prompt, carried every turn but light; at runtime, when the Agent actually needs a skill, it calls `load_skill` to pull the full content, spending those tokens only then.
 
 Two-level design:
 
@@ -90,6 +94,8 @@ def build_system() -> str:
 SYSTEM = build_system()
 ```
 
+But every turn the Agent only gets the name and one-line description; to actually use the SQL style guide, those 1500 lines of full content are still out of reach. → Level 2.
+
 **Level 2: load_skill**: the Agent decides "I need the SQL style guide" and calls `load_skill("sql-style")`. Lookup goes through the registry, not file paths, eliminating path traversal risk. The SKILL.md content is injected via `tool_result`, and can include later access to referenced `references/`, `scripts/`, or `assets/` through the existing file and bash tools.
 
 ```python
@@ -100,7 +106,7 @@ def load_skill(name: str) -> str:
     return skill["content"]
 ```
 
-The key distinction: skill content is not part of the system prompt. It enters the current messages as a tool result. Subsequent calls carry it along with the history until context compaction, truncation, or session end. This naturally connects to s08's compact: on-demand loading keeps irrelevant docs out of the system prompt, compact solves "how to drop what you should."
+The key distinction: skill content is not part of the system prompt. It enters the current `messages` as a `tool_result`. Subsequent calls carry it along with the history until context compaction, truncation, or session end. This naturally connects to s08's compact: skill content enters `messages` as a `tool_result` rather than the system prompt, and compact solves "how to drop what you should."
 
 ---
 
@@ -135,7 +141,7 @@ What to watch for: Does the Agent know available skills from the SYSTEM catalog?
 
 ## What's Next
 
-load_skill eliminated the startup token waste. But another problem looms: after the Agent works for 30 minutes, the messages list fills up with intermediate process. Old tool_results, stale file contents, occupying context but adding no value.
+load_skill eliminated the startup token waste. But another problem looms: after the Agent works for 30 minutes, the `messages` list fills up with intermediate process. Old `tool_result`s, stale file contents, occupying context but adding no value.
 
 → s08 Context Compact: A four-layer compaction strategy. Cheap layers run first, expensive layers run last.
 
@@ -179,4 +185,4 @@ The complete field list changes across versions; above are the core fields relev
 
 </details>
 
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->
