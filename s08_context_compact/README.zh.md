@@ -3,21 +3,21 @@
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → s07 → `s08` → [s09](../s09_memory/) → s10 → ... → s20
-> *"上下文总会满, 要有办法腾地方"* — 四层压缩策略, 便宜的先跑贵的后跑。
+> *"上下文总会满, 要有办法腾地方"* — 四层压缩管线，便宜的先跑，贵的后跑。
 >
-> **Harness 层**: 压缩 — 上下文超限时自动摘要，保持会话可持续。
+> **Harness 层**：压缩 — 上下文接近上限时先整理、再摘要，让长任务能持续跑下去。
 
 ---
 
 ## 问题
 
-上一章给 Agent 加了 Skills，它开始有了一点"领域经验"：遇到 PDF、MCP、代码审查，会先加载对应的操作说明再动手。
+上一章给 Agent 加了 Skills。它开始有了一点"领域经验"：遇到 PDF、MCP server 或代码审查任务，会先加载对应的操作说明，再开始动手。
 
-但 Agent 越会做事，另一个问题越明显。它读一个 1000 行的文件就是 ~4000 token，又读了 30 个文件，跑了 20 条命令。每条命令的输出、每个文件的内容，都被塞回 `messages` 列表，一点点堆起来。
+但 Agent 越能干，另一个问题就越明显。它读一个 1000 行文件，可能就是约 4000 个 token；再读 30 个文件、跑 20 条命令，上下文很快就会被堆满。每条命令的输出、每个文件的内容，都被塞回 `messages` 列表，一点点堆起来。
 
-普通聊天几十轮不算什么。代码 Agent 不一样：一次读取就是几千行，一次测试就是一大段日志。任务还没做完，上下文窗口可能先满了。
+普通聊天聊几十轮，通常问题不大。但代码 Agent 不一样：一次读文件就是几千行，一次跑测试就是一大段日志。任务还没做完，上下文窗口可能先满了。
 
-满了之后，问题不是"模型答得差一点"，而是 API 直接拒绝：`prompt_too_long`。不压缩，Agent 根本没法在大项目里干活。
+上下文满了之后，问题不是"模型回答质量变差一点"，而是 API 会直接拒绝请求：`prompt_too_long`。不压缩，Agent 根本没法在大项目里干活。
 
 ---
 
@@ -25,11 +25,11 @@ s01 → s02 → s03 → s04 → s05 → s06 → s07 → `s08` → [s09](../s09_m
 
 ![Compact Overview](images/compact-overview.svg)
 
-保留 s07 的 hook 结构、技能加载、子 Agent 骨架，这一章只往里加一层：每次调用 LLM 之前，先整理 `messages`。
+s07 里的 hook 结构、技能加载、子 Agent 骨架都保留。s08 只加一层：每次调用 LLM 之前，先整理 `messages`。
 
-最直接的想法是满了就让模型总结一下。但这里有两个问题。一是总结要多花一次 API 调用，每次上下文变大就摘要，成本很快上去。二是并不是所有内容都值得总结：很多旧工具结果早就不需要了；有些内容只是大，比如一次 `cat` 出几百 KB 日志，它不需要被"理解"，只需要从上下文里挪走，必要时再读回来。
+最直觉的做法，是上下文快满时让模型总结一下。但这里有两个问题。一是总结要多花一次 API 调用，只要上下文变大就摘要，成本很快就会上去。二是并不是所有内容都值得总结：很多旧工具结果早就不需要了；有些内容只是大，比如一次 `cat` 出几百 KB 日志，它不一定需要被模型"理解"，更多时候只是需要先从上下文里挪出去，必要时再读回来。
 
-所以 compact 不是一个动作，是一条管线。**便宜的先跑，贵的后跑**：先做几步不调模型的本地整理，能裁的裁、能占位的占位、能落盘的落盘；只有这些都不够，才让 LLM 做一次真正的摘要。
+所以，上下文压缩（compact）不是一个单点动作，而是一条管线。**便宜的先跑，贵的后跑**：先做几步不调模型的本地整理，能裁掉的先裁掉，能占位的先占位，能落盘的先落盘；只有这些都不够，才让 LLM 做一次真正的摘要。
 
 ---
 
@@ -37,11 +37,11 @@ s01 → s02 → s03 → s04 → s05 → s06 → s07 → `s08` → [s09](../s09_m
 
 ![四层压缩管线](images/compaction-layers.svg)
 
-### L1: snip_compact — 裁掉无关的旧对话
+### L1: snip_compact — 裁掉中间的旧对话
 
-Agent 跑了 80 轮，`messages` 攒了 160 条。最前面那句"帮我创建 hello.py"和当前工作几乎无关了，但还占着位置。
+Agent 跑了 80 轮，`messages` 攒了 160 条。最开始那句"帮我创建 hello.py"，和当前工作几乎已经没关系了，但还在上下文里占着位置。
 
-消息数超过 50 条 → 保留头部 3 条（最初的任务、约束）和尾部 47 条（当前工作），中间裁掉。唯一要小心的边界：不能把 `assistant(tool_use)` 和后面的 `user(tool_result)` 拆开，否则模型会看到一个不知道对应哪次调用的孤立结果。
+当消息数超过 50 条时，保留头部 3 条（最初的任务和约束）以及尾部 47 条（当前工作），中间部分裁掉。唯一要小心的边界：不能把 `assistant(tool_use)` 和后面的 `user(tool_result)` 拆开，否则模型会看到一条凭空出现的 `tool_result`，却不知道它对应哪一次工具调用。
 
 ```python
 def snip_compact(messages, max_messages=50):
@@ -60,7 +60,7 @@ def snip_compact(messages, max_messages=50):
     return messages[:head_end] + [{"role": "user", "content": f"[snipped {snipped} messages]"}] + messages[tail_start:]
 ```
 
-裁掉的是消息本身，在切口处多做一步保护。但剩下的消息里，`tool_result` 内容仍在累积，第 34 条消息里可能还躺着 30KB 的旧文件内容。消息数少了，token 没少。→ L2。
+裁掉的是消息本身，在切口处多做一步保护。但剩下的消息里，`tool_result` 内容仍在累积，第 34 条消息里可能还躺着 30KB 的旧文件内容。消息数是少了，但 token 未必真的少。→ L2。
 
 ### L2: micro_compact — 旧工具结果占位
 
@@ -68,7 +68,7 @@ def snip_compact(messages, max_messages=50):
 
 最容易把上下文撑大的，往往不是对话本身，而是工具结果。Agent 连续读了 10 个文件，第 1 到第 7 个的完整内容早就不需要了，却还原样躺在上下文里。
 
-保留最近 3 条 `tool_result` 的完整内容，更早的换成一行占位符。想法很朴素：旧结果真要用，模型重新读一次就行，不该一直占着位置。
+保留最近 3 条 `tool_result` 的完整内容，更早的换成一行占位符。想法很朴素：旧结果如果真有用，模型可以重新读一次；它不应该一直占着上下文。
 
 ```python
 KEEP_RECENT = 3
@@ -82,15 +82,15 @@ def micro_compact(messages):
     return messages
 ```
 
-旧结果清掉了，但还挡不住一种情况：单条新结果就有 500KB，一次 `cat` 大文件的输出就能用满上下文，而它还很新，micro_compact 不会动它。→ L3。
+旧结果清掉了，但还挡不住一种情况：单条新结果就有 500KB，一次 `cat` 大文件的输出，就可能把上下文用满；但因为它是最新结果，`micro_compact` 不会处理它。→ L3。
 
 ### L3: tool_result_budget — 大结果落盘
 
 ![大结果落盘](images/layer1-budget.svg)
 
-有些结果不是"多"，是"单条太大"。模型一次读了 5 个大文件，最后一条 user 消息里的 `tool_result` 加起来超过 200KB，这时候只保留最近 3 条没用，因为最新的那条本身就能用满上下文。
+有些问题不是结果太多，而是单条结果太大。比如模型一次读了 5 个大文件，最后一条 user 消息里的 `tool_result` 加起来超过 200KB。此时只保留最近 3 条也没用，因为最新结果本身就可能用满上下文。
 
-给工具结果设一个预算。统计最后一条 user 消息里所有 `tool_result` 的总大小，超过 200KB 就从最大的开始落盘到 `.task_outputs/tool-results/`，上下文里只留一个 `<persisted-output>` 标记 + 前 2000 字符预览。模型看到标记就知道完整内容在磁盘上，需要时再读回来。
+给工具结果设一个预算。统计最后一条 user 消息里所有 `tool_result` 的总大小，超过 200KB 就从最大的开始落盘到 `.task_outputs/tool-results/`，上下文里只留下一个 `<persisted-output>` 标记，以及前 2000 个字符作为预览。模型看到这个标记就知道完整内容已经在磁盘上，后面需要时可以再读回来。
 
 ```python
 def tool_result_budget(messages, max_bytes=200_000):
@@ -108,15 +108,15 @@ def tool_result_budget(messages, max_bytes=200_000):
     return messages
 ```
 
-这一步重要的不是丢，是把内容从"活跃上下文"移到"可恢复的外部存储"。前三层到这就齐了：纯文本/结构操作，0 API 调用，各盯一种冗余。但它们都有同一个限制：读不懂对话在说什么，不知道哪些发现重要、哪些约束必须留。如果上下文还是太大，就只能让模型出手。→ L4。
+这一步的关键不是丢弃内容，而是把内容从"活跃上下文"移到"可恢复的外部存储"。前三层到这就齐了：纯文本或结构操作，0 API 调用，各自处理一种上下文膨胀。但它们有同一个限制：不理解对话内容，判断不了哪些发现重要、哪些约束必须留下。如果上下文还是太大，就只能让模型出手。→ L4。
 
 ### L4: compact_history — LLM 全量摘要
 
 ![LLM 全量摘要](images/auto-compact.svg)
 
-前三层全跑完，token 还是超阈值。这一步才是很多人直觉里的"上下文压缩"：把历史交给模型，摘成一段更短的状态。
+前三层全跑完，token 还是超阈值。这一步才是很多人直觉里的"上下文压缩"：把历史交给模型，压成一段更短的状态。
 
-三步：先把完整对话写进 `.transcripts/`（JSONL），活跃上下文里只剩摘要，但磁盘上留着完整记录；再让 LLM 生成摘要，要求保留当前目标、重要发现、已改文件、剩余工作、用户约束；最后用这一条摘要替换掉所有旧消息。
+三步：先把完整对话写进 `.transcripts/`（JSONL），这样活跃上下文里只保留摘要，但磁盘上仍然保存完整记录；再让 LLM 生成摘要，要求保留当前目标、重要发现、已改文件、剩余工作、用户约束；最后用这一条摘要替换掉所有旧消息。
 
 ```python
 def compact_history(messages):
@@ -125,13 +125,13 @@ def compact_history(messages):
     return [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
 ```
 
-这一步是有损的：transcript 里有完整历史，但模型当下看不到那些细节了，只能靠摘要继续。所以前面才要先跑 L1/L2/L3：能不让模型总结就不总结，因为一旦进摘要，细节就不可避免地丢。教学版还加了个熔断器：连续 compact 失败 3 次就停，不无限重试浪费 API。
+这一步是有损的：transcript 里有完整历史，但模型当下看不到那些细节了，只能靠摘要继续。所以前面才要先跑 L1/L2/L3：能不让模型总结就不总结，因为一旦进入摘要，细节就不可避免会丢失。教学版还加了个熔断器：连续 compact 失败 3 次就停，避免无限重试浪费 API。
 
-### 应急: reactive_compact
+### 应急：reactive_compact
 
-正常情况下，我们在调用模型之前就把上下文整理好。但上下文增长太快、或 token 估算不准时，API 还是可能返回 `prompt_too_long`。
+正常情况下，我们在调用模型之前就把上下文整理好。但如果上下文增长太快、或 token 估算不准，API 还是可能返回 `prompt_too_long`。
 
-这时走 reactive_compact：和 compact_history 很像，但更激进：先存 transcript，对前面大半段生成摘要，只保留最后 5 条作尾部上下文（同样避免留下孤立 `tool_result`）。
+这时就走 `reactive_compact`，它和 `compact_history` 很像，但更激进：先保存 transcript，再把前面大半段压成摘要，只保留最后 5 条作为尾部上下文（同样避免留下孤立 `tool_result`）。
 
 ```python
 def reactive_compact(messages):
@@ -145,11 +145,11 @@ def reactive_compact(messages):
     return [{"role": "user", "content": f"[Reactive compact]\n\n{summary}"}, *messages[tail_start:]]
 ```
 
-reactive 是兜底路径，不是常规路径，默认只重试 1 次，再失败就抛异常，不无限循环。完整的错误恢复逻辑留给 s11。
+reactive 是兜底路径，不是常规路径，默认只重试 1 次；如果再次失败，就抛出异常，避免无限循环。完整的错误恢复逻辑留给 s11。
 
 ### 合起来跑
 
-把这些挂回 Agent Loop：每轮调用 LLM 之前，先跑三层本地整理，不够再摘要；调用真报错了，再走应急。
+把这些机制接回 Agent Loop：每轮调用 LLM 之前，先跑三层本地整理；如果还不够，再做摘要；如果调用时真的报错，再走应急路径。
 
 ```python
 def agent_loop(messages):
@@ -174,11 +174,11 @@ def agent_loop(messages):
         # ... 工具执行 ...
 ```
 
-**顺序不能换。** L3（budget）必须在 L2（micro）前面：micro 会把旧的大 `tool_result` 换成一行占位符，要是它先跑，budget 就没机会把完整内容落盘了。先 budget 把大内容存好，再做占位和裁剪。这也是 Claude Code 源码把 `applyToolResultBudget` 放在最前面的原因。
+**顺序不能换。** L3（budget）必须在 L2（micro）前面，`micro_compact` 会把旧的大 `tool_result` 替换成一行占位符。如果它先跑，`tool_result_budget` 就拿不到完整内容，也就没机会把它落盘。先 budget 把大内容存好，再做占位和裁剪。这也是 Claude Code 源码中 `applyToolResultBudget` 要放在最前面的原因。
 
 ### compact 工具：让模型也能主动请求
 
-除了自动压缩，模型自己也能要求整理：当它觉得上下文太长、或任务阶段切换了，可以主动调 `compact` 工具。在教学版里，这个工具触发 `compact_history`，然后结束当前 turn，用压缩后的上下文重新开一轮。和手动 `/compact` 的感觉很像，区别是这次是模型自己意识到要整理。
+除了自动压缩，模型自己也能要求整理，当模型觉得上下文太长，或者任务已经切到新阶段时，可以主动调用 `compact` 工具。在教学版里，这个工具触发 `compact_history`，然后结束当前 turn，用压缩后的上下文重新开始下一轮。和手动 `/compact` 的感觉很像，区别在于，这次是模型自己意识到该整理上下文了。
 
 ---
 
@@ -190,9 +190,9 @@ def agent_loop(messages):
 | 新函数 | — | snip_compact, micro_compact, tool_result_budget, compact_history, reactive_compact |
 | 工具 | bash, read, write, edit, glob, todo_write, task, load_skill (8) | 8 + compact (9) |
 | 循环 | LLM 调用 → 工具执行 | 每轮前跑三层预处理器 + 阈值触发 compact_history |
-| 设计原则 | 让 Agent 会做事 | 让 Agent 做久一点也不崩 |
+| 设计原则 | 让 Agent 会做事 | 让 Agent 运行久一点也不崩 |
 
-这一步不算给 Agent 加"能力"，更像加"体力"：s07 让它更会做专业任务，s08 让它在长任务里不被自己的历史拖垮。
+这一步不算是在给 Agent 加"能力"，更像是在加"体力"。s07 让它更会做专业任务，s08 让它在长任务里不被自己的历史拖垮。
 
 ---
 
