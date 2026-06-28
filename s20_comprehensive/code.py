@@ -288,16 +288,27 @@ SKILL_REGISTRY: dict[str, dict] = {}
 
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    if not text.startswith("---"):
+    """Parse YAML frontmatter from SKILL.md. Returns (meta, body)."""
+    if not (text.startswith("---\n") or text.startswith("---\r\n")):
         return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+
+    lines = text.splitlines(keepends=True)
+    closing_index = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            closing_index = index
+            break
+    if closing_index is None:
         return {}, text
+
+    frontmatter = "".join(lines[1:closing_index])
+    body = "".join(lines[closing_index + 1 :]).strip()
     try:
-        meta = yaml.safe_load(parts[1]) or {}
+        loaded = yaml.safe_load(frontmatter) or {}
     except yaml.YAMLError:
-        meta = {}
-    return meta, parts[2].strip()
+        loaded = {}
+    meta = loaded if isinstance(loaded, dict) else {}
+    return meta, body
 
 
 def scan_skills():
@@ -311,9 +322,9 @@ def scan_skills():
         if not manifest.exists():
             continue
         raw = manifest.read_text()
-        meta, _ = _parse_frontmatter(raw)
-        name = meta.get("name", directory.name)
-        desc = meta.get("description", raw.split("\n")[0].lstrip("#").strip())
+        meta, body = _parse_frontmatter(raw)
+        name = meta.get("name") or directory.name
+        desc = meta.get("description") or body.split("\n", 1)[0].lstrip("#").strip()
         SKILL_REGISTRY[name] = {
             "name": name,
             "description": desc,

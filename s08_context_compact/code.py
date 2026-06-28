@@ -29,11 +29,12 @@ Execution order matches CC source: budget → snip → micro → auto.
 Builds on s07 (skill loading). Usage:
 
     python s08_context_compact/code.py
-    Needs: pip install anthropic python-dotenv + ANTHROPIC_API_KEY in .env
+    Needs: pip install anthropic python-dotenv pyyaml + ANTHROPIC_API_KEY in .env
 """
 
 import ast, json, os, subprocess, time
 from pathlib import Path
+import yaml
 
 try:
     import readline
@@ -57,17 +58,27 @@ CURRENT_TODOS: list[dict] = []
 
 # s07: Skill catalog scan (inherited from s07)
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    if not text.startswith("---"):
+    """Parse YAML frontmatter from SKILL.md. Returns (meta, body)."""
+    if not (text.startswith("---\n") or text.startswith("---\r\n")):
         return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
+
+    lines = text.splitlines(keepends=True)
+    closing_index = None
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            closing_index = index
+            break
+    if closing_index is None:
         return {}, text
-    meta = {}
-    for line in parts[1].strip().splitlines():
-        if ":" in line:
-            k, v = line.split(":", 1)
-            meta[k.strip()] = v.strip().strip('"').strip("'")
-    return meta, parts[2].strip()
+
+    frontmatter = "".join(lines[1:closing_index])
+    body = "".join(lines[closing_index + 1 :]).strip()
+    try:
+        loaded = yaml.safe_load(frontmatter) or {}
+    except yaml.YAMLError:
+        loaded = {}
+    meta = loaded if isinstance(loaded, dict) else {}
+    return meta, body
 
 SKILL_REGISTRY: dict[str, dict] = {}
 
@@ -81,8 +92,8 @@ def _scan_skills():
         if manifest.exists():
             raw = manifest.read_text()
             meta, body = _parse_frontmatter(raw)
-            name = meta.get("name", d.name)
-            desc = meta.get("description", raw.split("\n")[0].lstrip("#").strip())
+            name = meta.get("name") or d.name
+            desc = meta.get("description") or body.split("\n", 1)[0].lstrip("#").strip()
             SKILL_REGISTRY[name] = {"name": name, "description": desc, "content": raw}
 
 _scan_skills()
