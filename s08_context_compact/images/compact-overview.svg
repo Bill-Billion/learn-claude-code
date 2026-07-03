@@ -36,21 +36,21 @@
 
   <!-- L3 box -->
   <rect x="206" y="134" width="258" height="30" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
-  <text x="335" y="154" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">L3 tool_result_budget</text>
+  <text x="335" y="154" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">Step 1: tool_result_budget</text>
 
   <!-- down arrow L3 → L1 -->
   <line x1="335" y1="164" x2="335" y2="172" stroke="#22c55e" stroke-width="2"/>
 
   <!-- L1 box -->
   <rect x="206" y="172" width="258" height="30" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
-  <text x="335" y="192" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">L1 snip_compact</text>
+  <text x="335" y="192" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">Step 2: snip_compact</text>
 
   <!-- down arrow L1 → L2 -->
   <line x1="335" y1="202" x2="335" y2="210" stroke="#22c55e" stroke-width="2"/>
 
   <!-- L2 box -->
   <rect x="206" y="210" width="258" height="30" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
-  <text x="335" y="230" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">L2 micro_compact</text>
+  <text x="335" y="230" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">Step 3: micro_compact</text>
 
   <!-- connector L2 → decision -->
   <line x1="335" y1="240" x2="335" y2="262" stroke="#22c55e" stroke-width="2"/>
@@ -74,7 +74,7 @@
 
   <!-- L4 box -->
   <rect x="206" y="366" width="258" height="30" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
-  <text x="335" y="386" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">L4 compact_history</text>
+  <text x="335" y="386" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle" font-family="monospace">Step 4: compact_history</text>
 
   <!-- L4 exit arrow right -->
   <line x1="464" y1="381" x2="480" y2="381" stroke="#22c55e" stroke-width="2"/>

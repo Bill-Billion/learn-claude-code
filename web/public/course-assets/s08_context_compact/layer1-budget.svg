@@ -12,7 +12,7 @@
   <rect width="760" height="460" fill="#ffffff" rx="8"/>
 
   <!-- Title -->
-  <text x="380" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">L3: toolResultBudget</text>
+  <text x="380" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Step 1: tool_result_budget</text>
   <text x="380" y="50" fill="#888888" font-size="12" text-anchor="middle">Persist Large Results to Disk</text>
 
   <!-- Problem box -->

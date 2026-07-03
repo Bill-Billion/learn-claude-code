@@ -12,17 +12,17 @@
   <rect width="780" height="540" fill="#ffffff" rx="8"/>
 
   <!-- Title -->
-  <text x="390" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">L4: compact_history</text>
-  <text x="390" y="50" fill="#888888" font-size="12" text-anchor="middle">Full LLM Summary — when L1-L3 are exhausted and tokens still exceed threshold</text>
+  <text x="390" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Step 4: compact_history</text>
+  <text x="390" y="50" fill="#888888" font-size="12" text-anchor="middle">Full LLM Summary — after steps 1-3, when size still exceeds the limit</text>
 
   <!-- Trigger Condition Box (dashed = mutable/accumulating) -->
   <rect x="24" y="66" width="732" height="48" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
   <text x="40" y="86" fill="#1a1a1a" font-size="13" font-weight="700">Trigger Condition</text>
-  <text x="40" y="102" fill="#888888" font-size="11">L1-L3 pre-processing complete; estimated tokens &gt; contextWindow - maxOutputTokens - 13,000</text>
+  <text x="40" y="102" fill="#888888" font-size="11">Steps 1-3 complete; estimate_size(messages) &gt; CONTEXT_LIMIT (real Claude Code: contextWindow - maxOutputTokens - 13,000)</text>
 
   <!-- ===== Step 1 ===== -->
   <rect x="24" y="134" width="224" height="140" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
-  <text x="136" y="158" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Step 1</text>
+  <text x="136" y="158" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Step 4a</text>
   <text x="136" y="176" fill="#22c55e" font-size="12" font-weight="600" text-anchor="middle">Save Transcript</text>
   <line x1="40" y1="186" x2="232" y2="186" stroke="#d0d0d0" stroke-width="1"/>
   <text x="40" y="204" fill="#888888" font-size="11">Full conversation written to</text>
@@ -38,14 +38,14 @@
 
   <!-- ===== Step 2 ===== -->
   <rect x="294" y="134" width="224" height="140" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
-  <text x="406" y="158" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Step 2</text>
+  <text x="406" y="158" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Step 4b</text>
   <text x="406" y="176" fill="#22c55e" font-size="12" font-weight="600" text-anchor="middle">LLM Generates Summary</text>
   <line x1="310" y1="186" x2="502" y2="186" stroke="#d0d0d0" stroke-width="1"/>
   <text x="310" y="204" fill="#888888" font-size="11">Send history to LLM</text>
   <text x="310" y="220" fill="#888888" font-size="10">Summary must include:</text>
-  <text x="310" y="234" fill="#888888" font-size="10">goals, concepts, files, errors,</text>
-  <text x="310" y="248" fill="#888888" font-size="10">resolutions, user msgs, TODOs,</text>
-  <text x="310" y="262" fill="#888888" font-size="10">current state, next steps</text>
+  <text x="310" y="234" fill="#888888" font-size="10">current goal, key findings/decisions,</text>
+  <text x="310" y="248" fill="#888888" font-size="10">files read/changed, remaining work,</text>
+  <text x="310" y="262" fill="#888888" font-size="10">user constraints</text>
 
   <!-- Arrow Step 2 → Step 3 -->
   <circle cx="522" cy="204" r="3" fill="#22c55e"/>
@@ -53,13 +53,13 @@
 
   <!-- ===== Step 3 ===== -->
   <rect x="564" y="134" width="192" height="140" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
-  <text x="660" y="158" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Step 3</text>
+  <text x="660" y="158" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Step 4c</text>
   <text x="660" y="176" fill="#22c55e" font-size="12" font-weight="600" text-anchor="middle">Replace Messages</text>
   <line x1="580" y1="186" x2="740" y2="186" stroke="#d0d0d0" stroke-width="1"/>
   <text x="580" y="204" fill="#888888" font-size="11">All old msgs replaced</text>
   <text x="580" y="220" fill="#888888" font-size="11">with 1 summary message</text>
-  <text x="580" y="240" fill="#888888" font-size="10">Attaches recently_read</text>
-  <text x="580" y="254" fill="#888888" font-size="10">file list for re-access</text>
+  <text x="580" y="240" fill="#888888" font-size="10">Context now holds only</text>
+  <text x="580" y="254" fill="#888888" font-size="10">this one summary message</text>
 
   <!-- ===== Before / After Comparison ===== -->
 

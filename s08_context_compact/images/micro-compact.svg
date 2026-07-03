@@ -9,7 +9,7 @@
   <rect width="780" height="400" fill="#ffffff"/>
 
   <!-- Title -->
-  <text x="390" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">L2: micro_compact</text>
+  <text x="390" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Step 3: micro_compact</text>
   <text x="390" y="50" fill="#888888" font-size="12" text-anchor="middle">Replace old tool_result with one-line placeholder</text>
 
   <!-- Problem box -->
@@ -46,9 +46,9 @@
 
   <!-- After terminal mockup -->
   <rect x="432" y="154" width="312" height="100" rx="4" fill="#2d2d2d"/>
-  <text x="444" y="174" fill="#888888" font-size="10" font-family="monospace">[Compacted. Re-run if needed.]</text>
-  <text x="444" y="192" fill="#888888" font-size="10" font-family="monospace">[Compacted. Re-run if needed.]</text>
-  <text x="444" y="210" fill="#888888" font-size="10" font-family="monospace">[Compacted. Re-run if needed.]</text>
+  <text x="444" y="174" fill="#888888" font-size="9" font-family="monospace">[Earlier tool result compacted. Re-run if needed.]</text>
+  <text x="444" y="192" fill="#888888" font-size="9" font-family="monospace">[Earlier tool result compacted. Re-run if needed.]</text>
+  <text x="444" y="210" fill="#888888" font-size="9" font-family="monospace">[Earlier tool result compacted. Re-run if needed.]</text>
   <text x="444" y="228" fill="#888888" font-size="10" font-family="monospace">... 4 more compacted ...</text>
   <text x="444" y="246" fill="#22c55e" font-size="11" font-family="monospace">Read J: (full content, 2800 chars)</text>
 
@@ -60,7 +60,7 @@
   <text x="40" y="328" fill="#1a1a1a" font-size="12" font-weight="700">How it works</text>
   <text x="148" y="328" fill="#888888" font-size="11">Iterate tool_result blocks; keep most recent 3 intact, replace older ones with placeholder.</text>
   <text x="40" y="350" fill="#1a1a1a" font-size="12" font-weight="700">Scope</text>
-  <text x="148" y="350" fill="#888888" font-size="11">Applies to COMPACTABLE_TOOLS: Read, Bash, Grep, Glob, WebSearch, WebFetch, Edit, Write.</text>
+  <text x="148" y="350" fill="#888888" font-size="11">All tool_result blocks over 120 chars (real Claude Code limits this to a tool whitelist).</text>
   <text x="40" y="372" fill="#1a1a1a" font-size="12" font-weight="700">Cost</text>
   <text x="148" y="372" fill="#888888" font-size="11">0 API calls. Pure text replacement. If model needs old content, re-run the tool.</text>
 </svg>
