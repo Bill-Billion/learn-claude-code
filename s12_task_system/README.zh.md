@@ -10,43 +10,33 @@ s01 → ... → s10 → s11 → `s12` → [s13](../s13_background_tasks/) → s1
 
 ---
 
-## 问题
+给 Agent 一个项目级的活：搭数据库、写 API、加测试。它用 s05 的 TodoWrite 列了张清单，然后按顺序开工：写 API 写到一半发现表还没建，回头补表；补完表加测试，发现 API 的接口签名又变了。
 
-Agent 接到一个项目：搭数据库、写 API、加测试。它用 s05 的 TodoWrite 列了一张清单，然后开始写 API，写到一半发现没数据库表，回头补；加测试时发现 API 接口签名又变了...
+问题不在清单列得不好，在清单这个数据结构本身：平铺的列表表达不了"先有 schema 才能写 API"。任务之间的关系是图，不是序列。盖房子的工序表上，"上梁"后面必须拴着"先立柱"，光把它排在第三行是不够的。
 
-盖房子不能先盖屋顶再打地基。任务之间有先后。任务依赖应该形成有向无环图（DAG）；教学版只演示 `blockedBy` 检查，没有实现环检测。
-
-s05 的 TodoWrite 是当前任务的执行清单，保存在会话内存中。这里需要的是**任务系统**：每个任务是一个 JSON 文件，任务之间有 `blockedBy` 依赖，跨会话持久化在磁盘上。
-
----
-
-## 解决方案
+还有一个更朴素的问题：s05 的清单住在进程内存里，`q` 一按就蒸发。项目级的活干到一半下班，明天的 Agent 应该能接着干。
 
 ![Task System Overview](images/task-system-overview.svg)
 
-教学代码保留基础 agent loop，为聚焦任务系统省略了 S11 的完整错误恢复（RecoveryState、退避、升级、reactive compact、fallback model）。新增 5 个任务工具 + `.tasks/` 目录持久化 + `blockedBy` 依赖检查。任务系统与错误恢复是独立层：Claude Code 源码中 `utils/tasks.ts` 只管 CRUD，`query.ts` 的 with_retry/RecoveryState 管错误恢复，互不耦合。
+---
 
-TodoWrite vs Task System：
+## TodoWrite 缺的三样东西
 
 | | TodoWrite (s05) | Task System (s12) |
 |---|---|---|
 | 定位 | 当前任务的执行清单 | 可恢复的任务系统 |
-| 存储 | 进程内 / 会话状态 | `.tasks/{id}.json` |
-| 依赖 | 无 | `blockedBy` / `blocks` 依赖图 |
-| 生命周期 | 当前会话 / 当前任务 | 跨会话保留 |
-| 分工 | 不负责任务认领 | `owner` / claim |
-| 状态 | pending / in_progress / completed | pending / in_progress / completed |
-| 粒度 | Agent 自己的步骤 | 可被认领、追踪、解锁的任务 |
+| 存储 | 进程内存 | `.tasks/{id}.json` 文件 |
+| 依赖 | 无 | `blockedBy` 依赖图 |
+| 生命周期 | 当前会话 | 跨会话保留 |
+| 归属 | 无 | `owner` 字段 + 认领机制 |
+
+一句话分工：**清单管步骤，任务系统管协作。** 依赖让任务有了先后约束，持久化让进度扛得住重启，归属让"谁在干什么"有了答案。第三样现在看着多余（只有一个 Agent），s15 多 Agent 上场时它就是防止两个人抢同一个活的关键。
+
+本章教学代码为聚焦任务系统，退回了基础循环（s11 的错误恢复未带入）。这不是取舍冲突：任务 CRUD 和错误恢复本来就是两个独立的层，真实系统里自然叠加。
 
 ---
 
-## 工作原理
-
-![Task DAG](images/task-dag.svg)
-
-### Task: 数据结构
-
-每个任务是一个 JSON 文件，存于 `.tasks/` 目录：
+## 存储：一个任务一个 JSON 文件
 
 ```python
 @dataclass
@@ -55,136 +45,90 @@ class Task:
     subject: str
     description: str
     status: str          # pending | in_progress | completed
-    owner: str | None    # Agent 名（多 Agent 场景）
-    blockedBy: list[str] # 依赖的任务 ID 列表
+    owner: str | None    # 谁认领了它（多 Agent 场景）
+    blockedBy: list[str] # 上游依赖的任务 ID
+
+def save_task(task: Task):
+    (TASKS_DIR / f"{task.id}.json").write_text(json.dumps(asdict(task), indent=2))
 ```
 
-ID 用 `timestamp + random hex` 生成，简单但够用。Claude Code 用顺序 ID + highwatermark 文件防止 ID 重用，是更严谨的设计。
+为什么一个任务一个文件，而不是一个大 JSON 存全部？为并发留的地基：将来多个 Agent 同时干活，各自更新各自认领的任务，改的是不同文件，冲突面最小。这个决定的分量，要到 s15 才完全显出来。
 
-### create_task: 创建任务
+创建任务时声明依赖：
 
 ```python
-def create_task(subject: str, description: str = "",
-                blockedBy: list[str] | None = None) -> Task:
-    task = Task(
-        id=f"task_{int(time.time())}_{random_hex(4)}",
-        subject=subject, description=description,
-        status="pending", owner=None,
-        blockedBy=blockedBy or [],
-    )
+def create_task(subject, description="", blockedBy=None) -> Task:
+    task = Task(id=f"task_{int(time.time())}_{random.randint(0, 9999):04d}",
+                subject=subject, description=description,
+                status="pending", owner=None, blockedBy=blockedBy or [])
     save_task(task)
     return task
 ```
 
-创建时自动 `save_task` 到 `.tasks/{id}.json`。`blockedBy` 声明依赖，比如 "写 API" 的 `blockedBy` 是 `["task_schema"]`。
+---
 
-### can_start: 依赖检查
-
-一个任务只能在它的 `blockedBy` **全部 completed** 之后才能开始：
+## 依赖检查：上游全部完成才能开工
 
 ```python
 def can_start(task_id: str) -> bool:
     task = load_task(task_id)
     for dep_id in task.blockedBy:
         if not _task_path(dep_id).exists():
-            return False  # missing dependency = blocked
-        dep = load_task(dep_id)
-        if dep.status != "completed":
+            return False          # 依赖不存在，视为被阻塞
+        if load_task(dep_id).status != "completed":
             return False
     return True
 ```
 
-`can_start` 是 `claim_task` 的前置检查：`blockedBy` 里有任何一个不是 completed，就不能认领。不存在的依赖视为 blocked，避免引用错误 ID 时崩溃。
+注意"依赖不存在"这个分支。模型是会写错 ID 的（s05 讲过：工具参数来自模型，不可全信）。写错的 ID 如果直接 `load_task` 会崩，静默放行则更糟——依赖检查形同虚设。视为被阻塞是最稳的防御：任务动不了，但模型会在"Blocked by"的报错里看到那个怪 ID，自己纠正。
 
-### claim_task: 认领任务
+---
 
-Agent 开始做一个任务时，调用 `claim_task`：设置 `owner`，状态从 `pending` → `in_progress`。`owner` 字段记录谁在做这个任务，多 Agent 场景下防止重复认领：
-
-```python
-def claim_task(task_id: str, owner: str = "agent") -> str:
-    task = load_task(task_id)
-    if task.status != "pending":
-        return f"Task {task_id} is {task.status}, cannot claim"
-    if not can_start(task_id):
-        deps = [d for d in task.blockedBy
-                if load_task(d).status != "completed"]
-        return f"Blocked by: {deps}"
-    task.owner = owner
-    task.status = "in_progress"
-    save_task(task)
-    return f"Claimed {task_id} ({task.subject})"
-```
-
-如果任务已被别人认领（`status != "pending"`），或者依赖没完成（`can_start` 返回 False），拒绝认领。
-
-### complete_task: 完成与解锁
-
-任务做完后，设为 `completed`。同时扫描所有其他任务，找出**刚刚被解锁**的下游任务：
-
-```python
-def complete_task(task_id: str) -> str:
-    task = load_task(task_id)
-    task.status = "completed"
-    save_task(task)
-    # 找出被解锁的下游任务
-    unblocked = [t.subject for t in list_tasks()
-                 if t.status == "pending" and t.blockedBy
-                 and can_start(t.id)]
-    msg = f"Completed {task_id} ({task.subject})"
-    if unblocked:
-        msg += f"\nUnblocked: {', '.join(unblocked)}"
-    return msg
-```
-
-完成 "schema" 后，"endpoints" 和 "docs" 的 `can_start` 返回 True，它们可以开始。
-
-### get_task: 查看完整细节
-
-`list_tasks` 只显示一行摘要。`get_task` 返回完整的任务 JSON，包括 description 和依赖细节。跨会话恢复时，Agent 需要读取完整描述才能继续工作：
-
-```python
-def get_task(task_id: str) -> str:
-    task = load_task(task_id)
-    return json.dumps(asdict(task), indent=2)
-```
-
-### 状态机: 两个动作，三个状态
+## 认领与完成：两个动作，三个状态
 
 ```
 pending ──claim──→ in_progress ──complete──→ completed
 ```
 
-这里的 `claim` / `complete` 是动作，`pending` / `in_progress` / `completed` 是状态：
-
-- **claim_task**: `pending` → `in_progress`。设置 owner，开始工作。
-- **complete_task**: `in_progress` → `completed`。把任务标记为完成，并解锁下游。
-
-Claude Code 没有 `in_progress → pending` 的 release 路径。如果 teammate 终止或 shutdown，Claude Code 会把它未完成的任务 unassign（清除 owner），并将 status 重置为 `pending`，方便其他 agent 重新认领。教学版省略了这一恢复路径。
-
-### 合起来跑
-
 ```python
-# 创建有依赖的任务
-schema = create_task("setup database schema")
-endpoints = create_task("create API endpoints", blockedBy=[schema.id])
-tests = create_task("write tests", blockedBy=[endpoints.id])
-docs = create_task("write docs", blockedBy=[schema.id])
-
-# Agent 认领第一个可做的任务
-claim_task(schema.id)       # ✓ Claimed (无依赖)
-complete_task(schema.id)    # ✓ Completed → 解锁 endpoints, docs
-
-claim_task(endpoints.id)    # ✓ Claimed (schema 已完成)
-complete_task(endpoints.id) # ✓ Completed → 解锁 tests
-
-claim_task(docs.id)         # ✓ Claimed (schema 已完成)
-complete_task(docs.id)      # ✓ Completed
-
-claim_task(tests.id)        # ✓ Claimed (endpoints 已完成)
-complete_task(tests.id)     # ✓ Completed
+def claim_task(task_id: str, owner: str = "agent") -> str:
+    task = load_task(task_id)
+    if task.status != "pending":
+        return f"Task {task_id} is {task.status}, cannot claim"   # 已被认领或已完成
+    if not can_start(task_id):
+        return f"Blocked by: {...}"                               # 上游没完
+    task.owner = owner
+    task.status = "in_progress"
+    save_task(task)
 ```
 
-每个 `create_task` 写一个 JSON 文件，每个 `claim_task` / `complete_task` 更新文件。跨会话时，`.tasks/` 目录还在，Agent 读文件就能恢复进度。
+认领被拒的两种情况直接回给模型当 `tool_result`：状态不对，或者上游未完。模型收到"Blocked by: [task_xxx]"就知道该先去干哪个，调度逻辑不用写在 harness 里，报错信息本身就在引导。
+
+完成任务时多做一件事，扫一遍全部任务，把刚被解锁的播报出来：
+
+```python
+def complete_task(task_id: str) -> str:
+    task = load_task(task_id)
+    if task.status != "in_progress":
+        return f"Task {task_id} is {task.status}, cannot complete"
+    task.status = "completed"
+    save_task(task)
+    unblocked = [t.subject for t in list_tasks()
+                 if t.status == "pending" and t.blockedBy and can_start(t.id)]
+    ...   # "Unblocked: create API endpoints, write docs"
+```
+
+这一句播报是图结构的回报：完成 schema 的瞬间，模型立刻知道 endpoints 和 docs 都能动了，不用自己反复轮询。
+
+---
+
+## 教学版刻意留下的两个洞
+
+**没有环检测。** 两个任务互相 `blockedBy`，`can_start` 对谁都返回 False，谁也认领不了，这就是死锁。教学版不检测，正好留给你在实验里亲手造一个（见下）。生产系统必须在创建依赖时验证无环。
+
+**没有 release 回退。** 状态机里没有 `in_progress → pending` 这条边。认领了任务的 Agent 如果进程崩了，任务就永远卡在 `in_progress`，谁也接不了手，只能手动删 JSON。真实的 Claude Code 在 teammate 终止时会把它名下的任务清除 owner、重置回 `pending`，让别人重新认领。
+
+> 真实 Claude Code：`claimTask` 用文件锁防竞争（锁内重读任务防 TOCTOU，检查 already_claimed / blocked 后才设 owner），ID 用递增整数加 `.highwatermark` 文件保证删除后不重用，依赖关系由 `TaskUpdate` 的 `addBlocks/addBlockedBy` 维护而非创建时声明。教学版的五个函数对应它的四个工具，结构同源。
 
 ---
 
@@ -192,11 +136,10 @@ complete_task(tests.id)     # ✓ Completed
 
 | 组件 | 之前 (s11) | 之后 (s12) |
 |------|-----------|-----------|
-| 任务管理 | 无 | Task dataclass + 5 个工具 |
-| 新类型 | — | Task（id, subject, description, status, owner, blockedBy） |
+| 任务管理 | 无 | `Task` dataclass + 5 个工具 |
 | 存储 | 无持久化 | `.tasks/{id}.json` 跨会话 |
 | 依赖 | 无 | `blockedBy` 图 + `can_start` 检查 |
-| 工具 | bash, read_file, write_file (3) | + create_task, list_tasks, get_task, claim_task, complete_task (8) |
+| 工具 | bash, read_file, write_file (3) | +create_task, list_tasks, get_task, claim_task, complete_task (8) |
 | 生命周期 | — | pending → in_progress → completed（无 release 回退） |
 
 ---
@@ -208,75 +151,17 @@ cd learn-claude-code
 python s12_task_system/code.py
 ```
 
-试试这些 prompt：
-
-1. `Create tasks: setup database schema, create API endpoints (depends on schema), write tests (depends on endpoints), write docs (depends on schema)`
-2. `List all tasks and their statuses`
-3. `Claim the first unblocked task and complete it`
-4. `List tasks again — which ones are now unblocked?`
-
-观察重点：`.tasks/` 目录下是否生成了 JSON 文件？完成任务后，被阻塞的任务是否解锁？
+1. `Create tasks: setup database schema, create API endpoints (depends on schema), write tests (depends on endpoints), write docs (depends on schema)`：翻开 `.tasks/` 目录，四个 JSON 文件躺在那里，`blockedBy` 字段如实记录着依赖；
+2. `Claim and complete the first unblocked task`：完成 schema 时看 `[unblocked]` 播报，endpoints 和 docs 同时解锁；
+3. 按 `q` 退出，**重新运行**，输入 `List all tasks`：清单原样恢复，做完的还是做完的。这是 s05 的内存清单做不到的事；
+4. **亲手造一个死锁**：`Create task A blocked by task B, and task B blocked by task A. Then try to claim either one.`：两边都返回 `Blocked by`，谁也动不了。这就是没有环检测的代价，记住这个手感，将来设计任务系统时你会想起它。
 
 ---
 
 ## 接下来
 
-任务图有了。但有些任务要跑很久——比如全量测试、部署到服务器。Agent 调 LLM 按量计费，不能干等一个慢操作。
+任务图有了，但每个任务还是主 Agent 亲自跑、跑完才能干下一件。有些活天生就慢：全量测试十分钟，构建部署半小时。让一个按 token 计费的循环干等一个慢命令，钱和时间都烧在等待上。
 
-s13 Background Tasks → 慢操作放后台。Agent 继续处理其他任务，后台跑完了通知它。
+s13 Background Tasks → 慢操作放后台跑，Agent 继续干别的，跑完了再回来收结果。
 
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-> 以下基于 Claude Code 源码 `utils/tasks.ts`（862 行）、`tools/TaskCreateTool/TaskCreateTool.ts`（138 行）、`tools/TaskUpdateTool/TaskUpdateTool.ts`（406 行）、`tools/TaskGetTool/TaskGetTool.ts`（128 行）、`tools/TaskListTool/TaskListTool.ts`（116 行）、`hooks/useTaskListWatcher.ts`（221 行）的分析。
-
-### 一、TaskRecord 的完整字段
-
-教学版只讲了 id、subject、status、owner、blockedBy。Claude Code 实际有 9 个字段（`utils/tasks.ts:76-89`）：
-
-| 字段 | 类型 | 用途 |
-|------|------|------|
-| `id` | string | 递增整数 ID |
-| `subject` | string | 简短标题 |
-| `description` | string | 自由格式描述 |
-| `activeForm` | string? | 进行时态，in_progress 时在 spinner 显示 |
-| `owner` | string? | 分配的 agent ID |
-| `status` | pending/in_progress/completed | 生命周期 |
-| `blocks` | string[] | 此任务阻塞的任务 ID（下游） |
-| `blockedBy` | string[] | 阻塞此任务的任务 ID（上游） |
-| `metadata` | Record? | 任意扩展键值对 |
-
-存储位置：`~/.claude/tasks/{taskListId}/{id}.json`。每个任务一个文件。
-
-### 二、不是 TodoWrite 的升级，是两个独立系统
-
-Claude Code 中 Task System 和 TodoWrite **同时存在**，通过 `isTodoV2Enabled()` 切换（`utils/tasks.ts:133`）——交互式会话默认启用 Task（V2），非交互式/SDK 默认用 TodoWrite。环境变量 `CLAUDE_CODE_ENABLE_TASKS` 可强制启用 Task。Task 有 TodoWrite 没有的：文件锁并发保护、依赖强制执行、ownership、fs.watch 响应式监听、生命周期 hooks。
-
-### 三、并发认领的锁机制
-
-`claimTask()`（`utils/tasks.ts:541-612`）用双重锁防竞争：
-
-**任务文件锁**：`proper-lockfile` 锁住 `{taskId}.json`（最多重试 30 次，指数退避 5-100ms）。锁内：
-1. 重新读取任务（防 TOCTOU）
-2. 检查已被他人认领 → `already_claimed`
-3. 检查已完成 → `already_resolved`
-4. 检查上游未完成 → `blocked`
-5. 设置 owner
-
-**列表级锁**（agent busy 检查时）：`.lock` 文件，原子性扫描所有任务并检查该 agent 是否已有其他 open task。
-
-注意：教学版把 claim 和开始工作合成一步（claim = set owner + in_progress）；真实 Claude Code 的 `claimTask` 主要解决 owner 竞争，只设 owner 不改 status，状态更新由 `TaskUpdate` 完成。
-
-### 四、高水位标防 ID 重用
-
-`.highwatermark` 文件记录曾分配过的最高任务 ID。即使任务被删除，ID 也不会被重用。
-
-### 五、四个 Task 工具
-
-Claude Code 的任务系统有四个工具（不是教学版的一个通用 Task 工具）：`TaskCreate`、`TaskGet`、`TaskUpdate`、`TaskList`。全部设置 `isConcurrencySafe: true` 和 `shouldDefer: true`（工具 schema 不在初始 prompt 中，需 ToolSearch 后才可见）。
-
-教学版的 `create_task(blockedBy=...)` 在创建时直接声明依赖，是合理简化。真实 Claude Code 的 `TaskCreate` 只接受 subject/description/activeForm/metadata，依赖关系由 `TaskUpdate` 的 `addBlocks/addBlockedBy` 维护。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
