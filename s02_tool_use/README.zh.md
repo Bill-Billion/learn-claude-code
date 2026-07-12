@@ -9,77 +9,87 @@ s01 → `s02` → [s03](../s03_permission/) → s04 → ... → s20
 
 ---
 
-## 只有 bash 一个工具
+上一课的 Agent 已经能自己干活了，但手里只有 bash 一把瑞士军刀。它写文件的姿势是这样的：
 
-s01 的 Agent 只有一个 bash 工具。读文件要 `cat`，写文件要 `echo "..." > file.py`，改文件要 `sed`。
+```bash
+echo 'print("hello")' > hello.py
+```
 
-模型收到的指令是"读这个文件"，却要拼出 `cat path/to/file`。多了一层翻译，浪费 token，还容易拼错。
+内容简单时还行。一旦文件内容里有单引号、双引号、换行混着来，命令就得在转义里打滚：模型拼错一个字符，写进磁盘的就是坏文件，你还得再花一轮对话让它修。
 
----
-
-## 全局视角：工具分发
+这一课给它换上 5 个专用工具。重点不在工具本身，而在加工具的方式：循环一行都不用动。
 
 ![Tool Dispatch](images/tool-dispatch.svg)
 
-s01 的循环完全保留（LLM 调用、stop_reason 判断、消息追加）。唯一的变动在工具执行那 1 行：`run_bash()` 替换为 `TOOL_HANDLERS[block.name]()` 查表分发。
+---
 
-给 Agent 加一个工具只需要做两件事：
+## 只靠 bash，为什么不行
 
-1. **定义工具**：在 `TOOLS` 数组里加一条描述
-2. **注册处理函数**：在 `TOOL_HANDLERS` 字典里加一个映射
+bash 理论上无所不能，问题出在别处。
+
+**多了一层翻译。** 模型的意图是"读这个文件"，却要先翻译成 `cat path/to/file` 再输出。每次翻译都是一次出错机会，转义就是最常见的翻车点。
+
+**输出不可控。** `cat` 不认行数，一个 5000 行的文件全量灌进对话。专用的读文件工具可以带 `limit` 参数，只取前 N 行。（历史无限膨胀的后果，s08 会专门算这笔账。）
+
+**程序看不懂命令在干什么。** 对你的代码来说，一条 bash 字符串是黑盒：`cat` 和 `rm -rf` 都只是字符串，程序无法区分谁在读、谁在删。而 `read_file` 和 `write_file` 是两个名字不同的工具，读写一目了然。这个区别现在看着不起眼，到 s03 做权限控制时就是生死线：你总得先知道一个操作是读还是写，才能决定要不要拦。
+
+所以方向很明确：常用操作各给一个专名工具，bash 留着兜底。
 
 ---
 
-## 从 1 个工具到 5 个工具
+## 定义一条，注册一行
 
-s01 只有一个 bash：
-
-```python
-TOOLS = [{"name": "bash", ...}]
-
-def run_bash(command): ...
-```
-
-s02 加到 5 个，每个工具都是独立定义：
+s01 的菜单上只有一道菜。现在扩到 5 道，每道菜就是 `TOOLS` 里的一条定义：
 
 ```python
 TOOLS = [
     {"name": "bash",       "description": "Run a shell command.", ...},
-    {"name": "read_file",  "description": "Read file contents.",  ...},
-    {"name": "write_file", "description": "Write content to file.", ...},
-    {"name": "edit_file",  "description": "Replace text in file once.", ...},
-    {"name": "glob",       "description": "Find files by pattern.", ...},
+    {"name": "read_file",  "description": "Read file contents.",  ...},   # 可带 limit 参数
+    {"name": "write_file", "description": "Write content to a file.", ...},
+    {"name": "edit_file",  "description": "Replace exact text in a file once.", ...},
+    {"name": "glob",       "description": "Find files matching a glob pattern.", ...},
 ]
 ```
 
-每个工具有自己的实现函数：
+每个工具背后是一个普通函数。先看一个新面孔，所有文件工具都要过它这一关：
+
+```python
+def safe_path(p: str) -> Path:
+    path = (WORKDIR / p).resolve()
+    if not path.is_relative_to(WORKDIR):    # 解析后必须还在工作区内
+        raise ValueError(f"Path escapes workspace: {p}")
+    return path
+```
+
+模型传来的路径可能是 `../../etc/passwd` 这种越界货。`safe_path` 先把路径解析成绝对路径，再确认它没跑出工作目录。这是本课引入的第一道真正的安全边界。注意它只护住文件工具，bash 不经过它，这个口子留给 s03。
+
+四个新工具的实现都很短：
 
 ```python
 def run_read(path, limit=None):
     lines = safe_path(path).read_text().splitlines()
-    if limit:
-        lines = lines[:limit]
+    if limit and limit < len(lines):
+        lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
     return "\n".join(lines)
 
 def run_write(path, content):
-    safe_path(path).write_text(content)
+    file_path = safe_path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)   # 父目录不存在就建
+    file_path.write_text(content)
     return f"Wrote {len(content)} bytes to {path}"
 
 def run_edit(path, old_text, new_text):
-    text = safe_path(path).read_text()
-    if old_text not in text:
-        return "Error: text not found"
-    safe_path(path).write_text(text.replace(old_text, new_text, 1))
+    file_path = safe_path(path)
+    text = file_path.read_text()
+    if old_text not in text:                 # 找不到原文，明确报错
+        return f"Error: text not found in {path}"
+    file_path.write_text(text.replace(old_text, new_text, 1))   # 只替换第一处
     return f"Edited {path}"
-
-def run_glob(pattern):
-    import glob as g
-    return "\n".join(g.glob(pattern, root_dir=WORKDIR))
 ```
 
----
+`edit_file` 的两个设计值得停一下。原文必须精确匹配，找不到就报错，这是在逼模型先读后改：凭记忆改文件，记忆偏了就会改错地方，报错则会把它拉回去重读。只替换第一处，是防止一次替换把文件里不该动的同名文本也捎带改了。
 
-## 工具分发
+然后是注册。工具名到函数的映射，一个字典写完：
 
 ```python
 TOOL_HANDLERS = {
@@ -89,33 +99,31 @@ TOOL_HANDLERS = {
     "edit_file":  run_edit,
     "glob":       run_glob,
 }
-
-# 循环里只改了一行——从硬编码 run_bash 变成查表：
-for block in response.content:
-    if block.type == "tool_use":
-        handler = TOOL_HANDLERS[block.name]    # 查表
-        output = handler(**block.input)         # 调用
-        results.append(...)
 ```
 
+循环里相应的改动只有一行。s01 是硬编码调用，s02 换成查表：
+
+```python
+for block in response.content:
+    if block.type == "tool_use":
+        handler = TOOL_HANDLERS.get(block.name)                       # 按工具名查表
+        output = handler(**block.input) if handler else f"Unknown: {block.name}"
+        results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+```
+
+`while True`、`stop_reason` 判断、消息追加，全部原封不动。这就是本课的核心一句话：**循环不动，菜单在长。** 往后每一课加新能力，套路都一样：`TOOLS` 里一条定义，`TOOL_HANDLERS` 里一行注册。
+
 ---
 
-## 多个工具调用
+## 模型一次点好几道菜
 
-模型经常一次返回多个 tool_use："读一下 a.py 和 b.py，然后列出所有 .py 文件"。
+s01 结尾留了两个问题：模型会不会一次调用多个工具？会不会互相踩？
 
-教学版按 `response.content` 原始顺序逐个执行。Claude Code 的做法更复杂：按原始顺序切成连续 batch，batch 内并发安全的工具并行执行，batch 间严格顺序（见附录）。
+第一个问题的答案是会，而且很常见。你说"读一下 a.py 和 b.py"，模型的一条回复里就会带两个 `tool_use` 块。循环不需要为此做任何事：`for block in response.content` 本来就会遍历所有块，逐个执行、逐个收集结果，最后把所有 `tool_result` 装进同一条 `user` 消息发回去。
 
----
+第二个问题：教学版按原始顺序逐个执行，天然不会互相踩，代价是慢——两个读文件明明可以同时跑。
 
-## 速查
-
-| 概念 | 一句话 |
-|------|--------|
-| TOOL_HANDLERS | 工具名 → 处理函数的字典，循环通过 block.name 查表调用 |
-| 工具定义 | 告诉模型"我能做什么"的 JSON schema |
-| 多工具调用 | 模型可一次返回多个 tool_use，教学版按原始顺序逐个执行 |
-| 循环 | 与 s01 完全一致，无改动 |
+> 真实 Claude Code：不是逐个执行。它把连续的"并发安全"调用切成一批并行跑（判断按具体输入来，`ls` 这样的只读 bash 也算安全），遇到会改状态的调用就截断、单独串行，批与批之间严格保序。教学版选顺序执行，因为它够用，而且好读。
 
 ---
 
@@ -124,8 +132,8 @@ for block in response.content:
 | 组件 | 之前 (s01) | 之后 (s02) |
 |------|-----------|-----------|
 | 工具数量 | 1 (bash) | 5 (+read, write, edit, glob) |
-| 工具执行 | 硬编码 `run_bash()` | TOOL_HANDLERS 查表分发 |
-| 路径安全 | 无 | safe_path 校验（仅 file tools） |
+| 工具执行 | 硬编码 `run_bash()` | `TOOL_HANDLERS` 查表分发 |
+| 路径安全 | 无 | `safe_path` 校验（仅文件工具） |
 | 循环 | `while True` + `stop_reason` | 与 s01 完全一致 |
 
 ---
@@ -137,82 +145,21 @@ cd learn-claude-code
 python s02_tool_use/code.py
 ```
 
-试试这些 prompt：
+终端里的黄色 `> tool_name` 行现在打印的是工具名，不再是完整命令。试这几个任务：
 
-1. `Read the file README.md and tell me what this project is about`
-2. `Create a file called test.py that prints "hello", then read it back`
-3. `Find all Python files in this directory`
-4. `Read both README.md and requirements.txt, then create a summary file`
+1. `Read the file README.md and tell me what this project is about`：观察它选了 `read_file` 而不是 `cat`；
+2. `Create a file called test.py that prints "hello", then read it back`：写和读各一轮，没有任何转义；
+3. `Find all Python files in this directory`：`glob` 一轮出结果；
+4. `Read both README.md and requirements.txt, then create a summary file`：看模型是不是在同一条回复里点了两个 `read_file`，终端会连续打出两行 `> read_file`。
 
-观察重点：模型什么时候只调一个工具，什么时候一次调多个？多个工具调用的顺序和结果是否正确？
+再试一个越界路径：`Use read_file to read ../../etc/passwd`。`safe_path` 会报 `Path escapes workspace`。留意模型接下来的动作：如果它老老实实收手，很好；如果它转头用 bash 的 `cat` 读成功了，你就亲眼看到了文件工具和 bash 之间的防护落差。这个口子，正是下一课要堵的。
 
 ---
 
 ## 接下来
 
-现在 Agent 有 5 个专用工具。file tools 受 `safe_path` 保护，但 bash 不受限制，`rm -rf /` 还是能跑。
+现在 Agent 有 5 个专用工具，文件操作被 `safe_path` 圈在工作区里。但 bash 还是不受限制：黑名单只挡了几个词，`rm -rf ./src` 这样的命令照跑不误。
 
 s03 Permission → 在工具执行之前加一道门：这个操作安全吗？需要用户批准吗？
 
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-> 以下基于 Claude Code 源码 `Tool.ts`、`tools.ts`、`toolOrchestration.ts`、`toolExecution.ts`、`StreamingToolExecutor.ts` 的核查。
-
-### 一、工具定义方式
-
-**教学版**：`TOOLS` 数组 + `TOOL_HANDLERS` 字典。定义和实现分开。
-**Claude Code**：每个工具是 `buildTool()` 创建的独立对象，包含 schema、验证、权限、执行。`getAllBaseTools()` 汇总所有工具。
-
-教学版的分离方式对教学更清晰——读者一眼看到"加一个工具 = 两条定义"。
-
-### 二、并发安全判断：isConcurrencySafe()
-
-教学版按原始顺序逐个执行，不做并发。Claude Code 用 `isConcurrencySafe(input)` 判断能否并发——注意这不是简单的"只读 vs 写"，而是按具体输入判断：
-
-| | isReadOnly | isConcurrencySafe |
-|---|---|---|
-| FileRead | true | true |
-| Glob | true | true |
-| Bash `ls` | true | **true** ← 关键差异 |
-| Bash `rm` | false | false |
-| TaskCreate | false | **true** ← 改状态但可并发（TaskCreate 在 s12 介绍） |
-
-Claude Code 的 Bash tool 的 `isConcurrencySafe` 等于 `isReadOnly`——只读命令可并发，写命令不可。TaskCreate 虽然改了任务文件，但每次都写不同的文件，所以可以并发。
-
-### 三、分区算法
-
-Claude Code 的 `partitionToolCalls()`（`toolOrchestration.ts:91-115`）不是分两组，而是把工具调用**按连续块分批**：
-
-```
-[read A, read B, glob *.py, bash "rm x", read C]
-  → batch1(并发): [read A, read B, glob *.py]
-  → batch2(串行): [bash "rm x"]
-  → batch3(并发): [read C]
-```
-
-并发安全的连续块编入同一个 batch，batch 内真正并发执行（`toolOrchestration.ts:152-176`，有并发上限）。遇到非并发安全的就开新 batch 串行执行。batch 之间严格顺序。
-
-### 四、验证管线
-
-Claude Code 的每个工具调用经过严格的 5 步验证（`toolExecution.ts`）：
-
-1. **Zod schema 验证**（`614-680`，教学版用 JSON Schema 替代）：参数类型/结构检查
-2. **工具级 validateInput()**（`682-733`）：参数值验证（如路径是否在工作区内）
-3. **PreToolUse hooks**（`800-862`，s04 详细介绍）：钩子可以返回消息、修改输入、阻止执行
-4. **权限检查**（`921-931`，s03 的核心内容）：canUseTool + checkPermissions → allow/deny/ask
-5. **执行 tool.call()**（`1207-1222`）
-
-教学版省略了 Zod（用 JSON Schema）、省略了 validateInput（用安全函数）、保留了权限检查和钩子概念。
-
-### 五、流式工具执行
-
-Claude Code 的 `StreamingToolExecutor`（`StreamingToolExecutor.ts`）让工具在模型还在生成时就启动——不等模型说完。`read_file` 可能在模型还在输出"我来分析"的时候就跑完了。教学版不实现这个，目标和 s01 一致——概念清晰，不追求性能极致。
-
-### 六、工具结果持久化
-
-每个工具有一个 `maxResultSizeChars` 字段。结果超过这个值就落盘，模型看到的是预览 + 文件路径。FileRead 特殊——设为 `Infinity`，防止读文件的输出又被当成文件落盘。具体来说，如果 FileRead 的结果超过阈值被落盘，模型下次读那个落盘文件时又会触发落盘 → 无限循环（读文件 → 落盘 → 再读 → 再落盘 → ...）。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v2, en@v0, ja@v0 -->
