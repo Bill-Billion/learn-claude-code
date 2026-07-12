@@ -9,7 +9,7 @@
 
 ---
 
-把一个任务抛给聊天窗口里的模型："看看我这个目录里有哪些 Python 文件，然后跑一下 hello.py。"
+把一个任务抛给聊天窗口里的模型："我想看看我电脑本地的目录里有哪些 Python 文件，然后跑一下 hello.py。"
 
 它回了你一条挺像样的 bash 命令，然后就停了。命令是你复制到终端里跑的，输出是你手动粘贴回去的；它看完输出，给出下一条命令，你再跑、再贴。
 
@@ -181,6 +181,8 @@ messages[5]  assistant  text: 文件已创建并验证。                       
 | `stop_reason == "tool_use"` | 模型请求调用工具 | 执行，结果喂回去，继续 |
 | `stop_reason != "tool_use"` | 模型没有请求工具 | 生成结束，退出循环 |
 
+> 真实 Claude Code：不看 `stop_reason`。流式响应下这个字段不可靠，内容里已经出现 `tool_use` 块时它可能还没更新，所以生产循环直接检查回复内容里有没有 `tool_use` 块，有就继续。教学版用 `stop_reason`，因为非流式调用下它足够准，判断也最直白。
+
 ---
 
 ## 三个容易踩的坑
@@ -226,64 +228,5 @@ python s01_agent_loop/code.py
 现在模型手里只有 bash 一个工具，读文件要 `cat`，写文件要 `echo ... >`，找个文件要 `find`，不够直观，也容易拼错。
 
 s02 Tool Use → 给它 5 个真正的工具，会发生什么？模型会不会一次调用多个工具？几个工具同时跑会不会互相踩？
-
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-> 以下内容基于 Claude Code 源码 `src/query.ts`（1729 行）的核查。核心差异就两个：Claude Code 不看 `stop_reason` 字段而是检查内容里有没有 tool_use 块（因为流式响应中 stop_reason 不可靠）；Claude Code 有更多的退出路径和恢复策略做生产级保护。
-
-下面每一项都是在教学版循环基础上叠加的保护机制。
-
-<details>
-<summary>一、循环结构差异</summary>
-
-教学版检查 `response.stop_reason`。Claude Code 不把它作为循环继续的唯一依据——流式响应中 `stop_reason` 可能还没更新但内容里已经有 `tool_use` 块了。Claude Code 用 `needsFollowUp` 标志：接收到流式消息时（`query.ts:830-834`），只要检测到 `tool_use` 块就设为 `true`；`QueryEngine.ts` 会从 `message_delta` 捕获真实 `stop_reason` 用于其他逻辑，但 query loop 本身靠 `needsFollowUp` 决定是否继续。
-
-```typescript
-// query.ts:554-558
-// stop_reason === 'tool_use' is unreliable.
-// Set during streaming whenever a tool_use block arrives.
-let needsFollowUp = false
-```
-
-</details>
-
-<details>
-<summary>二、State 对象 10 字段（教学版只用 messages）</summary>
-
-| # | 字段 | 用途 | 对应章节 |
-|---|------|------|---------|
-| 1 | `messages` | 当前迭代的消息数组 | s01 |
-| 2 | `toolUseContext` | 工具、信号、权限上下文 | s02 |
-| 3 | `autoCompactTracking` | 压缩状态追踪 | s08 |
-| 4 | `maxOutputTokensRecoveryCount` | token 恢复尝试次数（上限 3） | s11 |
-| 5 | `hasAttemptedReactiveCompact` | 本轮是否已尝试响应式压缩 | s08 |
-| 6 | `maxOutputTokensOverride` | 8K→64K 的升级覆盖 | s11 |
-| 7 | `pendingToolUseSummary` | 后台 Haiku 生成的 tool use 摘要 | s08 |
-| 8 | `stopHookActive` | 停止钩子是否产生阻塞错误 | s04 |
-| 9 | `turnCount` | 轮次计数（maxTurns 检查） | s01 |
-| 10 | `transition` | 上一次继续原因 | s11 |
-
-> 注：`taskBudgetRemaining`（`query.ts:291`）是 loop-local 局部变量，不在 State 上。源码注释明确写了 "Loop-local (not on State)"。
-
-</details>
-
-<details>
-<summary>三、多条退出和继续路径</summary>
-
-教学版只有 1 条退出路径（模型不调工具就结束）。生产版有多条退出和继续路径，覆盖 blocking limit、prompt too long、model error、abort、hook stop、max turns、token budget continuation、reactive compact retry 等场景。每种场景都有对应的恢复或退出策略。
-
-</details>
-
-<details>
-<summary>四、流式工具执行和 QueryEngine</summary>
-
-Claude Code 的 `StreamingToolExecutor`（`query.ts:561`）让工具在模型还在生成时就开始并行执行（根据工具是否 concurrency-safe 决定并发或独占）。`QueryEngine.ts` 额外加了费用超限、结构化输出验证失败等保护。教学版不实现这些——目标是概念清晰，不是性能极致。
-
-</details>
-
-所有复杂字段和退出路径都是保护机制，理解核心循环后再看这些会更容易。
-
-</details>
 
 <!-- translation-sync: zh@v2, en@v0, ja@v0 -->
