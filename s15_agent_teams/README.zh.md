@@ -9,131 +9,115 @@ s01 → ... → s13 → s14 → `s15` → [s16](../s16_team_protocols/) → s17 
 
 ---
 
-## 问题
+"重构整个后端"这种活，摊开是四摊：认证模块、数据库层、API 路由、测试。单个 Agent 串着干，修到 API 路由时，认证模块的细节早被挤出上下文了。
 
-"重构整个后端"涉及认证模块、数据库层、API 路由、测试。一个 Agent 在修 API 路由时，认证模块的细节已经不在上下文里了。上下文窗口有限，单个 Agent 覆盖不了所有模块。
+s06 的子 Agent 能分摊吗？差一口气。`spawn_subagent` 是阻塞调用：派一个出去，主 Agent 就站在原地等它回来，四摊活还是排队干。而且子 Agent 的通信通道只有一个返回值，干完才说一句话，中途发现"数据库表结构和任务描述对不上"，它没有渠道回来问。
 
-s06 的子 Agent 是临时工，叫来干一件事就走了。但有些任务需要能通信、能协作的队友。
-
----
-
-## 解决方案
+真正需要的是同事，不是临时工。同事之间的两个特征，恰好是子 Agent 没有的：**同时干活**，**随时捎话**。同时干活 s13 已经给了答案（线程），随时捎话是这一课的主角。
 
 ![Agent Teams Overview](images/agent-teams-overview.svg)
 
-教学代码沿用 S14 的能力（prompt 组装、任务系统、后台执行、cron 调度）。为了聚焦团队机制，省略了完整错误恢复、记忆和技能系统。新增三样：**MessageBus**（文件收件箱）、**spawn_teammate_thread**（启动队友线程）、**inbox 注入**（Lead 接收队友消息并注入 history）。
-
-子 Agent vs 队友：
-
-| | s06 子 Agent | s15 队友 |
-|---|---|---|
-| 生命周期 | 一次性，用完销毁 | 多轮（教学版限 10 轮，真实 Claude Code 用 idle loop） |
-| 通信 | 只回传结论 | 异步收件箱，随时通信 |
-| 上下文 | 完全隔离 | 通过消息共享信息 |
-| 数量 | 一个主 Agent + 偶尔子 Agent | 一个 Lead + 多个队友 |
-
 ---
 
-## 工作原理
+## 同事之间不 return，同事之间发消息
 
-![Team Topology](images/team-topology.svg)
+函数调用的通信模型是"一问一答一次性"：调用方等着，被调方返回，通道关闭。团队协作要的是另一种模型：每人一个信箱，谁想说话就投一封，收件人有空了自己看。
 
-### MessageBus: 文件收件箱
-
-每个 Agent（包括 Lead 和队友）有一个 `.jsonl` 邮箱。发消息 = 往对方的文件里 append 一行 JSON。读消息 = 读文件 + 删除（消费式）：
+`MessageBus` 就是这个信箱系统，实现朴素到可以直接看穿：
 
 ```python
 class MessageBus:
-    def send(self, from_agent: str, to_agent: str,
-             content: str, msg_type: str = "message"):
+    def send(self, from_agent, to_agent, content, msg_type="message"):
         msg = {"from": from_agent, "to": to_agent,
-               "content": content, "type": msg_type,
-               "ts": time.time()}
+               "content": content, "type": msg_type, "ts": time.time()}
         inbox = MAILBOX_DIR / f"{to_agent}.jsonl"
-        with open(inbox, "a") as f:
+        with open(inbox, "a") as f:                  # 发信 = 往对方文件追加一行
             f.write(json.dumps(msg) + "\n")
 
-    def read_inbox(self, agent: str) -> list[dict]:
+    def read_inbox(self, agent) -> list[dict]:
         inbox = MAILBOX_DIR / f"{agent}.jsonl"
         if not inbox.exists():
             return []
-        msgs = [json.loads(line) for line in inbox.read_text().splitlines()]
-        inbox.unlink()  # 消费式：读完删除
+        msgs = [json.loads(line) for line in inbox.read_text().splitlines() if line.strip()]
+        inbox.unlink()                               # 收信 = 读完即删（消费式）
         return msgs
+
+    def peek(self, agent) -> bool:
+        inbox = MAILBOX_DIR / f"{agent}.jsonl"
+        return inbox.exists() and inbox.stat().st_size > 0   # 只看有没有，不动内容
 ```
 
-为什么用文件而不是内存队列？教学版选文件是因为直观、跨线程可观察。真实 Claude Code 也用文件收件箱（`~/.claude/teams/{team}/inboxes/`），但加了 `proper-lockfile` 防并发写冲突。教学版的 `read_inbox` 有 read + unlink 竞态，多线程同时读可能丢消息，对教学场景可以接受。
+为什么用文件而不是内存队列？两个理由。观察性：`.mailboxes/` 目录就摆在那里，任何时刻 `cat` 一眼就知道谁在跟谁说什么，调试多 Agent 系统时这比日志好用得多。扩展性：文件天然跨进程，今天的队友是线程，明天换成独立进程甚至另一台机器，信箱不用改。
 
-### spawn_teammate_thread: 启动队友
+两个边界要交代清楚。读是消费式的，读完文件就删了，拿到的消息必须当场处理，弄丢了没有第二份。以及教学版没加文件锁，两个写者在极端时序下可能把行写串，真实的 Claude Code 用 `proper-lockfile` 保护每次追加。
 
-Lead 调用 `spawn_teammate` 工具启动一个队友。队友跑在自己的 daemon 线程里，有自己的 system prompt、自己的 messages、自己的简化工具集：
+---
+
+## 队友：还是那个循环，多了名字和信箱
+
+老规律第三次应验：teammate 和 s06 的子 Agent 一样，就是 s01 循环的又一份拷贝，区别只在配置。它有名字和角色（写进自己的 system 提示）、有自己的信箱、每轮开工前先查信：
 
 ```python
 def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
-    system = f"You are '{name}', a {role}. Use tools to complete tasks."
+    system = (f"You are '{name}', a {role}. "
+              f"Use tools to complete tasks. Send results via send_message to 'lead'.")
 
     def run():
         messages = [{"role": "user", "content": prompt}]
-        sub_tools = [bash, read_file, write_file, send_message]
-        for _ in range(10):           # 最多 10 轮
-            inbox = BUS.read_inbox(name)
+        for _ in range(10):                          # 教学版：10 轮封顶
+            inbox = BUS.read_inbox(name)             # 每轮先查信箱
             if inbox:
                 messages.append({"role": "user",
-                    "content": f"<inbox>{json.dumps(inbox)}</inbox>"})
+                                 "content": f"<inbox>{json.dumps(inbox)}</inbox>"})
             response = client.messages.create(
-                model=MODEL, system=system, messages=messages[-20:],
+                model=MODEL, system=system, messages=messages[-20:],   # 滑动窗口
                 tools=sub_tools, max_tokens=8000)
-            # ... 执行工具、处理结果
-        # 完成后发 summary 给 Lead
-        BUS.send(name, "lead", summary, "result")
+            ...
+        BUS.send(name, "lead", summary, "result")    # 收工前把总结寄给 lead
+        active_teammates.pop(name, None)             # 从花名册注销自己
 
     threading.Thread(target=run, daemon=True).start()
 ```
 
-关键设计：
-- **队友有简化工具集**：bash、read、write、send_message。教学版省略了任务和 cron，聚焦通信机制。真实 Claude Code 的队友也有 TaskCreate、TaskUpdate 等工具，任务系统是团队共享的
-- **教学版限 10 轮**：防止队友无限循环。真实 Claude Code 用 idle loop：跑完一轮后发 `idle_notification`，等 inbox 消息，收到后继续，直到 `shutdown_request` 才退出
-- **完成后自动汇报**：`BUS.send(name, "lead", summary)` 把最终结果发到 Lead 的收件箱
+工具集照旧收窄：`bash`/`read_file`/`write_file`/`send_message`，没有 `spawn_teammate`，队友不能再拉人头，s06 防递归的老规矩。上下文管理用 `messages[-20:]` 滑动窗口而不是 s08 的压缩管线，理由是队友短命（10 轮封顶），最近 20 条足够覆盖一生，犯不上为它跑四步整理。
 
-### Lead 的 inbox 注入
+Lead 这边添三个工具：`spawn_teammate` 拉人，`send_message` 捎话，`check_inbox` 查信。
 
-Lead 在每轮主循环结束后检查收件箱。队友发来的消息注入到 history 里，让 LLM 能看到并做出反应：
+---
+
+## Lead 的终端：从一问一答变成事件循环
+
+前十四课的主程序都是同一个形状：`input()` 等你说话，跑一轮，再等。现在不行了，队友的报告随时可能到，不能指望你恰好在那时敲回车。
+
+主程序改成事件循环：两个来源（你的输入、后台的动静）汇进同一个队列，谁来了处理谁：
 
 ```python
-# 主循环结束后
-inbox = BUS.read_inbox("lead")
-if inbox:
-    inbox_text = "\n".join(
-        f"From {m['from']}: {m['content'][:200]}" for m in inbox)
-    history.append({"role": "user",
-                    "content": f"[Inbox]\n{inbox_text}"})
+def inbox_poller():
+    while True:
+        time.sleep(1)
+        if BUS.peek("lead") or has_pending_background():
+            events.put(("wake", None))       # 有信或后台完工：请求唤醒一轮
+
+while True:
+    kind, payload = events.get()
+    if kind == "user":
+        history.append({"role": "user", "content": payload})
+    else:  # wake
+        inbox = BUS.read_inbox("lead")
+        ...
+        if not parts:
+            continue                          # 已被上一次 wake 掏空，跳过
+        history.append({"role": "user", "content": "\n".join(parts)})
+    agent_loop(history, context)
 ```
 
-教学版在用户输入循环外注入。Claude Code 更精细，Lead 的 `useInboxPoller` 每 1 秒检查一次，有消息就提交为新的 turn，不需要等用户输入。
+两处防御各对应一种真实的翻车。
 
-### 权限冒泡
+**wake 必须幂等。** 轮询每秒一次，队友的信到达后可能排进两个 wake 事件；第一个把信箱掏空了，第二个必须发现"没东西"然后跳过。少了这个 `continue`，每封信都会附赠一轮空转的 API 调用。
 
-教学版省略了权限冒泡。真实 Claude Code 的流程（`permissionSync.ts`、`useSwarmPermissionPoller.ts`）：
+**轮询不看花名册。** 直觉写法是"还有活着的队友才去查信"。但队友的退场顺序是先寄出最后的总结、再注销自己，两步之间没有原子性。按花名册把关，恰好在注销之后到达的最后一封信就永远没人收了。所以 poller 只认信箱本身：有信就唤醒，别管寄信人还在不在。
 
-1. 队友遇到需要审批的操作 → 发 `permission_request` 到 Lead 收件箱
-2. Lead 的 `useInboxPoller` 检测到请求 → 路由到审批队列
-3. 用户审批后 → Lead 发 `permission_response` 回队友
-4. 队友的 `useSwarmPermissionPoller`（每 500ms 轮询）收到回复 → 继续或拒绝
-
-### 合起来跑
-
-```
-1. Lead: "搭建后端：拆成三个模块，分别启动队友"
-2. Lead → spawn_teammate("alice", "backend dev", "创建数据库 schema")
-3. Lead → spawn_teammate("bob", "frontend dev", "写 API 客户端")
-4. alice 线程启动 → 自己的 LLM 调用 → bash "python manage.py migrate"
-5. bob 线程启动 → 自己的 LLM 调用 → write_file("client.ts", ...)
-6. alice 完成 → BUS.send("alice", "lead", "Schema done: users, orders tables")
-7. bob 完成 → BUS.send("bob", "lead", "Client written with types")
-8. Lead 下次循环 → inbox 注入 history → LLM 看到 alice 和 bob 的结果
-```
-
-两个队友并行工作。
+> 真实 Claude Code：teammate 不是 10 轮封顶，而是 idle loop——干完活在信箱边待命，直到收到 `shutdown_request` 才退场；信箱写入有文件锁；团队还有自己的 hook 事件（TeammateIdle、TaskCompleted），供外部系统挂载。
 
 ---
 
@@ -141,13 +125,11 @@ if inbox:
 
 | 组件 | 之前 (s14) | 之后 (s15) |
 |------|-----------|-----------|
-| Agent 数量 | 1 | 1 Lead + N 队友线程 |
-| 通信 | 无 | MessageBus + .mailboxes/*.jsonl |
-| 新类 | — | MessageBus, active_teammates dict |
-| 新函数 | — | spawn_teammate_thread, run_send_message, run_check_inbox |
-| Lead 工具 | 11 (s14) | + spawn_teammate, send_message, check_inbox (14) |
-| 队友工具 | — | bash, read_file, write_file, send_message (4) |
-| 权限 | 本地决策 | 教学版省略（真实 Claude Code 有冒泡机制） |
+| Agent 数量 | 1 | 1 个 Lead + N 个队友线程 |
+| 通信 | 无 | `MessageBus` 文件信箱（`.mailboxes/*.jsonl`） |
+| 新工具 | — | `spawn_teammate`, `send_message`, `check_inbox`（共 14 个） |
+| 主程序 | `input()` 一问一答 | 事件循环（用户输入 + 唤醒事件合流） |
+| 队友生命周期 | — | 10 轮封顶，收工自动寄总结、注销 |
 
 ---
 
@@ -158,97 +140,16 @@ cd learn-claude-code
 python s15_agent_teams/code.py
 ```
 
-试试这些 prompt：
-
-1. `Spawn alice as a backend developer. Ask her to create a file called schema.sql with a users table.`
-2. `Check your inbox for alice's result.`
-3. `Spawn bob as a tester. Ask him to check if schema.sql exists and list its contents.`
-
-观察重点：Lead 如何启动队友？`.mailboxes/` 目录下的 JSONL 文件长什么样？队友完成后 Lead 的 inbox 有没有注入到 history？
+1. **并行与自动唤醒**：`Spawn two teammates: 'poet' (a poet) who writes a short poem to poem.md, and 'critic' (a critic) who reviews the first paragraph of README.md. Wait for both reports.`。看 `[teammate] poet spawned`、`[teammate] critic spawned` 几乎同时出现，两边的 `[bus]` 消息交错滚动；报告寄回时，你没敲任何字，终端自己打出 `[wake: N inbox ...]` 并开始新一轮，最后是 `[all teammates done]`；
+2. **看见通信本身**：给队友派个慢活，比如 `Spawn a teammate 'worker' who runs 'sleep 15' and then writes done.md`，趁它干活时对 Lead 说 `Run ls -la .mailboxes/`。信箱文件就躺在那里，这套协作的全部基础设施不过是几个 JSONL 文件；
+3. **消费式读取**：全部结束后输入 `Check your inbox`，大概率得到 `(inbox empty)`。不是消息丢了，是唤醒机制早一步把信取走注入对话了。读完即删的信箱只有一份拷贝，谁先取归谁，这个手感值得记住。
 
 ---
 
 ## 接下来
 
-队友能干活、能通信。但如果 Lead 想让 Alice 关机，直接杀线程会留下写到一半的文件。需要一个体面的关机协议：Lead 发 shutdown_request，队友收尾后退出。
+队友能干活、能通信，但都是"自由发挥"式的：说的话没有格式，Lead 想让某个队友停下来，也只能干瞪眼。直接杀线程？它可能正写文件写到一半。
 
-s16 Team Protocols → 关机握手与消息约定。
+s16 Team Protocols → 给消息加上类型和编号，关机要握手，请求要回执。
 
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-> 以下基于 Claude Code 源码 `spawnMultiAgent.ts`、`useInboxPoller.ts`（969 行）、`useSwarmPermissionPoller.ts`（330 行）、`teammateMailbox.ts`、`teamHelpers.ts` 的完整分析。
-
-### 一、没有中央消息总线，是文件系统
-
-教学版用 `MessageBus` 类收发消息。Claude Code 的做法更直接，每个 Agent 直接写其他 Agent 的收件箱文件。
-
-收件箱路径：`~/.claude/teams/{teamName}/inboxes/{agentName}.json`
-
-写入时用 `proper-lockfile` 文件锁保证并发安全（最多重试 10 次）。每个文件是一个 JSON 数组，append 新消息时读→追加→写回。
-
-### 二、15 种消息类型
-
-Claude Code 的团队通信有 15 种结构化消息（`teammateMailbox.ts`）：
-
-| 类型 | 方向 | 用途 |
-|------|------|------|
-| `plain text` | 双向 | 普通队友间通信 |
-| `idle_notification` | 队友→Lead | 队友完成一轮工作，进入空闲 |
-| `permission_request` | 队友→Lead | 队友需要操作审批 |
-| `permission_response` | Lead→队友 | Lead 审批结果 |
-| `plan_approval_request` | 队友→Lead | 队友提交计划待审 |
-| `plan_approval_response` | Lead→队友 | Lead 审批计划 |
-| `shutdown_request` | Lead→队友 | 请求体面关机 |
-| `shutdown_approved` | 队友→Lead | 确认关机 |
-| `shutdown_rejected` | 队友→Lead | 拒绝关机（附原因） |
-| `task_assignment` | Lead→队友 | 分配任务 |
-| `team_permission_update` | Lead→队友 | 广播权限变更 |
-| `mode_set_request` | Lead→队友 | 修改队友的权限模式 |
-| `sandbox_permission_*` | 双向 | 网络权限请求/回复 |
-| `teammate_terminated` | 系统 | 队友被移除通知 |
-
-文本消息被包装在 `<teammate-message>` XML 标签中交付给模型。
-
-### 三、权限冒泡：双向轮询
-
-教学版省略了权限冒泡。Claude Code 的实际流程（`permissionSync.ts`）：
-
-1. **队友**遇到需要审批的操作 → 发 `permission_request` 到 Lead 的收件箱
-2. **Lead** 的 `useInboxPoller`（每 1 秒轮询）检测到请求 → 路由到 `ToolUseConfirmQueue`
-3. Lead 的 UI 显示审批对话框，带队友名字和颜色
-4. 用户审批后 → Lead 发 `permission_response` 回队友的收件箱
-5. **队友**的 `useSwarmPermissionPoller`（每 500ms 轮询）收到回复 → 继续或拒绝执行
-
-### 四、队友生命周期
-
-Claude Code 的队友由 `spawnTeammate()`（`spawnMultiAgent.ts`）创建：
-
-1. **Spawn**：创建 tmux 窗格（或进程内），分配颜色，写入 team config
-2. **Work**：`useInboxPoller` 每 1 秒检查收件箱 → 有消息就提交为新的 turn
-3. **Idle**：Stop hook 触发 → 发 `idle_notification` 给 Lead
-4. **Shutdown**：Lead 发 `shutdown_request` → 队友回复 `shutdown_approved` → Lead 清理
-
-### 五、Team Config
-
-团队注册表在 `~/.claude/teams/{teamName}/config.json`（`teamHelpers.ts`）：
-
-```json
-{
-  "name": "my-team",
-  "leadAgentId": "lead@my-team",
-  "members": [{
-    "agentId": "researcher@my-team",
-    "name": "researcher",
-    "agentType": "general-purpose",
-    "color": "blue",
-    "isActive": true
-  }]
-}
-```
-
-队友之间不能嵌套（`AgentTool.tsx:273` 明确禁止 "teammates spawning other teammates"）。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
