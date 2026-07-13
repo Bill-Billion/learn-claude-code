@@ -30,4 +30,3 @@ def ask_with_role(question: str, role: str, style: str, model=None) -> str:
 if __name__ == "__main__":
     query = input("s03 >> ").strip()
     print(ask_with_role(query, "耐心的 LangChain 助教", "少术语，先给直觉"))
-

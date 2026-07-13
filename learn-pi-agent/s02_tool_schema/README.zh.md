@@ -126,7 +126,7 @@ export async function dispatchTool(
 
   // 校验必填参数，缺了直接报错
   validateInput(tool, input);
-  
+
   // 参数没问题，交给handler执行
   return tool.handler(input);
 }

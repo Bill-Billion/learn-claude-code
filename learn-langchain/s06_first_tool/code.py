@@ -19,4 +19,3 @@ def run_count_words(text: str) -> str:
 if __name__ == "__main__":
     user_text = input("s06 text >> ").strip()
     print(run_count_words(user_text))
-

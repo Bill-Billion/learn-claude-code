@@ -6,4 +6,3 @@ messages = [
     # 提示：HumanMessage 放这一轮真正的提问
     HumanMessage(content=______________________________),
 ]
-

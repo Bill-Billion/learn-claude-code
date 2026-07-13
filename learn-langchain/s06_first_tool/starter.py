@@ -10,4 +10,3 @@ def count_words(text: str) -> str:
 
 
 print(count_words.invoke({"text": "LangChain teaches tools"}))
-

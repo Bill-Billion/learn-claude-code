@@ -25,4 +25,3 @@ def content_to_text(content: Any) -> str:
 def message_text(message: Any) -> str:
     """Return text from an AIMessage-like object or plain string."""
     return content_to_text(getattr(message, "content", message))
-

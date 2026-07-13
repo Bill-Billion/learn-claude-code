@@ -99,7 +99,7 @@ async function executeToolCallWithHooks(...) {
   } else {
     // 放行，真正执行工具
     message = await runLocalTool(registry, toolCall);
-    
+
     // 再过after钩子
     const afterResult = await hooks.afterToolCall?.({ ...context, result: message, isError: message.isError });
     if (afterResult) {

@@ -100,10 +100,10 @@ export function createMiniHarness(options: MiniHarnessOptions) {
   // 复制全量工具列表
   const tools = options.registry.tools.map((tool) => ({ ...tool }));
   // 确定本轮启用的工具，默认全部启用
-  const activeToolNames = options.activeToolNames 
-    ? [...options.activeToolNames] 
+  const activeToolNames = options.activeToolNames
+    ? [...options.activeToolNames]
     : tools.map((tool) => tool.name);
-  
+
   // 开工前校验：启用的工具必须都存在
   validateActiveToolNames(tools, activeToolNames);
 
@@ -121,9 +121,9 @@ async createTurnState() {
   // 从session取当前消息和元数据
   const context = await options.session.buildContext();
   const metadata = await options.session.getMetadata();
-  
+
   // 按active名单选出这轮给模型看的工具
-  const activeTools = activeToolNames.map((name) => 
+  const activeTools = activeToolNames.map((name) =>
     tools.find((tool) => tool.name === name)!
   );
 

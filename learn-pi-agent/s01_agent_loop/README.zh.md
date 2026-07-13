@@ -123,7 +123,7 @@ export async function runOneTurn(
 
   // 2. 带着完整历史调用模型
   const assistantMessage = await provider.complete(state.messages);
-  
+
   // 3. 模型返回进状态
   state.messages.push(assistantMessage);
 

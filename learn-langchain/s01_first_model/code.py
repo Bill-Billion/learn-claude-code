@@ -27,4 +27,3 @@ def ask_once(query: str, model=None) -> str:
 if __name__ == "__main__":
     user_query = input("s01 >> ").strip()
     print(ask_once(user_query))
-

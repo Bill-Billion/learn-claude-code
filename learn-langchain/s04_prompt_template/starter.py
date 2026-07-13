@@ -16,4 +16,3 @@ messages = PROMPT.invoke(
         "style": ______________________________,  # 回答风格
     }
 ).to_messages()
-

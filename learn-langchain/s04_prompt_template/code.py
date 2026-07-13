@@ -41,4 +41,3 @@ def explain(topic: str, audience: str, role: str, style: str, model=None) -> str
 
 if __name__ == "__main__":
     print(explain("向量数据库", "一名大一新生", "耐心的计算机老师", "简洁，少术语"))
-

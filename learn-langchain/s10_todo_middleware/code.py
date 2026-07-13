@@ -33,4 +33,3 @@ def answer(query: str, model=None) -> str:
 
 if __name__ == "__main__":
     print(answer(input("s10 >> ").strip()))
-

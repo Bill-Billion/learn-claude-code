@@ -46,4 +46,3 @@ def answer(query: str, model=None) -> str:
 if __name__ == "__main__":
     user_query = input("s07 >> ").strip()
     print(answer(user_query))
-

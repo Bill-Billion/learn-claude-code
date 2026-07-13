@@ -98,7 +98,7 @@ export async function runEventedToolLoop(
   // 一轮一轮循环
   for (let turn = 0; turn < maxTurns; turn++) {
     emit({ type: "turn_start" });
-    
+
     // 第一步：流式收完assistant消息
     const assistantMessage = await streamAssistant(provider, messages, emit);
     messages.push(assistantMessage);

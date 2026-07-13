@@ -21,4 +21,3 @@ def test_extract_book_note_returns_pydantic_object() -> None:
     assert isinstance(note, BookNote)
     assert note.title == "LangChain 入门"
     assert "LLM" in note.tags
-

@@ -31,4 +31,3 @@ def continue_conversation(question: str, model=None) -> str:
 if __name__ == "__main__":
     user_query = input("s02 >> ").strip()
     print(continue_conversation(user_query))
-
