@@ -1,116 +1,226 @@
-# Learn Pi Agent
+# Learn Pi Agent -- 小さく拡張可能な Agent Harness を作る
 
-[English](README.md) · [中文](README.zh.md) · 日本語
+[English](README.md) | [中文](README.zh.md) | 日本語
 
-このリポジトリでは mini Pi をゼロから作ります。Pi の使い方チュートリアルでも、Pi ソースコードの解説でもありません。[Pi](https://github.com/earendil-works/pi) の核となる設計思想に沿って、簡略化しつつも構造の明快な agent harness の MVP を段階的に組み上げていきます。
+## モデルが判断し、Harness がその判断を実行可能にする
 
-13 節を読み終えると、provider を差し替えられ、session を分岐でき、context resource をロードでき、extension を登録でき、trust 境界を制御でき、package を解決できる mini agent harness が手元に残ります。s13 では前の 12 節の仕組みを 1 本の実行可能なリクエスト経路につなぎます。決定的でオフラインな教材実装なので、実モデルの呼び出し、extension の動的 import、package のインストール、context compaction、hot reload、実行サンドボックスは含みません。
+LLM は判断力を提供します。状況を読み、直接答えるかツールを使うかを選び、結果を確認して次の一手を決めます。Agent Harness は、その判断を動かすための条件を提供します。メッセージ、ツール、イベント、セッション状態、拡張機能、信頼境界、実行シェルがそれに当たります。
 
-Pi のアーキテクチャの主線は明快です：
+このコースでは [Pi](https://github.com/earendil-works/pi) を設計の題材にして、それらの条件をゼロから組み直します。Pi はカーネルを小さく保ち、製品固有のワークフローを外側へ出します。ループがフレームワークの奥に隠れないため、モデルの知能と Harness の仕組みの境界を観察しやすい題材です。
 
 ```text
-pi-ai           複数 provider にまたがるモデル・メッセージ・tool call のフォーマットを統一する
-pi-agent-core   メッセージ状態の上で agent loop を回し、外へイベントを発行する
-pi-coding-agent core をターミナル・session・extension・skill・実行モードにつなぐ
+モデルの判断
+     |
+     v
+messages -> プロバイダーイベント -> ツールループ -> ツール結果 -> messages
+                |                |
+                v                v
+          セッション状態      フック / 拡張機能
+                \                /
+               ランタイム + 信頼制御
 ```
 
-Pi のプロダクト思想もはっきりしています：カーネルは小さく保ち、ワークフローは外側の拡張に任せる。Pi には sub-agent、plan mode、permission popup、todo システム、MCP のデフォルト統合が組み込まれていません。これらは extension、skill、pi package、コンテナ、外部ツールで後からつなげます。このコースで Pi のソースコードは検証とトレースの参照にだけ使います。
+14 レッスンを終えると、プロバイダーを交換でき、テキストとツール呼び出しをストリーミングできる mini Pi が完成します。イベント駆動のツールループ、フックを挿入できる実行処理、分岐できるセッション、必要に応じて読み込むコンテキスト、拡張機能、信頼制御、パッケージ探索、4 種類の実行シェルに加え、任意で取り組める実モデルの総仕上げ課題も備えています。
 
-## 想定読者
+これは Pi CLI の使い方ガイドでも、ソースを一行ずつたどる解説でもありません。各レッスンで設計判断を一つだけ切り出し、その判断が見える最小実装を作り、固定された Pi ソースへ対応づける Harness Engineering コースです。
 
-- **向いている人**：TypeScript が書けて、どこかの LLM API を使ったことがあり、agent システムがゼロからどう組み上がるかを理解したい開発者。
-- **前提知識**：async/await と Promise が読めること、messages 配列が何かを知っていること（知らなくても s01 で一通りなぞります）。
-- **不要なもの**：Pi を使った経験も、Pi のソースを読んだ経験も、agent フレームワークの知識も要りません。
-- **想定時間**：1 節あたり 30–60 分、13 節でおよそ 9–13 時間。
-- **難易度カーブ**：s01–s06 はなだらか。s07 が最初の抽象度ジャンプ（木構造）。s10–s13 はエンジニアリング寄りの組み立てで、s12 が最も重いです。
+## なぜ Pi を組み直すのか
 
-## 始め方
+Pi は Agent 製品で混ざりやすい三つの責務を分離します。
+
+```text
+pi-ai            モデル、メッセージ、ツール、プロバイダーストリームを正規化する
+pi-agent-core    メッセージ状態、Agent Loop、ライフサイクルイベントを管理する
+pi-coding-agent  セッション、リソース、拡張機能、パッケージ、信頼制御、シェルを加える
+```
+
+この分離は製品方針にもつながります。コアは汎用のままにし、ワークフローは拡張機能と外部環境に任せます。Sub-agent、計画機能、権限確認画面、Todo システム、MCP をループへ直書きする必要はありません。これらはループの周囲に組み合わせられます。
+
+教訓は「Pi をコピーする」ことではありません。何がモデルアダプターに属し、何がループに属し、何がその両方の外に留まるべきかを見分けることです。
+
+## 14 レッスン、14 の不変条件
+
+> **s01** *「ループは Agent の心拍である」*：モデル応答を追加し、停止理由を調べ、行動が必要なときだけ続ける。
+>
+> **s02** *「ツールは公開契約と非公開ハンドラーでできている」*：モデルが見るのは JSON Schema、実行コードを見るのは Harness だけ。
+>
+> **s03** *「テキストだけでなく状態をストリーミングする」*：テキストとツール呼び出しを、途中まで組み立てたアシスタント状態を保つイベントとして受け取る。
+>
+> **s04** *「ツール結果はモデルへの次の入力である」*：実行が一つのターンを閉じ、次の判断に必要な根拠を渡す。
+>
+> **s05** *「方針はツール内部ではなく実行の周囲に置く」*：フックはハンドラーを汚さずに、実行の拒否、入力の書き換え、処理の終了を行える。
+>
+> **s06** *「ターンはスナップショットであり、グローバル変数の寄せ集めではない」*：メッセージ、ツール、リソース、モデル、システムプロンプトを一つの明示的な状態にする。
+>
+> **s07** *「履歴は分岐できてこそ役に立つ」*：追記専用のエントリーと親 ID が、過去を上書きせず選択肢を保存する。
+>
+> **s08** *「コンテキストは投入するのではなく選択する」*：プロジェクト指示、Skill、プロンプトテンプレートは、リソース境界を通してだけ取り込む。
+>
+> **s09** *「カーネルは小さく、ワークフローは拡張機能に任せる」*：イベント、ツール、コマンド、カスタムメッセージを安定したインターフェースへ接続する。
+>
+> **s10** *「一つのランタイム、複数のシェル」*：対話、print/JSON、RPC、SDK の各モードが同じセッション状態を共有する。
+>
+> **s11** *「信頼判定は読み込みを制御し、隔離は被害を制限する」*：プロセスに何を取り込むかと、そのプロセスが何をできるかは別の問題である。
+>
+> **s12** *「能力はパッケージとして移動する」*：マニフェスト、規約、フィルター、スコープが、ローカルリソースを配布単位に変える。
+>
+> **s13** *「統合は境界のテストである」*：内部へ侵入しなければ接続できないなら、公開契約の引き方が間違っている。
+>
+> **s14** *「オフラインで仕組みを証明し、実際の通信でループを証明する」*：OpenAI 互換ストリームによって、実モデルがツールを選び、結果を読み、回答を続ける。
+
+## コアパターン
+
+```ts
+while (true) {
+  const assistant = await provider.complete({ messages, tools });
+  messages.push(assistant);
+
+  const calls = assistant.content.filter(isToolCall);
+  if (calls.length === 0) break;
+
+  for (const call of calls) {
+    messages.push(await executeTool(call));
+  }
+}
+```
+
+s01 から s14 まで、このループは同じ形で見え続けます。後のレッスンは入力、出力、永続化、境界の質を高めますが、モデルの判断を決め打ちのワークフローに置き換えることはありません。
+
+## オフラインを標準に、実モデル接続は選択制に
+
+学習環境は意図的に二つへ分かれています。
+
+| 学習ルート | レッスン | ネットワーク / API キー | 確認できること |
+| --- | --- | --- | --- |
+| 仕組みを学ぶ本編 | s01-s13 と全自動テスト | 不要 | イベント順序、ツールの振り分け、セッション状態、信頼判定、パッケージ、統合処理を決定的に再現できる |
+| 実モデルの総仕上げ | s14 の `session:s14` のみ | 必要 | 実モデルがテキストをストリーミングし、ツール呼び出しの差分を組み立て、ツール結果を読み、s13 のループを続けられる |
+
+s14 のテストはネットワークへ接続しません。メモリ上の `ReadableStream` を任意のバイト境界で分割し、Node 標準の `fetch` インターフェースへ渡します。401、429、タイムアウトと中止、不正または不完全な SSE、上限を超える応答、分割されたツール引数も対象です。そのため CI は認証情報を必要とせず、完全にオフラインのままです。
+
+## クイックスタート
+
+必要環境は Node.js 25 以上です。本番実行時の依存パッケージはありません。
 
 ```bash
+git clone https://github.com/Bill-Billion/learn-claude-code.git learn-agent-harness
+cd learn-agent-harness/learn-pi-agent
+npm ci
+
 npm run session:s01
 npm run test:s01
+npm run check
 ```
 
-各節は 1 つのディレクトリです：
+`npm run check` は TypeScript の型チェックと、オフラインの全テストスイートを実行します。
+
+### 実モデルの総仕上げ課題を動かす
+
+s14 は OpenAI 互換の Chat Completions エンドポイントと Node 標準の `fetch` を使います。選択するエンドポイントは、ストリーミングと関数 / ツール呼び出しに対応している必要があります。
+
+```bash
+cp .env.example .env
+# .env を編集し、OPENAI_API_KEY と OPENAI_MODEL を設定します。
+# OPENAI_BASE_URL はそのままでも、互換サービスの /v1 ベース URL に変更しても構いません。
+
+npm run test:s14
+npm run session:s14 -- "README.md を読み、このコースを三点で説明して"
+```
+
+| 環境変数 | 必須 | 意味 |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | はい | 選択したエンドポイントが受け付ける認証情報 |
+| `OPENAI_MODEL` | はい | そのエンドポイントで利用できる Chat Completions モデル |
+| `OPENAI_BASE_URL` | いいえ | 既定値は `https://api.openai.com/v1` |
+
+実モデルのデモが公開するツールは `read_course_file` 一つだけで、このコースディレクトリの内側だけを読めます。シンボリックリンクを解決し、隠しファイルおよび通常ファイル以外のものを拒否したうえで、50,000 バイト以下の有効な UTF-8 テキストだけを読み取ります。そのため、モデルはローカルの `.env` を読めず、際限なく大きなローカルファイルをコンテキストへ取り込むこともできません。API キーは、リポジトリの管理対象外である `.env` に保存します。アダプターは自動再試行を行いません。認証失敗、レート制限、ネットワーク障害、中止、プロトコルエラーを見えるままにし、境界を隠さず学べるようにしています。
+
+## 学習ルート
 
 ```text
-s01_agent_loop/
-  README.md        この節の進め方（英語。README.zh.md が中国語、README.ja.md が日本語）
-  code.ts          最小実装
-  code.test.ts     挙動テスト（コースに手を入れる人のために設計上の不変条件を守る回帰ネット）
-  pi-source.md     Pi ソースコードでの検証とトレース（英語。pi-source.zh.md が中国語）
+フェーズ 1：プロトコルを理解する
+  s01 Agent Loop -> s02 Tool Schema -> s03 Provider Events
+
+フェーズ 2：信頼できるターンを動かす
+  s04 Evented Tool Loop -> s05 Tool Hooks -> s06 Turn State
+
+フェーズ 3：Coding Agent 製品へ育てる
+  s07 Session Tree -> s08 Context Resources -> s09 Extension Runtime
+
+フェーズ 4：シェルと境界を加える
+  s10 Runtime Modes -> s11 Trust & Execution Env -> s12 Pi Package
+
+フェーズ 5：二つのループを閉じる
+  s13 Integrated Harness -> s14 Real Provider
 ```
 
-各節の構成は固定です：問題 → 考え方 → まず動かす → コードの中身 → 手を動かす → 本線につなぐ → Pi ソースと照合 → 次の節。「まず動かす」の出力はすべて実測したもので、「手を動かす」はテスト実行ではなく、実際にコードを書き換える演習です。
+最初は順番に読んでください。後のレッスンは前のエクスポートを直接インポートします。この依存関係自体が教材です。インターフェースが次の要求に耐えられるかを確認できます。
 
-## ロードマップ
+## 全レッスン
 
-この 13 節は独立した 13 個のデモではなく、同じ mini-pi に対する 13 回のイテレーションです。後の節は前の節の export を直接 import します。コースは Pi の 4 層アーキテクチャと統合の 1 節に沿って進みます：
+| 章 | テーマ | 追加されるもの |
+| --- | --- | --- |
+| [s01](s01_agent_loop/) | Agent Loop | `messages`、プロバイダー、`stopReason` が最小ループを作る |
+| [s02](s02_tool_schema/) | Tool Schema | モデルに見せる定義とローカルハンドラーを分ける |
+| [s03](s03_provider_events/) | Provider Events | テキストとツール呼び出しの差分を一つのイベントプロトコルにまとめる |
+| [s04](s04_evented_tool_loop/) | Evented Tool Loop | ツール呼び出しを実行し、構造化した結果を返す |
+| [s05](s05_tool_hooks/) | Tool Hooks | 実行前後のポリシーで振り分け処理を囲む |
+| [s06](s06_turn_state/) | Harness Turn State | セッション、リソース、ツール、モデル、プロンプトがスナップショットを作る |
+| [s07](s07_session_tree/) | Session Tree | 追記専用の JSONL 履歴が分岐を持つ |
+| [s08](s08_context_resources/) | Context Resources | 指示、Skill、プロンプト、使用中のツールを探索する |
+| [s09](s09_extension_runtime/) | Extension Runtime | 拡張機能がフック、ツール、コマンド、メッセージを登録する |
+| [s10](s10_runtime_modes/) | Runtime Modes | print/JSON、RPC、SDK、対話シェルが一つのコアを共有する |
+| [s11](s11_trust_execution_env/) | Trust and Execution Environment | 入力への信頼と実行時の隔離を分ける |
+| [s12](s12_pi_package/) | Pi Package | マニフェスト、規約、フィルター、スコープからリソースを解決する |
+| [s13](s13_integrated_harness/) | Integrated Harness | 最初の 12 レッスンの公開インターフェースを一つのオフラインのリクエストチェーンにまとめる |
+| [s14](s14_real_provider/) | Real Provider | Chat Completions SSE によって、実モデルで同じチェーンを動かす |
 
-### A. プロトコル層（s01–s03）—— Pi はモデルとどう話すか
+## 各レッスンの学び方
+
+各レッスンは同じ簡潔な構成です。
 
 ```text
-s01: Agent Loop
-     messages + provider + stopReason。pi-agent-core の最小の状態フローに対応
-
-s02: Tool Schema
-     model-visible schema + local handler。pi-ai と coding-agent のツール契約に対応
-
-s03: Provider Events
-     start / text_delta / toolcall_delta / done。pi-ai のストリーミングイベントプロトコルに対応
+sNN_topic/
+  README.md        完全な英語レッスン
+  README.zh.md     完全な中国語レッスン
+  README.ja.md     完全な日本語レッスン
+  code.ts          最小の実行可能実装
+  code.test.ts     振る舞いの不変条件とエッジケース
+  pi-source.md     固定版 Pi ソースとの対応（英語）
+  pi-source.zh.md  固定版 Pi ソースとの対応（中国語）
 ```
 
-### B. Core 層（s04–s06）—— agent-core はどうやってターンを回し続けるか
+「問題」「考え方」「まず動かす」「コードの解説」「演習」「本編への接続」「ソースとの比較」「次のレッスン」の順に進みます。各関数を読む前に実行例を動かしてください。その後、不変条件を一つ変え、どこが依存しているかをテストで確かめます。
+
+## ソース根拠とスコープ
+
+Pi のソース追跡リンクはすべて [`earendil-works/pi` のコミット `2f5066d7`](https://github.com/earendil-works/pi/tree/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/) に固定されています。これは、コース執筆時に参照したバージョン 0.79.1 のソーススナップショットです。ゼロから積み上げる教材構成については、[`shareAI-lab/claw0` のコミット `0090e863`](https://github.com/shareAI-lab/claw0/tree/0090e863bd90aaebc79d244223cc2acc7c284eaf/) も参照元として明記しています。ローカルに参照用リポジトリをクローンする必要はありません。
+
+ターミナル UI、拡張機能の動的インポート、パッケージのインストール、コンテキスト圧縮、ホットリロード、マルチモーダルメッセージ、プロバイダー使用量の集計、自動再試行、プロセスやコンテナによるサンドボックスは意図的に実装しません。s14 では、プロトコル変換を見えるままにするため、一つの OpenAI 互換アダプターを直接実装します。本番システムでは通常、継続的に保守されているプロバイダーライブラリと、より広範な適合性テストを使うべきです。
+
+## プロジェクト構成
 
 ```text
-s04: Evented Tool Loop
-     toolCall -> tool execution events -> toolResult -> next turn
-
-s05: Tool Hooks
-     beforeToolCall / afterToolCall / terminate
-
-s06: Harness Turn State
-     session.buildContext() + active tools + resources + systemPrompt
+learn-pi-agent/
+  README.md / README.zh.md / README.ja.md
+  .env.example
+  package.json
+  s01_agent_loop/
+  ...
+  s13_integrated_harness/
+  s14_real_provider/
 ```
 
-### C. Coding-agent 層（s07–s09）—— ターミナル製品はどう育つか
+## 修了時に説明できるべきこと
 
-```text
-s07: Session Tree
-     JSONL entry + id/parentId + branch navigation
+- ストリーミングされるプロバイダーイベントが、完成した文字列より多くの不変条件を持つ理由。
+- Tool Schema、ハンドラー、フック、実行環境が別の境界である理由。
+- 追記専用で分岐可能なセッションが、復旧性と監査可能性をどう変えるか。
+- プロジェクトへの信頼判定がサンドボックスではない理由。
+- 実行モードが表示方法を担っても、Agent の状態を持つべきではない理由。
+- 同じ s13 のループが、決定的なフィクスチャと実際の s14 プロバイダーの両方で動く理由。
 
-s08: Context Resources
-     AGENTS.md・skills・prompt templates・active tools がどうやって 1 回のリクエストに入るか
+目標は、デモに回答させることだけではありません。モデル、プロバイダー、ループ、ツール、セッション、シェルの各境界を指し、その境界を動かすと何が壊れるか説明できることです。
 
-s09: Extension Runtime
-     on(event)、registerTool、registerCommand、custom message
-```
+このコースには、リポジトリのルートにある [MIT License](../LICENSE) が適用されます。
 
-### D. シェル層（s10–s12）—— 同じ core を別々の動かし方につなぐ
-
-```text
-s10: Runtime Modes
-     同じ runtime を interactive、print/json、rpc、sdk の外殻につなぐ
-
-s11: Trust And Execution Env
-     project trust が入力のロードを制御し、execution env が読み書きと shell の境界を制御する
-
-s12: Pi Package
-     manifest、規約ディレクトリ、filter、scope でリソースをパッケージ化して共有する
-```
-
-### E. 統合層（s13）—— ここまでの仕組みを 1 本の経路として走らせる
-
-```text
-s13: Integrated Harness
-     trust -> package/resources/extensions -> turn state -> hooked tool loop -> session -> runtime modes
-```
-
-s13 がやるのはアダプテーションとオーケストレーションだけです。tool loop は引き続き s05 が実行し、session の保存は s07 のまま、resource・extension・trust・package・mode はそれぞれ s08–s12 の公開インターフェースを再利用します。コース全体の設計トレードオフのまとめ表は s13 の末尾にあります。
-
-## 固定ソース参照
-
-- [`earendil-works/pi`](https://github.com/earendil-works/pi/tree/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/)：固定 revision の Pi 上流ソース（0.79.1、commit 2f5066d7）。検証とトレース用
-- [`shareAI-lab/claw0`](https://github.com/shareAI-lab/claw0/tree/0090e863bd90aaebc79d244223cc2acc7c284eaf/)：コース構成とゼロから積み上げる展開の参考
-
-書き方は `learn-claude-code` の教え方（問題を先に置く、最小実装、ソーストレースの層分け）を参考にしていますが、内容の主軸はあくまで Pi 自身の設計トレードオフです。
+**カーネルは小さく、イベントは読みやすく。モデルに判断を任せ、Harness のすべての境界を明確にする。**

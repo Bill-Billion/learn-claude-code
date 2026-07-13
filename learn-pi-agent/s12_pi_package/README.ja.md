@@ -262,4 +262,4 @@ git ref 依存のインストール              package-manager.ts の git clon
 name collision の診断                  リソースの precedence 順序と collision 診断
 ```
 
-[s13 Integrated Harness](../s13_integrated_harness/README.ja.md)：これまでの 12 節で立てた部品を、実際に動く 1 本のリクエスト連鎖につなぎます。
+[s13 Integrated Harness](../s13_integrated_harness/README.ja.md)：これまでの 12 節で立てた部品を、決定的に再現できる 1 本のリクエスト連鎖につなぎます。その後の s14 では同じ連鎖を保ったまま、fixture provider を任意の OpenAI-compatible live provider に差し替えます。

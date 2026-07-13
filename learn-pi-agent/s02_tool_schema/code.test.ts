@@ -36,4 +36,8 @@ test("dispatchTool rejects unknown tools and invalid input", async () => {
     () => dispatchTool(registry, "read", {}),
     /Missing required parameter: path/,
   );
+  await assert.rejects(
+    () => dispatchTool(registry, "read", { path: 42 }),
+    /Invalid parameter type: path must be string/,
+  );
 });

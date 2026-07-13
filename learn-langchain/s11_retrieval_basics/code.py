@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+load_dotenv()
 
 DEFAULT_KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
 

@@ -279,7 +279,7 @@ def agent_loop(messages):
 ### 新しい 22 章 Main Track
 
 ```sh
-git clone https://github.com/Bill-Billion/learn-agent-harness.git
+git clone https://github.com/Bill-Billion/learn-claude-code.git learn-agent-harness
 cd learn-agent-harness/learn-claude-code
 pip install -r requirements.txt
 cp .env.example .env   # .env を編集し、ANTHROPIC_API_KEY を設定

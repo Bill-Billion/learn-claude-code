@@ -279,7 +279,7 @@ The team JSONL mailbox protocol in this repository is a teaching implementation,
 ### Current 22-Lesson Main Track
 
 ```sh
-git clone https://github.com/Bill-Billion/learn-agent-harness.git
+git clone https://github.com/Bill-Billion/learn-claude-code.git learn-agent-harness
 cd learn-agent-harness/learn-claude-code
 pip install -r requirements.txt
 cp .env.example .env   # Edit .env and add your ANTHROPIC_API_KEY

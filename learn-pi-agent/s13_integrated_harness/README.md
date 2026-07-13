@@ -2,7 +2,7 @@
 
 English · [中文](README.zh.md) · [日本語](README.ja.md)
 
-[← s12](../s12_pi_package/README.md) · [Contents](../README.md)
+[← s12](../s12_pi_package/README.md) · [Contents](../README.md) · [s14 →](../s14_real_provider/README.md)
 
 > In one sentence: s13 writes no new mechanisms — it joins the public interfaces of the first 12 units into one runnable request chain. If it all connects, the boundaries were drawn right.
 >
@@ -160,7 +160,7 @@ Not implemented in this unit: context compaction, token budgets, a real provider
 
 ## Closing
 
-Behind every choice across these thirteen units sits the same triple: what was chosen / what wasn't / what it costs. Collected once into a single table:
+Behind every choice across these first thirteen units sits the same triple: what was chosen / what wasn't / what it costs. Collected once into a single table:
 
 | Dimension | Pi's choice | The alternative not taken | The cost |
 | --- | --- | --- | --- |
@@ -172,4 +172,4 @@ Behind every choice across these thirteen units sits the same triple: what was c
 | Security boundary | trust separated from the execution environment | a built-in sandbox | you configure your own execution sandbox; trust only governs input loading |
 | Capability distribution | packages as the distribution unit | hardcoding capabilities into core | the manifest/resolver layer is extra engineering — worth it once distribution exists |
 
-That table is the through-line of this course: Pi core stays small, events stay legible, extension stays open, and isolation doesn't pretend to be solved inside the process. Whatever comes next — giving mini-pi a real provider, attaching a terminal UI, or reading the parts of the Pi source this course didn't cover — pick a row in the table and drill down.
+That table is the through-line of this course: Pi core stays small, events stay legible, extension stays open, and isolation doesn't pretend to be solved inside the process. [s14](../s14_real_provider/README.md) now takes the next step: it keeps this integrated harness intact and replaces the deterministic provider with a real OpenAI-compatible stream.

@@ -17,6 +17,7 @@
     "session:s11": "node s11_trust_execution_env/code.ts --demo",
     "session:s12": "node s12_pi_package/code.ts --demo",
     "session:s13": "node s13_integrated_harness/code.ts --s13-demo",
+    "session:s14": "node --env-file-if-exists=.env s14_real_provider/code.ts",
     "test:s01": "node --test s01_agent_loop/code.test.ts",
     "test:s02": "node --test s02_tool_schema/code.test.ts",
     "test:s03": "node --test s03_provider_events/code.test.ts",
@@ -30,6 +31,7 @@
     "test:s11": "node --test s11_trust_execution_env/code.test.ts",
     "test:s12": "node --test s12_pi_package/code.test.ts",
     "test:s13": "node --test s13_integrated_harness/code.test.ts",
+    "test:s14": "node --test s14_real_provider/code.test.ts",
     "test": "node --test s*/code.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"

@@ -94,7 +94,7 @@ export function Header() {
           </button>
 
           <a
-            href="https://github.com/Bill-Billion/learn-agent-harness"
+            href="https://github.com/Bill-Billion/learn-claude-code"
             target="_blank"
             rel="noopener"
             className="text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-white"
@@ -150,7 +150,7 @@ export function Header() {
                 {mounted ? (dark ? <Sun size={18} /> : <Moon size={18} />) : <span className="w-[18px] h-[18px] inline-block" />}
               </button>
               <a
-                href="https://github.com/Bill-Billion/learn-agent-harness"
+                href="https://github.com/Bill-Billion/learn-claude-code"
                 target="_blank"
                 rel="noopener"
                 className="flex min-h-[44px] min-w-[44px] items-center justify-center text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-white"

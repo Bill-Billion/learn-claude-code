@@ -29,7 +29,7 @@ npm run build
 
 ### `learn-pi-agent/`
 
-The 13 lessons form one cumulative TypeScript implementation. Keep the English, Chinese, and Japanese lesson guides synchronized. Source-trace notes must link to the pinned public upstream revision rather than a local source clone.
+The 14 lessons form one cumulative TypeScript implementation. Lessons s01-s13 and every automated test remain deterministic and offline; s14 adds an optional OpenAI-compatible live provider. Keep the English, Chinese, and Japanese lesson guides synchronized. Source-trace notes must link to the pinned public upstream revision rather than a local source clone.
 
 ```bash
 cd learn-pi-agent
@@ -73,7 +73,7 @@ Learn Agent Harness 包含三门彼此独立的教学课程。只要改动能让
 ## 课程边界
 
 - `learn-claude-code/`：当前主线是 22 节 `sNN_topic/` 课程；`agents/` 与 `docs/{en,zh,ja}/` 是保留的旧版材料。修改当前课程时，三语 README 及其中代码块必须同步。
-- `learn-pi-agent/`：13 节 TypeScript 课程共同组成一条累积主线。三语讲义必须同步，源码溯源必须指向固定的公开上游版本，不能依赖本地 Clone。
+- `learn-pi-agent/`：14 节 TypeScript 课程共同组成一条累积主线。s01-s13 与全部自动化测试保持确定性和离线运行，s14 提供可选的 OpenAI 兼容真实模型接入。三语讲义必须同步，源码溯源必须指向固定的公开上游版本，不能依赖本地 Clone。
 - `learn-langchain/`：每节中文课程包含 Starter、完整实现和离线测试。实际示例可以使用 OpenAI，但自动检查不能依赖 API Key 或联网模型调用。
 
 课程改名、节数、前置条件、运行方式或学习路线发生变化时，必须同步修改根目录三个 README。不要提交依赖目录、缓存、构建产物、Web 生成数据、本地源码 Clone、内部计划、模型工作区、草稿或备份文件。

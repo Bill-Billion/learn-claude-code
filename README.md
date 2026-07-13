@@ -1,61 +1,42 @@
 [English](./README.md) | [中文](./README-zh.md) | [日本語](./README-ja.md)
 
-# Learn Agent Harness
+# Learn Agent Harness: Build the System Around the Model
 
-Build the systems around capable models, one working layer at a time.
+A capable model can reason about a task and choose an action. It still needs code that shows it the environment, offers tools, executes approved actions, keeps state, and reports the result. That surrounding system is the agent harness.
 
-Learn Agent Harness is a three-course monorepo for understanding how agent products are assembled. Instead of hiding behavior behind one large framework, each course exposes the loop, tools, state, context, permissions, and runtime decisions that make a model useful in a real environment.
+Learn Agent Harness teaches that system through three independent, runnable courses. You can build the loop directly in Python, follow the same loop through an event-driven TypeScript runtime, or use LangChain's framework abstractions. The implementations differ, but the engineering questions stay concrete: what does the model see, what may it do, what state survives, and how does the application know when to continue or stop?
 
-## Choose a Course
+## The Model Chooses; the Harness Makes the Choice Operational
 
-| Course | What you build | Stack | Lessons | Languages | Model access |
-| --- | --- | --- | ---: | --- | --- |
-| [Learn Claude Code](./learn-claude-code/) | A Claude Code-style coding harness, from one loop to goals and multi-agent workflows | Python | 22 | English, Chinese, Japanese | Anthropic API for live examples; tests are offline |
-| [Learn Pi Agent](./learn-pi-agent/) | A small, event-driven Pi-style harness with sessions, extensions, trust boundaries, and packages | TypeScript | 13 | English, Chinese, Japanese | Fully deterministic and offline |
-| [Learn LangChain](./learn-langchain/) | Model, prompt, tool, agent, memory, LangGraph, and RAG patterns in one progressive course | Python | 13 | Chinese | OpenAI for live examples; tests are offline |
-
-Each course is self-contained. You can study one without installing the dependencies of the other two.
-
-## Pick a Learning Route
-
-### From first principles
-
-Start with **Learn Claude Code** to see the smallest possible agent loop grow into a complete coding harness. Continue with **Learn Pi Agent** to compare an event-driven TypeScript design, then use **Learn LangChain** to map those primitives onto framework abstractions.
-
-### TypeScript and runtime design
-
-Start with **Learn Pi Agent**. Its deterministic provider makes every event and state transition inspectable. Compare the result with Claude Code's direct Python implementation when you want to study permissions, compaction, tasks, and multi-agent coordination.
-
-### Frameworks, graphs, and RAG
-
-Start with **Learn LangChain** if your immediate goal is application development. Then read either implementation course to understand what the framework is coordinating underneath.
-
-### Architecture comparison
-
-Read the same concerns across all three courses: model adaptation, tool dispatch, turn state, persistence, context control, extension points, and trust boundaries. The names differ; the engineering questions repeat.
-
-## What Is an Agent Harness?
-
-A useful agent product combines two different things:
+An agent product combines learned capability with an operational environment:
 
 ```text
 Agent product = trained model + harness
 
 Harness = model adapter
-        + tools
+        + tools and action interfaces
         + context and knowledge
         + state and memory
-        + permissions
-        + runtime and observation
+        + permissions and trust boundaries
+        + runtime, observation, and recovery
 ```
 
-The model supplies learned capabilities. The harness gives those capabilities a place to operate: it presents observations, exposes actions, records state, enforces boundaries, and decides what happens around each model call.
+The model interprets an unfamiliar request and decides what to do next. The harness turns that decision into a controlled operation. It translates provider responses, dispatches tools, records results, limits access, and prepares the next model call.
 
-Prompt chains, orchestration libraries, and state graphs can all be valid harness tools. They help structure control flow and application state. They do not create agency by themselves; they organize how a trained model is used.
+Prompt chains, state graphs, and workflow engines belong on the harness side of this boundary. They are useful when a process needs explicit routing, persistence, retries, or approval. They organize the use of a trained model; they do not replace the model's judgment.
 
-## The Shared Loop
+| Responsibility | Model | Harness |
+| --- | --- | --- |
+| Understand intent and incomplete information | Primary | Supplies relevant context |
+| Choose a response or tool call | Primary | Defines the available actions |
+| Execute a command or API call | Requests it | Runs it under policy |
+| Preserve sessions and long-running work | Uses the supplied history | Stores, compacts, and restores state |
+| Enforce permissions | Cannot be the trust boundary | Validates, asks for approval, and isolates execution |
+| Observe failures and continue | Reasons about the failure | Captures errors, retries safely, and exposes evidence |
 
-All three courses eventually return to the same provider-neutral loop:
+## One Agent Loop, Three Ways to See It
+
+Every course returns to the model-tool loop:
 
 ```text
 messages = [user_request]
@@ -72,31 +53,207 @@ while true:
         messages += result
 ```
 
-Real products add streaming, hooks, retries, compaction, persistence, scheduling, teams, or graphs. The loop remains the point where model intent meets harness behavior.
+Streaming, hooks, memory, task queues, graphs, and multi-agent coordination all attach around this loop. They change how the application observes and manages a turn. The model still selects the next semantic action; the harness still owns execution and policy.
 
-## The Courses
+### What each course reveals
 
-### Learn Claude Code
+| View | Course | What stays visible | What you learn to reason about |
+| --- | --- | --- | --- |
+| Direct implementation | [Learn Claude Code](./learn-claude-code/) | The loop, handler maps, context, persistence, teams, and goal checks | How a coding harness grows one mechanism at a time |
+| Event-driven runtime | [Learn Pi Agent](./learn-pi-agent/) | Typed provider events, turn state, sessions, extensions, and trust decisions | How a runtime separates protocol, core, and product shell |
+| Framework abstraction | [Learn LangChain](./learn-langchain/) | Models, messages, prompts, tools, agents, middleware, retrieval, and RAG | What the framework accepts, returns, and coordinates for you |
 
-Twenty-two incremental Python lessons reconstruct a coding agent from a minimal loop. The course covers tool use, permissions, hooks, subagents, skill loading, context compaction, memory, recovery, tasks, scheduling, agent teams, worktree isolation, MCP, workflow runtimes, and persistent goals.
+Together, the courses prevent two common blind spots. A framework-only view can hide state transitions that matter during debugging. A from-scratch-only view can leave you rebuilding stable abstractions instead of using them deliberately.
+
+## Choose a Course
+
+| Course | Best starting point for | Stack | Lessons | Languages | Live model path |
+| --- | --- | --- | ---: | --- | --- |
+| [Learn Claude Code](./learn-claude-code/) | First-principles harness engineering and coding-agent architecture | Python 3.11 | 22 | English, Chinese, Japanese | Anthropic-compatible API |
+| [Learn Pi Agent](./learn-pi-agent/) | TypeScript developers studying protocols and event-driven runtimes | Node.js 25 + TypeScript | 14 | English, Chinese, Japanese | Optional OpenAI-compatible API in s14 |
+| [Learn LangChain](./learn-langchain/) | Python developers who want to build with LangChain while understanding its contracts | Python 3.11 + uv | 13 | Chinese | OpenAI by default |
+
+The courses do not share runtime dependencies. Install only the course you are studying.
+
+## Quick Start
+
+Clone the repository once, then enter the course you want to study. The course-specific commands in the next three sections all start from the repository root.
+
+```bash
+git clone https://github.com/Bill-Billion/learn-claude-code.git learn-agent-harness
+cd learn-agent-harness
+```
+
+## Course 1: Learn Claude Code
+
+[Learn Claude Code](./learn-claude-code/) reconstructs a coding harness in 22 progressive Python lessons. It begins with one model-tool loop and keeps that loop recognizable while adding the machinery needed for longer, safer, collaborative work.
+
+### Who it is for
+
+Choose this course when you want to inspect agent mechanics without a framework owning the main control flow. It suits Python developers, coding-agent users who want to understand the product beneath the interface, and engineers designing a harness for another domain.
+
+After the course, you should be able to separate model decisions from runtime responsibilities, add tools without rewriting the loop, manage finite context, persist work, coordinate subagents, and close a task against trusted evidence.
+
+### What the 22 lessons build
+
+| Lessons | Layer added to the harness |
+| --- | --- |
+| s01-s04 | Agent loop, tool dispatch, permissions, and hooks |
+| s05-s11 | Planning, subagents, skills, context compaction, memory, prompts, and recovery |
+| s12-s14 | Persistent tasks, background work, and scheduling |
+| s15-s18 | Teams, coordination protocols, autonomous claiming, and worktree isolation |
+| s19-s22 | MCP, complete integration, workflow runtime, and goal-based continuation |
+
+The current 22-lesson track is the recommended path. The course also retains a legacy 12-lesson track for existing readers; the [course directory](./learn-claude-code/) contains guides that explain the mapping.
+
+### Run it
+
+```bash
+cd learn-claude-code
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt pytest
+cp .env.example .env
+# Edit .env and set ANTHROPIC_API_KEY before the live run.
+python s01_agent_loop/code.py
+python -m pytest -q
+```
+
+The runnable chapter uses the provider settings in `.env`. The test suite uses local doubles and does not require a model key. The course guide also documents its generated Web learning interface.
 
 - [English course guide](./learn-claude-code/README.md)
 - [中文课程指南](./learn-claude-code/README.zh.md)
 - [日本語コースガイド](./learn-claude-code/README.ja.md)
 
-### Learn Pi Agent
+## Course 2: Learn Pi Agent
 
-Thirteen TypeScript lessons build a mini Pi-style harness with a swappable provider contract. The course emphasizes event streams, session trees, context resources, extensions, trust boundaries, package resolution, and integration. Every example and test runs without a model key.
+[Learn Pi Agent](./learn-pi-agent/) builds a small Pi-style runtime in 14 cumulative TypeScript lessons. The code follows a request through provider events, a tool loop, turn state, sessions, context resources, extensions, runtime modes, trust checks, and package resolution. s13 integrates the offline mechanisms; s14 connects that harness to a real provider.
+
+### Who it is for
+
+Choose this course when typed boundaries and runtime events help you understand a system. It suits TypeScript developers, CLI and SDK authors, and readers who want to see how the protocol layer, agent core, and product shell remain separable.
+
+After the course, you should be able to design a swappable provider contract, normalize streaming events, expose lifecycle hooks without changing the core loop, preserve session branches, and place execution policy outside model output.
+
+### What the 14 lessons build
+
+| Lessons | Layer added to the harness |
+| --- | --- |
+| s01-s03 | Minimal loop, tool schemas, and normalized provider events |
+| s04-s06 | Event-driven tool execution, hooks, and turn state |
+| s07-s09 | Session trees, context resources, and extension runtime |
+| s10-s12 | Runtime modes, trusted execution environment, and package resolution |
+| s13 | One deterministic, integrated harness |
+| s14 | OpenAI-compatible streaming and a real model-tool-model round trip |
+
+s01-s13 use deterministic providers so that every event and transition can be inspected without a network request. s14 is an optional live chapter, not a replacement for the offline path.
+
+### Run it
+
+```bash
+cd learn-pi-agent
+npm ci
+npm run session:s01
+npm run test:s01
+npm run check
+```
+
+To run the live chapter, provide an OpenAI-compatible Chat Completions endpoint. `OPENAI_BASE_URL` is optional and defaults to `https://api.openai.com/v1`.
+
+```bash
+export OPENAI_API_KEY="your-key"
+export OPENAI_MODEL="your-model"
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+npm run session:s14 -- "Read README.md and summarize it."
+```
+
+Only `session:s14` sends a network request. `npm run test:s14` uses an in-memory SSE fixture, and `npm run check` keeps the entire course verifiable without a key.
 
 - [English course guide](./learn-pi-agent/README.md)
 - [中文课程指南](./learn-pi-agent/README.zh.md)
 - [日本語コースガイド](./learn-pi-agent/README.ja.md)
 
-### Learn LangChain
+## Course 3: Learn LangChain
 
-Thirteen Chinese Python lessons progress from direct model calls to prompts, structured output, tools, agents, middleware, memory, retrieval, LangGraph, and a comprehensive project. Starter files, completed implementations, and offline tests make the abstractions concrete.
+[Learn LangChain](./learn-langchain/README.md) is a 13-lesson Chinese course for learning LangChain through its current public APIs. Each lesson adds one abstraction and keeps its input and output types visible. The path moves from a direct model call to messages, prompts, structured output, tools, agents, memory, retrieval, and a small RAG application.
+
+### Who it is for
+
+Choose this course when you want to build a LangChain application without treating the framework as a black box. It suits Python beginners who have basic language experience and application developers who need a practical route into agents and RAG.
+
+After the course, you should be able to select the right LangChain component, predict its input and return type, trace the message state through an agent, and decide which parts of a RAG flow belong in retrieval, tools, or model context.
+
+### What the 13 lessons build
+
+| Lessons | Layer added to the application |
+| --- | --- |
+| s01-s05 | Model invocation, messages, system prompts, templates, and structured output |
+| s06-s10 | Tools, agents, streaming, short-term memory, and todo middleware |
+| s11-s13 | Retrieval basics, minimal RAG, and an integrated course assistant |
+
+The main path stays focused on LangChain. Deep LangGraph orchestration, MCP, multi-agent systems, and production vector databases remain follow-up topics rather than hidden prerequisites.
+
+### Run it
+
+```bash
+cd learn-langchain
+uv sync --locked --extra dev
+cp .env.example .env
+# Edit .env and set OPENAI_API_KEY before the live run.
+uv run python -m s01_first_model.code
+uv run pytest -q
+```
+
+Live examples read `LANGCHAIN_MODEL` and provider credentials from `.env`; the default configuration uses OpenAI. Lessons s11-s13 also use OpenAI embeddings unless you inject another embedding implementation. Tests use fake models, fake embeddings, or small local substitutes and do not make provider calls.
 
 - [中文课程指南](./learn-langchain/README.md)
+
+## Pick a Learning Route
+
+### Understand the architecture from first principles
+
+Study Claude Code first, then Pi Agent, and finish with LangChain. You will see a direct implementation before comparing an event protocol and a framework. This is the most complete route through the repository.
+
+### Build a TypeScript runtime
+
+Start with Pi Agent. Compare s03-s06 with Claude Code s01-s04 when you want to contrast event normalization with a direct request loop. Continue into the Claude Code chapters on context, tasks, and teams when your runtime needs longer-lived work.
+
+### Build an agent or RAG application now
+
+Start with LangChain and complete its 13-lesson main line. Then read the first four lessons of either implementation course. The second pass gives names and code paths to the work that `create_agent` coordinates for you.
+
+### Compare one engineering concern
+
+Use the courses as three views of the same design problem:
+
+| Concern | Learn Claude Code | Learn Pi Agent | Learn LangChain |
+| --- | --- | --- | --- |
+| Model boundary | Anthropic content blocks and `stop_reason` | Provider contract and normalized events | `init_chat_model` and message objects |
+| Tool boundary | JSON schemas and handler dispatch | Typed schemas, events, and execution hooks | `@tool` and agent-managed tool messages |
+| Turn state | `messages` plus explicit runtime state | Event stream and `TurnState` | Agent state and message history |
+| Extension | Hooks, skills, and MCP | Hooks, extensions, and packages | Middleware and composable components |
+| Context | Skills, memory, and compaction | Context resources and session branches | Prompts, checkpointers, and retrieval |
+| Control | Permissions, tasks, workflows, and goals | Trust checks and runtime modes | Agent orchestration and middleware |
+
+## How to Work Through a Course
+
+1. Read the course guide and run its full offline check before changing code.
+2. Work through one lesson directory at a time. Identify the mechanism added since the previous lesson.
+3. Run the chapter entry point and inspect the state or events it emits.
+4. Change one boundary: add a tool, reject an action, branch a session, or swap a test double.
+5. Run the chapter test, then compare the implementation with the next lesson.
+
+The live model path teaches provider behavior and model-tool interaction. Offline tests teach contracts, state transitions, and failure handling. Use both; they answer different questions.
+
+## Model Access and Verification
+
+| Course | Live execution | Offline verification | Network boundary |
+| --- | --- | --- | --- |
+| Learn Claude Code | Chapter scripts use `ANTHROPIC_API_KEY`, `MODEL_ID`, and optional `ANTHROPIC_BASE_URL` | `python -m pytest -q` | Tests do not call a provider |
+| Learn Pi Agent | Only s14 uses `OPENAI_API_KEY`, `OPENAI_MODEL`, and optional `OPENAI_BASE_URL` | `npm run check` and every lesson test | s01-s13 and all tests stay offline |
+| Learn LangChain | Examples use `LANGCHAIN_MODEL` and its provider credentials; defaults use OpenAI | `uv run pytest -q` | Tests use local fakes; live examples may call the provider |
+
+No root-level install command exists because the courses use separate environments and lock files. CI runs each course independently.
 
 ## Repository Layout
 
@@ -107,39 +264,27 @@ learn-agent-harness/
 ├── README-ja.md
 ├── CONTRIBUTING.md
 ├── LICENSE
-├── learn-claude-code/
-├── learn-pi-agent/
-└── learn-langchain/
+├── .github/workflows/       # independent course checks and repository hygiene
+├── learn-claude-code/       # 22 Python lessons, trilingual
+├── learn-pi-agent/          # 14 TypeScript lessons, trilingual
+└── learn-langchain/         # 13 Python lessons, Chinese
 ```
 
-Course dependencies, generated sites, local source clones, and internal planning material are intentionally not committed.
+Dependency directories, generated sites, caches, local source clones, internal plans, and model workspace files do not belong in the published tree.
 
-## Get Started
+## Repository Boundaries
 
-```bash
-git clone https://github.com/Bill-Billion/learn-agent-harness.git
-cd learn-agent-harness
-```
+- Lessons expose one mechanism at a time. They are teaching implementations, not production SDKs.
+- Later lessons may integrate earlier code, but each course keeps its own dependencies and checks.
+- Live examples may need a paid provider account. Automated tests must remain deterministic and offline.
+- The Claude Code and Pi Agent courses keep English, Chinese, and Japanese guides synchronized. Learn LangChain currently publishes Chinese material only.
+- Simplified permissions, storage, or provider adapters are named as such instead of being presented as production-complete systems.
 
-Then enter one course and follow its guide:
+## Contributing
 
-```bash
-cd learn-claude-code   # Python, 22 lessons
-cd learn-pi-agent      # TypeScript, 13 lessons
-cd learn-langchain     # Python, 13 lessons
-```
+Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request. Changes to lesson counts, commands, provider behavior, or course scope must update all three root README files. Changes inside a trilingual course must keep its three course guides aligned.
 
-The commands above are alternatives from the repository root, not a sequence.
-
-## Repository Principles
-
-- **Expose the mechanism.** Teaching code should make the state transition visible.
-- **Change one idea at a time.** Later lessons build on earlier ones without turning each chapter into a production framework.
-- **Test the boundary.** Course checks are deterministic and do not require paid model calls.
-- **Name simplifications honestly.** Each course distinguishes teaching shortcuts from production behavior.
-- **Keep translations synchronized.** When a trilingual lesson changes, its code blocks and technical claims change together.
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+Run the checks for every course you touch and keep generated output, dependency directories, local references, drafts, and internal planning material out of commits.
 
 ## License
 

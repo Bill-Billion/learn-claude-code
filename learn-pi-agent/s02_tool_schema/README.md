@@ -11,7 +11,7 @@ English · [中文](README.zh.md) · [日本語](README.ja.md)
 → `ToolDefinition` has exactly three fields — name / description / parameters — and that's everything the model gets to see
 → label and handler both live on the `RegisteredTool` side: one is a UI display field, the other a local function, and the provider gets neither
 → The stripping happens in one function, `listToolDefinitions()` — the registry is a local runtime asset; the provider payload can only be a serializable contract
-→ `dispatchTool()` is just a table lookup plus required-field checks; between the model asking for a tool and the tool actually running sits all of s04
+→ `dispatchTool()` is a table lookup plus required-field and primitive-type checks; between the model asking for a tool and the tool actually running sits all of s04
 
 ---
 
@@ -138,13 +138,23 @@ export async function dispatchTool(
 }
 ```
 
-The `validateInput()` in the middle is minimal validation: it only checks that the fields listed in `parameters.required` are present in the input, and throws if one is missing. Pi uses TypeBox for full type validation; here we just make one thing true — the schema isn't just documentation, it can actually block bad input:
+The `validateInput()` in the middle implements the tiny schema subset defined by this lesson: required fields must be present, and declared `string`, `number`, or `boolean` values must have that runtime type. Pi uses TypeBox for full JSON Schema validation; this teaching version intentionally stops before arrays, nested objects, unions, formats, and additional-property rules:
 
 ```ts
 function validateInput(tool: ToolDefinition, input: Record<string, unknown>): void {
   for (const key of tool.parameters.required ?? []) {
     if (!(key in input)) {
       throw new Error(`Missing required parameter: ${key}`);
+    }
+  }
+
+  for (const [key, property] of Object.entries(tool.parameters.properties)) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    const hasExpectedType = typeof value === property.type
+      && (property.type !== "number" || Number.isFinite(value));
+    if (!hasExpectedType) {
+      throw new Error(`Invalid parameter type: ${key} must be ${property.type}`);
     }
   }
 }

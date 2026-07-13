@@ -132,12 +132,22 @@ export async function dispatchTool(
 }
 ```
 
-参数校验我们先做最基础的：检查必填字段在不在：
+参数校验只实现本课定义的最小 Schema 子集：必填字段必须存在，声明为 `string`、`number` 或 `boolean` 的值也必须符合对应的运行时类型。真实 Pi 使用 TypeBox 完成更完整的 JSON Schema 校验；数组、嵌套对象、联合类型、格式和额外字段规则不属于本课范围。
 ```ts
 function validateInput(tool: ToolDefinition, input: Record<string, unknown>): void {
   for (const key of tool.parameters.required ?? []) {
     if (!(key in input)) {
       throw new Error(`Missing required parameter: ${key}`);
+    }
+  }
+
+  for (const [key, property] of Object.entries(tool.parameters.properties)) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    const hasExpectedType = typeof value === property.type
+      && (property.type !== "number" || Number.isFinite(value));
+    if (!hasExpectedType) {
+      throw new Error(`Invalid parameter type: ${key} must be ${property.type}`);
     }
   }
 }

@@ -75,6 +75,16 @@ function validateInput(tool: ToolDefinition, input: Record<string, unknown>): vo
       throw new Error(`Missing required parameter: ${key}`);
     }
   }
+
+  for (const [key, property] of Object.entries(tool.parameters.properties)) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    const hasExpectedType = typeof value === property.type
+      && (property.type !== "number" || Number.isFinite(value));
+    if (!hasExpectedType) {
+      throw new Error(`Invalid parameter type: ${key} must be ${property.type}`);
+    }
+  }
 }
 
 export function createDemoToolRegistry(): ToolRegistry {

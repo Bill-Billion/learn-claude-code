@@ -11,7 +11,7 @@
 → `ToolDefinition` のフィールドは name / description / parameters の 3 つだけ。モデルに見えるのはこれがすべてです
 → label と handler はどちらも `RegisteredTool` 側に住んでいます：一方は UI 表示用のフィールド、もう一方はローカル関数で、provider はどちらも受け取りません
 → 剥がす処理は `listToolDefinitions()` という 1 つの関数に集約されています——レジストリはローカルのランタイム資産で、provider に渡す payload はシリアライズ可能な契約だけです
-→ `dispatchTool()` はテーブル引きと必須フィールドの検査だけ。モデルが「ツールを呼びたい」と言うことと、ツールが実際に実行されることの間には、s04 がまるごと挟まっています
+→ `dispatchTool()` はテーブル参照に加え、必須フィールドと基本型を検査します。モデルが「ツールを呼びたい」と言うことと、ツールが実際に実行されることの間には、s04 がまるごと挟まっています
 
 ---
 
@@ -138,13 +138,23 @@ export async function dispatchTool(
 }
 ```
 
-途中の `validateInput()` は最小限の検証です：`parameters.required` に並んだフィールドが input にあるかだけを見て、欠けていれば throw します。Pi は TypeBox で完全な型検証をしますが、ここではまず「schema は単なるドキュメントではなく、悪い入力を止められる」ことを成立させます：
+途中の `validateInput()` は、この節で定義した小さな schema subset を検証します。必須フィールドが存在し、宣言された `string`、`number`、`boolean` と実行時の型が一致しなければなりません。Pi は TypeBox で完全な JSON Schema 検証を行いますが、この教材では配列、入れ子の object、union、format、追加プロパティの規則までは扱いません：
 
 ```ts
 function validateInput(tool: ToolDefinition, input: Record<string, unknown>): void {
   for (const key of tool.parameters.required ?? []) {
     if (!(key in input)) {
       throw new Error(`Missing required parameter: ${key}`);
+    }
+  }
+
+  for (const [key, property] of Object.entries(tool.parameters.properties)) {
+    if (!(key in input)) continue;
+    const value = input[key];
+    const hasExpectedType = typeof value === property.type
+      && (property.type !== "number" || Number.isFinite(value));
+    if (!hasExpectedType) {
+      throw new Error(`Invalid parameter type: ${key} must be ${property.type}`);
     }
   }
 }

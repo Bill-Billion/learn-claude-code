@@ -262,4 +262,4 @@ installing git ref dependencies        git clone / git fetch in package-manager.
 name collision diagnostics             resource precedence ordering and collision diagnostics
 ```
 
-[s13 Integrated Harness](../s13_integrated_harness/README.md): the parts raised over twelve units, joined into one request chain that actually runs.
+[s13 Integrated Harness](../s13_integrated_harness/README.md): the parts raised over twelve units, joined into one deterministic request chain that actually runs. After that, s14 keeps the same chain and replaces the fixture provider with an optional OpenAI-compatible live provider.
