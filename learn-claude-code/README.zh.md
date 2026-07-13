@@ -319,10 +319,10 @@ flowchart TD
     classDef stage4 fill:#FCE4EC,stroke:#C2185b,stroke-width:2px,color:#880E4F,rx:12,ry:12,text-align:left
     classDef stage5 fill:#F3E5F5,stroke:#7B1FA2,stroke-width:2px,color:#4A148C,rx:12,ry:12,text-align:left
     classDef stage6 fill:#E0F7FA,stroke:#0097A7,stroke-width:2px,color:#006064,rx:12,ry:12,text-align:left
-    
+
     %% 背景框样式
     classDef groupBox fill:#F8F9FA,stroke:#CED4DA,stroke-width:2px,stroke-dasharray: 5 5,rx:15,ry:15,color:#495057
-    
+
     %% 第一层：1-3阶段
     subgraph Phase1 ["🌱 阶段 1-3：基础能力构建（从简单到复杂）"]
         direction LR
