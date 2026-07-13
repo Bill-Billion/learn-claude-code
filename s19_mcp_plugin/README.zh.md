@@ -10,131 +10,82 @@ s01 → ... → s17 → s18 → `s19` → [s20](../s20_comprehensive/)
 
 ---
 
-## 问题
+盘点一下工具箱：bash、文件、任务、团队、工位，全是我们亲手写进 `code.py` 的。现在用户来了需求："让 Agent 能查我们公司的 Jira，还有我们自建的部署平台。"
 
-s01 到 s18，Agent 的所有工具都是手写的：bash、read、write、task、worktree。每个工具的输入验证、执行逻辑、错误处理，都是你一行行写的。
+照老办法，s02 的口号还管用：定义一条，注册一行。可这次不对劲了。Jira 的工具得你写，部署平台的工具也得你写，下一家公司换一套系统，再写一遍、再发一版。工具的作者和 harness 的作者从此绑死，而世界上的系统是写不完的。
 
-现在你有 3 个外部服务想接入：公司的 Jira API（查 issue、建 ticket）、自建的部署系统（触发 deploy、看日志）、团队的 Notion 知识库（搜文档、建页面）。你不想为每个服务重写一套工具代码。
-
-你需要一个标准协议——外部服务只要实现它，Agent 就能直接调用，不管服务用什么语言写的。
-
----
-
-## 解决方案
+问题出在耦合方式上：harness 认识每一个具体工具。要解开，就得让它只认识一件事——怎么发现工具、怎么调用工具。像 USB：设备各造各的，插口只有一个标准。这个标准在 Agent 世界里叫 MCP（Model Context Protocol）。
 
 ![MCP Architecture](images/mcp-architecture.svg)
 
-MCP（Model Context Protocol）定义了 Agent 如何发现和调用外部工具。核心概念：
-
-| 概念 | 作用 |
-|------|------|
-| MCPClient | Agent 端的客户端，连接 server、发现工具、调用工具 |
-| MCP Server | 外部服务，实现 `tools/list` + `tools/call` |
-| assemble_tool_pool | 把内置工具和 MCP 工具组装成一个工具池 |
-| mcp\_\_server\_\_tool 命名 | 不同 server 的工具名隔离 |
-
-沿用 s18 的教学版 worktree 隔离、自主认领、空闲轮询、协议系统。本章新增：`connect_mcp` 工具，用于连接外部服务、发现工具、加入工具池。
-
-教学版用 mock handler 模拟外部 server。真实版会启动子进程，通过 stdin/stdout 发送 JSON-RPC 请求。mock 的好处是不依赖外部服务就能跑完整流程；代价是你看不到真正的网络通信和进程管理。
-
 ---
 
-## 工作原理
+## 发现：运行时问出来，不是编译时写进去
 
-### MCPClient：发现 + 调用
-
-```python
-class MCPClient:
-    def __init__(self, name: str):
-        self.name = name
-        self.tools: list[dict] = []
-        self._handlers: dict[str, callable] = {}
-
-    def register(self, tool_defs, handlers):
-        """Simulates tools/list discovery."""
-        self.tools = tool_defs
-        self._handlers = handlers
-
-    def call_tool(self, tool_name: str, args: dict) -> str:
-        """Simulates tools/call."""
-        handler = self._handlers.get(tool_name)
-        if not handler:
-            return f"MCP error: unknown tool '{tool_name}'"
-        return handler(**args)
-```
-
-教学版用 Python 函数模拟 server 的工具实现。真实版通过 stdio JSON-RPC 与子进程通信。
-
-### connect_mcp：连接 + 发现
+接入一个 MCP server 的第一步不是注册工具，是问它"你有什么"：
 
 ```python
 def connect_mcp(name: str) -> str:
-    if name in mcp_clients:
-        return f"MCP server '{name}' already connected"
-    factory = MOCK_SERVERS.get(name)
-    if not factory:
-        return f"Unknown server '{name}'. Available: ..."
-    mcp_client = factory()
+    mcp_client = MOCK_SERVERS[name]()          # 建立连接
     mcp_clients[name] = mcp_client
-    return f"Connected to '{name}'. Discovered: ..."
+    tool_names = [t["name"] for t in mcp_client.tools]   # 工具是"发现"出来的
+    return (f"Connected to MCP server '{name}'. "
+            f"Discovered {len(mcp_client.tools)} tools: {', '.join(tool_names)}")
 ```
 
-连接后，server 提供的工具立即可用。
+server 自己报上工具清单，每个工具带名字、描述、参数 schema，格式和我们 s02 手写的 `TOOLS` 完全同构。harness 不需要预先知道 Jira 有哪些接口，连上那一刻才知道，这就是"发现"。
 
-### normalize_mcp_name：名称规范化
+教学版的 server 是进程内的 mock（一个 `docs` 文档服务、一个 `deploy` 部署服务），真实的 MCP 是 JSON-RPC 协议，走 stdio 或 HTTP 跟独立进程通信。但"连接、发现、调用、回结果"这个形状是一样的，教学版保形状去管道。
+
+---
+
+## 命名：前缀就是命名空间
+
+发现来的工具不能直接倒进工具池，先要改名：
 
 ```python
-_DISALLOWED_CHARS = re.compile(r'[^a-zA-Z0-9_-]')
-
 def normalize_mcp_name(name: str) -> str:
-    return _DISALLOWED_CHARS.sub('_', name)
+    return _DISALLOWED_CHARS.sub('_', name)    # 非 [a-zA-Z0-9_-] 一律换下划线
+
+prefixed = f"mcp__{safe_server}__{safe_tool}"  # mcp__docs__search
 ```
 
-所有非 `[a-zA-Z0-9_-]` 的字符替换为 `_`。防止 server 名或工具名中包含特殊字符导致命名冲突或注入问题。
+前缀解决冲突：`docs` 和 `deploy` 两个 server 都可以有叫 `status` 的工具，加上 `mcp__{server}__` 之后互不相干，也永远撞不上内置的 `bash`。normalize 是安检哲学的第四次登场（s02 拦路径、s07 拦技能名、s18 拦工位名）：server 报上来的名字是外部输入，带怪字符的名字直接会让 API 拒绝整个请求。
 
-### assemble_tool_pool：组装工具池
+---
+
+## 装配：内置和外接倒进同一个池子
 
 ```python
 def assemble_tool_pool() -> tuple[list[dict], dict]:
     tools = list(BUILTIN_TOOLS)
     handlers = dict(BUILTIN_HANDLERS)
     for server_name, mcp_client in mcp_clients.items():
-        safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
-            safe_tool = normalize_mcp_name(tool_def["name"])
-            prefixed = f"mcp__{safe_server}__{safe_tool}"
-            tools.append(...)
+            prefixed = f"mcp__{normalize_mcp_name(server_name)}__{normalize_mcp_name(tool_def['name'])}"
+            tools.append({"name": prefixed,
+                          "description": tool_def.get("description", ""),
+                          "input_schema": tool_def.get("inputSchema", {})})
             handlers[prefixed] = (
-                lambda *, c=mcp_client, t=tool_def["name"], **kw:
-                    c.call_tool(t, kw))
+                lambda *, c=mcp_client, t=tool_def["name"], **kw: c.call_tool(t, kw))
     return tools, handlers
 ```
 
-前缀 `mcp__{server}__{tool}` 把每个 server 的工具隔离到独立命名空间。名称经过 `normalize_mcp_name` 规范化。
+对模型来说，装配完的池子里没有"内置"和"外接"之分，`mcp__docs__search` 和 `read_file` 长得一模一样，都是名字加 schema。s02 的分发机制原样生效，这正是当初"查表分发"设计的复利。
 
-MCP 工具的 description 带 `(readOnly)` 或 `(destructive)` 标注。教学版用文本标注，真实 Claude Code 用 tool annotations 结构体让权限系统判断。
+那行 handler 的 lambda 里藏着一个 Python 老陷阱，值得点名。如果写成直觉的 `lambda **kw: mcp_client.call_tool(tool_def["name"], kw)`，闭包引用的是循环变量，循环跑完后所有 handler 都指向**最后一个**工具，你调 `search` 它执行 `get_version`。用默认参数 `c=mcp_client, t=tool_def["name"]` 在定义时刻把值固化下来，才是每个 handler 各绑各的。这个坑叫晚绑定，凡在循环里造闭包都要过一遍脑子。
 
-### 无缓存：工具池变了，prompt 也变
+装配不是一锤子买卖。`agent_loop` 每个工具轮之后重新装配一次，模型这一轮刚 `connect_mcp`，下一轮新工具就在池子里了。代价也要说破：工具列表变了，请求里的 `tools` 参数就变了，s08 选学讲过的 prompt cache 前缀随之失效。s10 的对照行说过真实系统里唯一的易失段是 `mcp_instructions`，原因就在这里：MCP 是工具池里唯一运行时可变的部分。
 
-s10-s18 的 agent_loop 用 prompt cache 避免重复序列化。s19 去掉了缓存：
+---
 
-```python
-def agent_loop(messages, context):
-    tools, handlers = assemble_tool_pool()     # 每次重新构建
-    system = assemble_system_prompt(context)    # 每次重新生成
-    ...
-    if any(b.name == "connect_mcp" ...):
-        tools, handlers = assemble_tool_pool()  # 连接后重建
-        system = assemble_system_prompt(context)
-```
+## 注解：外部工具的自我申报
 
-原因：`connect_mcp` 之后工具池变化了，新增了 `mcp__docs__search` 等工具。缓存中的工具列表是旧的，继续用会导致模型调用不到新工具。教学版直接去掉缓存，代价是多花一点序列化时间。
+看 mock server 的工具描述：`search` 标着 `(readOnly)`，`deploy.trigger` 标着 `(destructive)`。这是给权限系统的接口：内置工具读写与否我们自己清楚，外接工具只能靠它申报。
 
-### MCP 工具只有 Lead 可用
+必须诚实一层：注解是 server 说的，server 可以撒谎。一个恶意 server 把删库工具标成 readOnly，教学版会照单全信。所以真实系统对注解的用法是保守方向的：readOnly 只能换来"少打扰"，destructive 必然触发审批，申报无法让一个危险工具跳过 s03 那道门。信任边界画在协议上，不画在对方的自觉上。
 
-教学版中，`connect_mcp` 是 Lead 工具，`assemble_tool_pool` 也只服务于 Lead 的 agent_loop。Teammate 仍使用固定的 8 个子集工具（bash、read_file、write_file、send_message、submit_plan、list_tasks、claim_task、complete_task）。
-
-这是教学简化。真实 Claude Code 中，MCP 工具对主 agent 和子 agent 都可用，子 agent 继承父级的 MCP 配置。
+> 真实 Claude Code：支持六种传输（stdio、HTTP、SSE 等），带 OAuth 认证、服务器反向推送通知、多来源配置合并；MCP 工具的 readOnly/destructive 注解真正接入权限管线，destructive 默认要求用户批准。教学版的 mock 保留了发现、命名、装配、注解四个关键环节。
 
 ---
 
@@ -142,16 +93,11 @@ def agent_loop(messages, context):
 
 | 组件 | 之前 (s18) | 之后 (s19) |
 |------|-----------|-----------|
-| 工具来源 | 全部手写 builtin | 手写 + MCP 外部工具动态发现 |
-| 工具池 | 固定 BUILTIN_TOOLS | assemble_tool_pool 动态组装 mcp\_\_ 前缀工具 |
-| 名称安全 | 无 | normalize_mcp_name 规范化 |
-| 新类型 | — | MCPClient 类（模拟 tools/list + tools/call） |
-| 命名空间 | — | mcp\_\_server\_\_tool 避免冲突 |
-| 工具描述 | 无标注 | (readOnly)/(destructive) 标注 |
-| prompt 缓存 | 有（s10 起） | 去掉，工具池动态变化后缓存失效 |
-| Lead 工具 | 17 (s18) | 18 (+connect_mcp) |
-| Teammate 工具 | 8 (s18) | 8（不变，MCP 工具仅 Lead 可用） |
-| 扩展方式 | 写代码加工具 | MCP 协议，任意语言实现 server |
+| 工具来源 | 全部内置，编译时确定 | 内置 + MCP 发现，运行时可变 |
+| 新类型 | — | `MCPClient`（发现 + 调用） |
+| 新函数 | — | `connect_mcp`, `assemble_tool_pool`, `normalize_mcp_name` |
+| 命名 | 裸名 | MCP 工具带 `mcp__{server}__{tool}` 前缀 |
+| 工具池 | 静态 `TOOLS` | 每个工具轮后重新装配 |
 
 ---
 
@@ -162,121 +108,17 @@ cd learn-claude-code
 python s19_mcp_plugin/code.py
 ```
 
-试试这些 prompt：
-
-1. `Connect to the docs MCP server and search for something`
-2. `Connect to the deploy server and trigger a deployment`
-3. `Connect both servers — what tools are now available?`
-
-观察重点：连接 MCP server 后，工具名是否带 `mcp__docs__` 或 `mcp__deploy__` 前缀？两个 server 的工具是否同时可用？MCP 工具的 description 是否带 (readOnly)/(destructive) 标注？
+1. **发现的瞬间**：`Connect to the docs MCP server, then list what tools you have now.`。连接日志 `[mcp] connected: docs → ['search', 'get_version']` 之后，模型自己就能报出 `mcp__docs__search` 这些新名字，它们进池子了；
+2. **同池调用**：`Search the docs for "authentication" and also read README.md`。一轮里外接工具和内置工具混着调，对模型来说没有任何区别；
+3. **连接不存在的 server**：`Connect to the jira MCP server`。返回 `Unknown server 'jira'. Available: docs, deploy`，报错里带着可用清单，模型看了自己纠正；
+4. **注解的观感**：`Connect to deploy and check the status of service 'web'`，再试 `Trigger a deployment of 'web'`。两个工具都能跑通（教学版没接权限门），但描述里的 `(readOnly)` 和 `(destructive)` 已经写在那里。回想 s03：如果要给外接工具上三道闸门，判断依据就是这些注解。
 
 ---
 
 ## 接下来
 
-现在 Agent 可以通过 MCP 接入外部工具了。但前面 19 章每章都只加一个机制，真实 Agent 不会这样拆开运行。
+MCP 接上，工具箱的最后一块拼图归位。回望这十九课，每课只加一个机制，代码都是各章独立的 demo。可真实的 Agent 不是十九个 demo，是一个进程：压缩、记忆、权限、团队、调度，全部挂在同一个循环上同时运转。
 
-工具、权限、hooks、todo、任务图、记忆、压缩、后台、cron、团队、worktree、MCP 这些机制应该挂在同一个循环上，而不是散在 19 个 demo 里。
+s20 Comprehensive Agent → 把前十九章合回一个完整的 harness。机制很多，循环一个。
 
-s20 Comprehensive Agent → 把前 19 章的机制合回一个完整 harness。机制很多，循环一个。
-
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-> 以下基于 Claude Code 源码 `services/mcp/client.ts`、`auth.ts`、`config.ts`、`channelNotification.ts` 的分析。
-
-### 一、6 种 Transport 类型
-
-教学版只展示了 stdio mock。Claude Code 支持 6 种传输（`types.ts:23-25`）：
-
-| Transport | 通信方式 |
-|-----------|---------|
-| `stdio` | 子进程 stdin/stdout（跨平台默认） |
-| `sse` | HTTP Server-Sent Events |
-| `http` | Streamable HTTP（POST/SSE 双向） |
-| `ws` | WebSocket |
-| `sse-ide` | IDE 内嵌 SSE 传输 |
-| `sdk` | 进程内 SDK 传输 |
-
-连接时本地（stdio）和远程（http/sse/ws）服务器分批并发：本地批量 3 个，远程批量 20 个。
-
-### 二、工具池组装算法
-
-`assembleToolPool()`（`tools.ts:345-364`）：
-
-```typescript
-// 去重时优先保留内置工具（name 相同时内置在前）
-return uniqBy(
-  [...builtInTools.sort(byName), ...filteredMcpTools.sort(byName)],
-  'name',
-)
-```
-
-内置工具和 MCP 工具分开排序，不是合起来排。原因是 Claude Code 的 `claude_code_system_cache_policy` 在最后一个内置工具之后的某个位置放全局缓存断点，混排会破坏这个设计。
-
-### 三、命名规则：`mcp__server__tool`
-
-`buildMcpToolName()`（`mcpStringUtils.ts:50-52`）：
-
-```
-mcp__<normalizedServerName>__<normalizedToolName>
-```
-
-所有非 `[a-zA-Z0-9_-]` 字符替换为 `_`（`normalization.ts:17-23`）。教学版的 `normalize_mcp_name` 用同样的规则。
-
-### 四、权限检查
-
-Claude Code 对 MCP 工具有独立的权限系统。`checkPermissions()` 对 MCP 工具的检查逻辑不同于内置工具：MCP 工具可以声明自己的权限需求（readOnly、destructive 等），Claude Code 根据声明决定是否需要用户确认。教学版只在 description 中用文本标注 `(readOnly)` / `(destructive)`，不做权限拦截。
-
-### 五、配置来源与优先级
-
-MCP 服务器配置来自多个来源。Claude Code 的配置优先级从低到高：
-
-```
-claude.ai 连接器 < plugin < user settings.json < approved project .mcp.json < local settings.local.json
-```
-
-`claude.ai` 连接器单独拉取、按内容签名去重，以最低优先级合并（`config.ts:1267-1289`）。企业 `managed-mcp.json` 存在时完全排除其他配置。
-
-教学版直接传 server name 给 `MOCK_SERVERS` 字典，不做配置合并。
-
-### 六、Channel 通知：服务器反向推消息
-
-教学版只讲了 Agent → MCP Server 的单向调用。Claude Code 还支持反向通知（`channelNotification.ts`）：
-
-1. Server 声明 `capabilities.experimental['claude/channel']`
-2. Server 通过 MCP 通知 `notifications/claude/channel` 给 Agent 发消息
-3. 消息包装在 `<channel source="serverName">...</channel>` XML 标签中
-4. Agent 被 SleepTool 唤醒（1 秒内）
-
-Server 还可以请求权限：`notifications/claude/channel/permission_request` → Agent 回复 `notifications/claude/channel/permission`。用户通过 5 字母短 ID 确认/拒绝。
-
-### 七、OAuth 认证流程
-
-Claude Code 的 MCP 认证（`auth.ts`）支持完整的 OAuth 2.0 + PKCE 流程：
-- 通过公钥客户端 + PKCE 发现 OAuth 元数据（RFC 8414 / RFC 9728）
-- 本地回调服务器接收授权码
-- 令牌通过 `getSecureStorage()` 持久化（macOS Keychain / Linux 加密文件 / Windows 凭据管理器）
-- 过期前 5 分钟自动刷新
-- 支持跨应用访问（XAA）：浏览器获取 id_token → RFC 8693 + RFC 7523 交换 → 无需反复弹浏览器
-
-### 八、连接生命周期的错误处理
-
-Claude Code 对 MCP 连接有精细的错误分类和重试（`client.ts:1266-1402`）：
-- 终局性错误（ECONNRESET、ETIMEDOUT、EPIPE 等）：连续 3 次 → 关闭 + 重连
-- 工具调用 401：令牌过期 → 抛出 `McpAuthError` → 触发重认证
-- 工具调用超时：`Promise.race` 超时（可配置，默认约 28 小时）
-- Stdio 断连：按 SIGINT → SIGTERM → SIGKILL 顺序杀进程
-
-### 教学版的简化
-
-- 6 种 transport → 1 种（mock stdio）：概念量可控
-- Channel 反向通知 → 省略：教学版 Agent 是主动方
-- OAuth 流程 → 省略：教学版假设 server 不需要认证
-- 多层配置优先级 → 省略：教学版直接传 server name
-- 复杂的错误分类 → 省略：教学版用 try/except 兜底
-- MCP 工具只给 Lead → 省略子 agent 继承：简化代码结构
-
-</details>
-
-<!-- translation-sync: zh@v2, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v3, en@v0, ja@v0 -->
