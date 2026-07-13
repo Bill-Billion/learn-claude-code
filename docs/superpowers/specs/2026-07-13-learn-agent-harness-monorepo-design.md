@@ -105,11 +105,8 @@ learn-agent-harness/
 │   └── workflows/
 │       ├── claude-code.yml
 │       ├── pi-agent.yml
-│       └── langchain.yml
-├── docs/
-│   └── superpowers/
-│       ├── specs/
-│       └── plans/
+│       ├── langchain.yml
+│       └── repository-hygiene.yml
 ├── learn-claude-code/
 │   ├── README.md
 │   ├── README-zh.md
@@ -141,11 +138,51 @@ learn-agent-harness/
     ├── s01_first_model/ ... s13_comprehensive_project/
     ├── shared/
     ├── scripts/
-    ├── tests/
-    └── docs/
+    └── tests/
 ```
 
 目录命名不在本次合并中统一 README 的语言后缀。Claude 继续使用 `README-zh.md`，Pi 继续使用 `README.zh.md`。根 README 显式链接正确文件，避免为了形式一致引入大范围无价值改名。
+
+最终公开树不包含 `docs/superpowers/`、规格、实施计划、研究报告、模型工作说明或本机路径记录。设计与实施文档只保留在本地规划分支，不进入最终集成分支和远端默认分支。
+
+### 4.1 最终体积预算
+
+按当前文件逐个执行 `stat` 得到的发布白名单基线为：
+
+| 内容 | 文件数 | Bytes | MiB |
+|---|---:|---:|---:|
+| Claude 课程与现有根级公开文件 | 310 | 2,692,047 | 2.567 |
+| Pi 课程 | 99 | 812,726 | 0.775 |
+| LangChain 课程 | 82 | 617,999 | 0.589 |
+| 合计基线 | 491 | 4,122,772 | 3.932 |
+
+该基线尚未加入新的三语根 README、通用 `CONTRIBUTING.md` 和新增 workflow，但这些都是小型文本文件。最终 HEAD 的目标为约 497 个 tracked 文件、4.0 至 4.2 MiB，硬上限为 4.5 MiB。超过 4.5 MiB 视为迁移失败，必须先定位意外文件，不能直接放宽上限。
+
+当前三部分白名单的 gzip 内容流合计约 1.20 MiB；加入新根文档后，GitHub source archive 预计约 1.3 至 1.5 MiB。
+
+当前仓库 `.git` 目录约 10 MiB。保留 Claude 历史并加入两门新课程后，预计 `.git` 为 11 至 13 MiB，因此一次完整 clone 在未安装依赖时预计占用约 15 至 18 MiB。工作区体积和 Git 历史体积必须分开报告。
+
+上述体积不包含依赖安装后的 `.venv`、`node_modules`、Web build、模型参考 clone 或任何缓存。
+
+### 4.2 文件类型边界
+
+以下是课程交付物，应保留：
+
+- 三语课程 README、章节正文、代码、测试和最终图示。
+- Claude 的 `agents/`、旧课程 `docs/{en,zh,ja}` 和 Web 源码。
+- Claude `skills/agent-builder/references/`。这些文件是 s07 可运行教学 fixture，会被课程示例实际加载，不是仓库设计期给模型使用的内部材料。
+- Pi 的 `pi-source*.md`。它们是面向学习者的公开源码溯源内容，但其中本地路径必须转换为固定 GitHub 链接。
+- LangChain 的 starter、solution、离线测试、流程图和 s11 至 s13 的课程知识文件。
+
+以下一律不是课程交付物，不进入最终 HEAD：
+
+- Superpowers 规格、计划、模型提示词、Agent 工作说明和本机配置。
+- Deep research、course design analysis、alignment audit 和 source alignment 等设计期报告。
+- `.references`、`reference/pi`、`reference/claw0` 和其他源码 clone。
+- Web 生成 JSON、复制到 public 的重复课程图片、构建产物和依赖目录。
+- 草图、中间稿、备份、失败日志、缓存和虚拟环境。
+
+该约束针对最终 HEAD、GitHub 默认分支和 source archive。为了保留 Claude 课程历史，旧提交中已经存在的历史文件对象不会通过 `git filter-repo` 擦除；本次新写的合并规格和实施计划不推送，因此不会新增到远端历史。若要求连旧提交中的历史对象也不可访问，就必须单独批准破坏性的全仓库历史重写，这不属于当前方案。
 
 ## 5. 仓库边界
 
@@ -157,7 +194,6 @@ learn-agent-harness/
 - 三门课程的对照、选课建议和入口。
 - 根级许可和全仓库忽略规则。
 - GitHub Actions 的统一入口。
-- 仓库级设计规格和实施计划。
 - 面向三门课程的统一贡献入口。
 
 根目录不提供统一安装命令，不假装三门课程共享一个运行时。
@@ -270,10 +306,9 @@ Claude 课程来自当前 Git 仓库的已跟踪内容，使用 Git 移动保留
 - `agents/`
 - `skills/`
 - `tests/`
-- `web/`
+- `web/`，但不包含可重新生成的数据和复制资源
 - `s01_*` 至 `s22_*`
 - 旧 12 节课程文档 `docs/en`、`docs/zh` 和 `docs/ja`
-- 已跟踪的 `docs/superpowers/specs/2026-07-10-context-compact-l1-l4-illustrations-design.md`
 
 保留在根目录：
 
@@ -282,10 +317,15 @@ Claude 课程来自当前 Git 仓库的已跟踪内容，使用 Git 移动保留
 - 重写后的 `.gitignore`
 - 重建后的 `.github/workflows`
 - 新的三语根 README
-- `docs/superpowers/specs/2026-07-13-learn-agent-harness-monorepo-design.md`
-- 本规格获批后生成的 monorepo 实施计划
 
-当前工作区中未跟踪的 `docs/superpowers/plans/2026-07-10-context-compact-l1-l4-illustrations.md` 不进入迁移快照，也不冒充本次 monorepo 实施计划。
+明确排除在最终树之外：
+
+- `docs/superpowers/` 下所有规格和计划，包括本规格。
+- 当前工作区中未跟踪的 context compact 计划、草图和中文中间稿。
+- `web/src/data/generated/` 下的 JSON。
+- `web/public/course-assets/` 下由抽取脚本复制的图片。
+
+`web/src/data/generated/` 和 `web/public/course-assets/` 均由 `npm run extract` 从课程正文和章节图片重建。它们不再进入 Git，避免提交漂移的派生数据和重复图片。
 
 Claude 课程 README 中所有“仓库根目录”表述改为“课程根目录”。首次运行说明必须明确：
 
@@ -347,7 +387,6 @@ Node.js 要求在根 README 和课程 README 中都准确标记为 `>=25`。
 - 课程级 `.gitignore`，保持当前内容
 - `pyproject.toml`
 - `uv.lock`
-- 清理后的 `docs/source-alignment.md`
 - `scripts/`
 - `shared/`
 - `tests/`
@@ -369,6 +408,8 @@ Node.js 要求在根 README 和课程 README 中都准确标记为 `>=25`。
 - `deep-research-report.md`
 - `docs/course-design-analysis.md`
 - `docs/lesson-alignment-audit.md`
+- `docs/source-alignment.md`
+- 整个 `docs/` 目录
 
 同步修改：
 
@@ -378,7 +419,9 @@ Node.js 要求在根 README 和课程 README 中都准确标记为 `>=25`。
 - 快速开始从 monorepo 根进入 `learn-langchain/`。
 - 课程仍明确标记为中文课程和入门路径。
 - README 不再把 `deep-research-report.md` 描述成公开课程依据，改为直接说明 13 节公开课程主线。
+- README 删除本地 `.references/` 和 `docs/source-alignment.md` 入口，不保留设计期校准叙事。
 - `scripts/check_lessons.py` 不再引用未发布的 `deep-research-report.md`，改为描述公开的课程文件契约。
+- `pyproject.toml` 和课程 `.gitignore` 删除仅服务于 `.references/` 的内部排除规则。
 - 修改项目名后运行 `uv lock` 重建锁文件；审阅结果时只接受本地项目名和必要元数据变化，不接受未说明的依赖版本升级。
 
 ## 8. 第三方参考源码与溯源
@@ -410,13 +453,7 @@ https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b2
 
 ### 8.2 LangChain
 
-`.references/` 不导入。`docs/source-alignment.md` 改成可由公开来源复核的记录：
-
-- LangChain 仓库：`https://github.com/langchain-ai/langchain`
-- 本地校准提交：`879cad06769913c8329d72e700263537ff436053`
-- `uv.lock` 基线：LangChain `1.3.9`、LangChain Core `1.4.7`、LangChain OpenAI `1.3.2`、LangGraph `1.2.5`
-
-README 不再声称 clone 后已经存在 `.references/`。课程的可运行性以锁文件和离线测试为准，不以本地源码 clone 为前置条件。
+`.references/`、源码 clone、source alignment、研究报告和课程设计分析全部不导入。最终课程的公开事实来源只有课程 README、章节内容、`pyproject.toml`、`uv.lock` 和可运行测试。依赖版本由锁文件复现，不要求学习者了解设计期使用过的本地校准环境。
 
 ## 9. 忽略规则
 
@@ -434,8 +471,13 @@ README 不再声称 clone 后已经存在 `.references/`。课程的可运行性
 ```gitignore
 .DS_Store
 .claude/
+.codex/
+.agents/
 .serena/
 .superpowers/
+docs/superpowers/
+AGENTS.md
+CLAUDE.md
 **/__pycache__/
 **/.pytest_cache/
 **/.mypy_cache/
@@ -450,6 +492,8 @@ README 不再声称 clone 后已经存在 `.references/`。课程的可运行性
 *.bak
 learn-pi-agent/reference/
 learn-langchain/.references/
+learn-claude-code/web/src/data/generated/
+learn-claude-code/web/public/course-assets/
 ```
 
 Claude 课程运行时产生的 `.memory/`、`.tasks/`、`.teams/`、`.mailboxes/`、`.worktrees/` 和调度状态继续忽略。
@@ -462,9 +506,9 @@ Claude 课程运行时产生的 `.memory/`、`.tasks/`、`.teams/`、`.mailboxes
 
 ## 10. CI 设计
 
-GitHub 只执行仓库根 `.github/workflows/` 中的工作流，因此三个课程各有一个根级 workflow。
+GitHub 只执行仓库根 `.github/workflows/` 中的工作流，因此三个课程各有一个根级 workflow，另有一个仓库卫生 workflow。
 
-初次合并不使用 workflow 级路径过滤。三个 workflow 在所有指向 `main` 的 PR 和所有 `main` push 上运行，避免被路径过滤跳过的 required check 长期停留在 Pending。路径优化不属于本次合并范围。
+初次合并不使用 workflow 级路径过滤。四个 workflow 在所有指向 `main` 的 PR 和所有 `main` push 上运行，避免被路径过滤跳过的 required check 长期停留在 Pending。路径优化不属于本次合并范围。
 
 `origin/main` 现有的 `.github/workflows/sync-upstream.yml` 必须删除。该 workflow 会把 `shareAI-lab/learn-claude-code` 的整个根目录定时合入 monorepo 根，在目录迁移后会破坏仓库结构。后续 Claude 上游同步只能通过 `shareai` remote 做人工、路径感知的移植。
 
@@ -473,7 +517,7 @@ GitHub 只执行仓库根 `.github/workflows/` 中的工作流，因此三个课
 包含两个 job：
 
 - Python：使用 `actions/setup-python` 配置 Python 3.11，安装 `learn-claude-code/requirements.txt` 和 Pytest，在课程目录运行 `python -m pytest tests -q`。
-- Web：使用 `actions/setup-node` 配置 Node 20，npm cache path 指向 `learn-claude-code/web/package-lock.json`，在 `learn-claude-code/web` 运行 `npm ci`、`npx tsc --noEmit` 和 `npm run build`。
+- Web：使用 `actions/setup-node` 配置 Node 20，npm cache path 指向 `learn-claude-code/web/package-lock.json`，在 `learn-claude-code/web` 运行 `npm ci`、`npm run extract`、`npx tsc --noEmit` 和 `npm run build`。显式 extract 保证未跟踪生成 JSON 时类型检查仍有输入。
 
 ### 10.2 `pi-agent.yml`
 
@@ -496,7 +540,42 @@ uv run mypy .
 uv run pytest -q
 ```
 
-三个 workflow 均在目标为 `main` 的 `pull_request` 和 `main` 分支的 `push` 上运行。分支保护可以把三个课程 job 设置为 required checks，因为它们不会因路径过滤而被整个跳过。
+### 10.4 `repository-hygiene.yml`
+
+仓库卫生检查在所有目标为 `main` 的 PR 和 `main` push 上运行，并验证：
+
+- tracked working tree 总字节不超过 `4,718,592` bytes，即 4.5 MiB。
+- 任意单个 tracked 文件不超过 `1,048,576` bytes，即 1 MiB。
+- 不存在 Git mode `160000` 的 submodule 或嵌套 gitlink。
+- 不存在设计规格、实施计划、研究报告、本机 Agent 配置、缓存、虚拟环境、参考 clone、备份文件和 Web 生成目录。
+
+禁止路径至少覆盖：
+
+```text
+docs/superpowers/
+.claude/
+.codex/
+.agents/
+.serena/
+.superpowers/
+learn-langchain/.references/
+learn-pi-agent/reference/
+node_modules/
+.venv/
+__pycache__/
+web/src/data/generated/
+web/public/course-assets/
+deep-research-report.md
+course-design-analysis.md
+lesson-alignment-audit.md
+cf-build-log.json
+AGENTS.md
+CLAUDE.md
+*.bak
+.DS_Store
+```
+
+四个 workflow 均在目标为 `main` 的 `pull_request` 和 `main` 分支的 `push` 上运行。分支保护可以把三门课程 job 和 repository hygiene job 设置为 required checks，因为它们不会因路径过滤而被整个跳过。
 
 ## 11. 路径和运行目录
 
@@ -538,7 +617,7 @@ cd learn-agent-harness
 
 ### 13.1 工作区
 
-本规格经用户批准后先提交并推送；随后生成的实施计划也先提交并推送。实现阶段以包含这两个文档的明确远端提交为输入，不以未跟踪文件或笼统的本地 HEAD 为输入。
+本规格和后续实施计划只在当前本地工作区提交用于审阅，不推送、不合入最终集成分支。实现分支只使用明确的远端课程提交：从 `origin/main` 创建，并合入 `origin/rewrite/lecture-style`。分析时该课程提交为 `c05ed94`；如果实施前远端课程内容继续更新，实施计划必须记录新的明确 SHA。
 
 实现阶段创建干净 clone，并在新分支工作：
 
@@ -583,11 +662,11 @@ cd learn-agent-harness
 
 3. `docs: replace local source references with pinned links`
    - 转换 Pi 源码溯源。
-   - 更新 LangChain source alignment。
-   - 删除所有对未发布本地 reference clone 的错误承诺。
+   - 清理 LangChain README、配置和检查脚本中的设计期来源引用。
+   - 删除所有对未发布本地 reference clone、研究报告和 source alignment 的错误承诺。
 
 4. `ci: validate each course independently`
-   - 建立三个根级 workflow。
+   - 建立三个课程 workflow 和一个 repository hygiene workflow。
    - 删除失效或重复的旧 workflow。
 
 如果 Git 在大范围移动中没有自动识别 rename，不通过改写历史修复；保持内容一致并依赖 Git 的相似度检测即可。
@@ -599,7 +678,7 @@ cd learn-agent-harness
 顺序如下：
 
 1. 将集成分支推送到 `Bill-Billion/learn-claude-code`。
-2. 创建以 `main` 为 base 的 PR，等待三个课程的 CI 通过。
+2. 创建以 `main` 为 base 的 PR，等待三门课程和仓库卫生 CI 通过。
 3. 完成最终内容审阅并合并 PR。
 4. 在旧仓库名下从更新后的默认分支 `main` 做一次 smoke clone，确认默认首页已经是 monorepo。
 5. 将 GitHub 仓库改名为 `Bill-Billion/learn-agent-harness`。
@@ -621,13 +700,30 @@ GitHub 对旧仓库 URL 的重定向只能作为兼容措施，新 README 和 We
 ```bash
 git diff --check
 git status --short
-git ls-files | rg '(^|/)(\.git|node_modules|\.venv|\.references|\.serena|\.DS_Store)(/|$)|\.bak$|cf-build-log\.json$'
+git ls-files | rg '(^|/)(docs/superpowers|\.claude|\.codex|\.agents|\.serena|\.superpowers|node_modules|\.venv|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)(/|$)|learn-pi-agent/reference/|learn-langchain/\.references/|web/src/data/generated/|web/public/course-assets/|deep-research-report\.md$|course-design-analysis\.md$|lesson-alignment-audit\.md$|source-alignment\.md$|cf-build-log\.json$|(^|/)(AGENTS|CLAUDE)\.md$|\.bak$|(^|/)\.DS_Store$'
 git ls-files --stage | awk '$1 == "160000" { print }'
 ```
 
 最后两条命令均预期无输出；第二条额外防止嵌套 Git 仓库被记录成 gitlink。
 
-检查仓库体积，确认没有意外加入数十或数百 MB 的目录。
+用 tracked 文件逐个计算体积：
+
+```bash
+python - <<'PY'
+from pathlib import Path
+import subprocess
+
+paths = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+sizes = [(Path(path).stat().st_size, path) for path in paths if path]
+total = sum(size for size, _ in sizes)
+large = [(size, path) for size, path in sizes if size > 1_048_576]
+print(f"tracked_files={len(sizes)} tracked_bytes={total} mib={total / 1_048_576:.3f}")
+assert total <= 4_718_592, "tracked tree exceeds 4.5 MiB"
+assert not large, f"tracked file exceeds 1 MiB: {large}"
+PY
+```
+
+最终预期约 4.0 至 4.2 MiB；命令超过 4.5 MiB 或发现单文件超过 1 MiB即失败。
 
 ### 15.2 Claude 课程
 
@@ -641,6 +737,7 @@ python -m pytest tests -q
 
 ```bash
 npm ci
+npm run extract
 npx tsc --noEmit
 npm run build
 ```
@@ -682,6 +779,15 @@ shareAI-lab/learn-claude-code 作为 clone 主入口
 README.en.md
 reference/pi/
 .references/
+docs/superpowers/
+deep-research-report.md
+course-design-analysis.md
+lesson-alignment-audit.md
+source-alignment.md
+web/src/data/generated/
+web/public/course-assets/
+AGENTS.md
+CLAUDE.md
 ```
 
 允许存在的情况必须是历史说明或明确标注的上游来源，不允许作为当前运行路径。
@@ -716,14 +822,16 @@ reference/pi/
 3. `learn-langchain-beginner` 已完整改名为 `learn-langchain`。
 4. Claude 课程 Git 历史仍可追踪。
 5. 三门课程的安装和测试互不依赖。
-6. 三个 GitHub Actions 均通过。
+6. 三门课程和 repository hygiene 四个 GitHub Actions 均通过。
 7. 仓库中没有嵌套 Git 仓库、本地环境、缓存或参考 clone。
-8. Pi 和 LangChain 的源码溯源可以通过公开固定链接复核。
+8. Pi 的公开源码溯源使用固定链接；LangChain 的依赖基线由 `uv.lock` 复现。
 9. 根 README 不再与 LangChain 课程的存在发生概念冲突。
 10. Claude Web 完成移动后的构建验证。
 11. 从远端干净 clone 后仍能重复验证。
 12. GitHub 仓库、remote、description、topics 和部署路径完成改名切换。
 13. 用户已确认两门新增课程可以按根 MIT 许可证公开发布。
+14. 最终 HEAD 不包含规格、计划、研究报告、模型工作说明、生成 JSON 或重复资源。
+15. 最终 tracked working tree 约 4.0 至 4.2 MiB，且绝不超过 4.5 MiB。
 
 ## 17. 风险与回退
 
@@ -732,6 +840,8 @@ reference/pi/
 - 同名本地忽略目录被误当作正式课程导入。
 - Pi 的嵌套 `.git` 被提交成 embedded repository。
 - LangChain 的 184 MB `.venv` 或缓存进入 Git。
+- Web 生成 JSON 或复制图片继续被跟踪，造成内容漂移和约 1.70 MB 的无效体积。
+- 本地规格、计划或 Agent 工作文件因设计阶段提交而进入最终集成分支。
 - Claude 的运行目录变化导致状态文件写入错误位置。
 - 根 README 保留过多 Claude 专属信息，仍像单课程仓库。
 - 根 README 对工作流框架的表述与 LangChain 课程互相否定。
