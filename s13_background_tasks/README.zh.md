@@ -150,4 +150,4 @@ Agent 不再被长命令卡住了。但所有工作仍然由"你说一句"启动
 
 s14 Cron Scheduler → 给 Agent 装一个闹钟。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

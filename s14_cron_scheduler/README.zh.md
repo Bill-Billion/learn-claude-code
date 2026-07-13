@@ -147,4 +147,4 @@ Agent 现在又能干又准时，但它仍然是单兵作战。一个真正的�
 
 s15 Agent Teams → 主 Agent 当 lead，随手拉起几个 teammate 各干各的，靠一套文件邮箱互通消息。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

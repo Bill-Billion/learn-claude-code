@@ -127,4 +127,4 @@ python s18_worktree_isolation/code.py
 
 s19 MCP Plugin → 插件协议。外部工具按标准接入，Agent 不用知道它们是谁写的。
 
-<!-- translation-sync: zh@v2, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

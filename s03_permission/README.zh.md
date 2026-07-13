@@ -185,4 +185,4 @@ python s03_permission/code.py
 
 s04 Hooks → 给循环装上挂载点，扩展逻辑挂在钩子上，循环本身保持干净。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

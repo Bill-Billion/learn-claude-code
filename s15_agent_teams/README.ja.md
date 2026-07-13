@@ -1,153 +1,135 @@
-# s15: Agent Teams — 一人では無理、チームを組もう
+# s15: Agent Teams — 1 人で無理なら、チームを組む
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s13 → s14 → `s15` → [s16](../s16_team_protocols/) → s17 → s18 → s19 → s20
-> *"一人では無理、チームを組もう"* — ファイル受信箱 + チームメイトスレッド。
+> *「1 人で無理なら、チームを組む」* — ファイル受信箱と teammate thread。
 >
-> **Harness 層**: チーム — マルチ Agent 協調、メッセージバス。
+> **Harness 層**: チーム — マルチ Agent 協調と message bus。
 
 ---
 
-## 課題
+「バックエンド全体をリファクタリングする」という仕事を広げると、認証モジュール、データベース層、API ルート、テストという 4 つの作業になります。1 つの Agent が直列に進めると、API ルートに着手するころには、認証モジュールの細部が context から押し出されています。
 
-「バックエンド全体をリファクタリング」は認証モジュール、データベース層、API ルート、テストに及ぶ。一つの Agent が API ルートを修正中、認証モジュールの詳細はコンテキストから外れている。コンテキストウィンドウには限界があり、単一 Agent の注意は全モジュールをカバーできない。
+s06 の subagent で分担できるでしょうか。あと一歩足りません。`spawn_subagent` は blocking call です。1 人を送り出すと main Agent は戻るまでその場で待つため、4 つの仕事は結局順番待ちになります。しかも subagent の通信経路は 1 回の戻り値だけです。途中で「データベースの schema がタスク説明と合わない」と気づいても、戻って質問する手段がありません。
 
-s06 のサブ Agent は臨時スタッフ、一つの仕事を終えたら去る。だが、通信でき、協力できるチームメイトが必要なタスクもある。
-
----
-
-## ソリューション
+本当に必要なのは臨時の手伝いではなく、同僚です。同僚には subagent が持たない 2 つの特徴があります。**同時に働くこと**と、**いつでも伝言できること**です。同時に働く方法は s13 がすでに示しました（thread）。いつでも伝言できる仕組みが、この章の主役です。
 
 ![Agent Teams Overview](images/agent-teams-overview.svg)
 
-教学版は S14 の能力（プロンプト組み立て、タスクシステム、バックグラウンド実行、cron スケジューリング）を踏襲。チーム機構に集中するため、完全なエラーリカバリ、メモリ、スキルシステムは省略。追加：**MessageBus**（ファイル受信箱）、**spawn_teammate_thread**（チームメイトスレッド起動）、**inbox 注入**（Lead がチームメイトメッセージを受信し history に注入）。
-
-サブ Agent vs チームメイト：
-
-| | s06 サブ Agent | s15 チームメイト |
-|---|---|---|
-| ライフサイクル | 一回きり、終了後に破棄 | マルチターン（教学版は 10 ラウンド制限、真实 Claude Code は idle loop） |
-| 通信 | 結果のみ返却 | 非同期受信箱、いつでも通信可能 |
-| コンテキスト | 完全に隔離 | メッセージで情報共有 |
-| 数 | メイン Agent + たまにサブ Agent | 1 Lead + 複数チームメイト |
-
 ---
 
-## 仕組み
+## 同僚は return せず、メッセージを送る
 
-![Team Topology](images/team-topology.svg)
+関数呼び出しの通信モデルは 1 回限りの request-response です。呼び出し元は待ち、呼び出し先が return すると経路は閉じます。チーム協調には別のモデルが必要です。各自が mailbox を持ち、誰でも好きなときに投函でき、受信者は手が空いたときに読みます。
 
-### MessageBus: ファイル受信箱
-
-各 Agent（Lead とチームメイトを含む）には `.jsonl` 受信箱がある。メッセージ送信 = 相手のファイルに 1 行 JSON を append。メッセージ読み取り = ファイル読み込み + 削除（消費式）：
+`MessageBus` はその mailbox システムで、直接見通せるほど素朴に実装されています。
 
 ```python
 class MessageBus:
-    def send(self, from_agent: str, to_agent: str,
-             content: str, msg_type: str = "message"):
+    def send(self, from_agent, to_agent, content, msg_type="message"):
         msg = {"from": from_agent, "to": to_agent,
-               "content": content, "type": msg_type,
-               "ts": time.time()}
+               "content": content, "type": msg_type, "ts": time.time()}
         inbox = MAILBOX_DIR / f"{to_agent}.jsonl"
-        with open(inbox, "a") as f:
+        with open(inbox, "a") as f:                  # 送信 = 相手のファイルへ 1 行追加
             f.write(json.dumps(msg) + "\n")
 
-    def read_inbox(self, agent: str) -> list[dict]:
+    def read_inbox(self, agent) -> list[dict]:
         inbox = MAILBOX_DIR / f"{agent}.jsonl"
         if not inbox.exists():
             return []
-        msgs = [json.loads(line) for line in inbox.read_text().splitlines()]
-        inbox.unlink()  # 消費式：読んだら削除
+        msgs = [json.loads(line) for line in inbox.read_text().splitlines() if line.strip()]
+        inbox.unlink()                               # 受信 = 読後に削除（消費型）
         return msgs
+
+    def peek(self, agent) -> bool:
+        inbox = MAILBOX_DIR / f"{agent}.jsonl"
+        return inbox.exists() and inbox.stat().st_size > 0   # 内容に触れず、存在だけ確認
 ```
 
-なぜファイルか、メモリキューではなく？教学版がファイルを選ぶ理由は、直感的でスレッドをまたいで観察可能だから。真实 Claude Code もファイル受信箱（`~/.claude/teams/{team}/inboxes/`）を使うが、`proper-lockfile` で並行書き込みの安全性を確保。教学版の `read_inbox` には read + unlink の競合状態があり、マルチスレッド同時読みでメッセージを損失する可能性があるが、教学目的には許容範囲。
+なぜメモリ上の queue ではなくファイルなのでしょう。理由は 2 つあります。まず可観測性です。`.mailboxes/` ディレクトリがそのまま存在し、いつでも `cat` すれば誰が誰に何を伝えているか分かります。マルチ Agent システムのデバッグでは、ログよりはるかに便利です。次に拡張性です。ファイルは自然にプロセス境界を越えます。今日の teammate が thread でも、明日は独立 process や別マシンに変えられ、mailbox はそのまま使えます。
 
-### spawn_teammate_thread: チームメイト起動
+2 つの境界も明確にしておきます。読取は消費型で、読み終えるとファイルを削除します。受け取ったメッセージはその場で処理する必要があり、失えば予備はありません。また教材版には file lock がなく、極端なタイミングでは 2 人の書き手が行を混在させる可能性があります。実際の Claude Code は、各 append を `proper-lockfile` で保護します。
 
-Lead が `spawn_teammate` ツールを呼び出してチームメイトを起動。チームメイトは独自の daemon スレッドで動作、独自の system prompt、messages、簡易ツールセットを持つ：
+---
+
+## Teammate: 同じループに名前と mailbox を足す
+
+以前からの規則が 3 度目も当てはまります。teammate は s06 の subagent と同じく s01 ループの別コピーで、違うのは設定だけです。自分の system prompt に名前と役割を持ち、自分の mailbox を持ち、各ラウンドの前に受信を確認します。
 
 ```python
 def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
-    system = f"You are '{name}', a {role}. Use tools to complete tasks."
+    system = (f"You are '{name}', a {role}. "
+              f"Use tools to complete tasks. Send results via send_message to 'lead'.")
 
     def run():
         messages = [{"role": "user", "content": prompt}]
-        sub_tools = [bash, read_file, write_file, send_message]
-        for _ in range(10):           # 最大 10 ラウンド
-            inbox = BUS.read_inbox(name)
+        for _ in range(10):                          # 教材版: 最大 10 ラウンド
+            inbox = BUS.read_inbox(name)             # 毎ラウンド先に mailbox を確認
             if inbox:
                 messages.append({"role": "user",
-                    "content": f"<inbox>{json.dumps(inbox)}</inbox>"})
+                                 "content": f"<inbox>{json.dumps(inbox)}</inbox>"})
             response = client.messages.create(
-                model=MODEL, system=system, messages=messages[-20:],
+                model=MODEL, system=system, messages=messages[-20:],   # sliding window
                 tools=sub_tools, max_tokens=8000)
-            # ... ツール実行、結果処理
-        # 完了後 summary を Lead に送信
-        BUS.send(name, "lead", summary, "result")
+            ...
+        BUS.send(name, "lead", summary, "result")    # 終了前に lead へ要約を送る
+        active_teammates.pop(name, None)             # roster から自分を削除
 
     threading.Thread(target=run, daemon=True).start()
 ```
 
-重要な設計：
-- **チームメイトの簡易ツールセット**：bash、read、write、send_message。教学版は通信機構に集中するためタスクと cron を省略。真实 Claude Code のチームメイトには TaskCreate、TaskUpdate 等のツールもあり、タスクシステムはチーム全体で共有
-- **教学版は 10 ラウンド制限**：無限ループを防止。真实 Claude Code は idle loop：1 ラウンド終了後に `idle_notification` を送信、inbox メッセージを待機、到着後に再開、`shutdown_request` でのみ終了
-- **完了時自動報告**：`BUS.send(name, "lead", summary)` で最終結果を Lead の受信箱に送信
+ツールセットは今回も絞ります。`bash`、`read_file`、`write_file`、`send_message` だけで、`spawn_teammate` は含めません。teammate がさらに人を増やせないようにする、s06 から続く再帰防止の規則です。context 管理には s08 の圧縮パイプラインではなく、`messages[-20:]` の sliding window を使います。teammate は最大 10 ラウンドと短命で、直近 20 メッセージが生涯全体を覆うため、4 段階の整理は割に合いません。
 
-### Lead の inbox 注入
-
-Lead はメインループの各反復後に受信箱を確認。チームメイトからのメッセージを history に注入し、LLM が確認して反応できるようにする：
-
-```python
-# メインループ反復後
-inbox = BUS.read_inbox("lead")
-if inbox:
-    inbox_text = "\n".join(
-        f"From {m['from']}: {m['content'][:200]}" for m in inbox)
-    history.append({"role": "user",
-                    "content": f"[Inbox]\n{inbox_text}"})
-```
-
-教学版はユーザー入力ループ内で注入。真实 Claude Code はより精密、Lead の `useInboxPoller` が毎秒チェックし、ユーザー入力を待たずにメッセージを新しい turn として送信。
-
-### 権限バブリング
-
-教学版は権限バブリングを省略。真实 Claude Code のフロー（`permissionSync.ts`、`useSwarmPermissionPoller.ts`）：
-
-1. チームメイトが承認が必要な操作に遭遇 → `permission_request` を Lead の受信箱に送信
-2. Lead の `useInboxPoller` がリクエストを検出 → 承認キューにルーティング
-3. ユーザーが承認 → Lead が `permission_response` をチームメイトに返信
-4. チームメイトの `useSwarmPermissionPoller`（500ms ごとにポーリング）が返信を受信 → 続行または拒否
-
-### 組み合わせて実行
-
-```
-1. Lead: "バックエンド構築：3 モジュールに分割、チームメイトを起動"
-2. Lead → spawn_teammate("alice", "backend dev", "データベーススキーマを作成")
-3. Lead → spawn_teammate("bob", "frontend dev", "API クライアントを作成")
-4. alice スレッド起動 → 独自の LLM 呼び出し → bash "python manage.py migrate"
-5. bob スレッド起動 → 独自の LLM 呼び出し → write_file("client.ts", ...)
-6. alice 完了 → BUS.send("alice", "lead", "Schema done: users, orders tables")
-7. bob 完了 → BUS.send("bob", "lead", "Client written with types")
-8. Lead 次回反復 → inbox を history に注入 → LLM が alice と bob の結果を確認
-```
-
-2 人のチームメイトが並行作業。
+Lead 側には 3 つのツールを追加します。人を呼ぶ `spawn_teammate`、伝言する `send_message`、受信を確認する `check_inbox` です。
 
 ---
 
-## s14 からの変更
+## Lead のターミナル: Request-response から event loop へ
+
+最初の 14 章の main program は同じ形でした。`input()` であなたを待ち、1 turn 実行し、また待ちます。今は teammate の報告がいつ届くか分からず、その瞬間にあなたが Enter を押すことも期待できないため、この形では動きません。
+
+main program を event loop に変えます。2 つの発生源、あなたの入力とバックグラウンドの動きが同じ queue に合流し、先に来たものから処理します。
+
+```python
+def inbox_poller():
+    while True:
+        time.sleep(1)
+        if BUS.peek("lead") or has_pending_background():
+            events.put(("wake", None))       # メールまたはバックグラウンド完了: 1 turn の wake-up を要求
+
+while True:
+    kind, payload = events.get()
+    if kind == "user":
+        history.append({"role": "user", "content": payload})
+    else:  # wake
+        inbox = BUS.read_inbox("lead")
+        ...
+        if not parts:
+            continue                          # 前の wake が空にしていればスキップ
+        history.append({"role": "user", "content": "\n".join(parts)})
+    agent_loop(history, context)
+```
+
+2 つの防御は、それぞれ現実に起きる失敗へ対応します。
+
+**wake は冪等でなければなりません。** poller は毎秒確認するため、1 件の teammate メッセージに対して wake event が 2 つ並ぶことがあります。1 つ目が mailbox を空にしたら、2 つ目は「何もない」と判断してスキップする必要があります。この `continue` がなければ、各メッセージに空の API 呼び出しが 1 回おまけで付いてきます。
+
+**poller は roster を見てはいけません。** 直感的には「生きている teammate がいる間だけメールを確認する」と書きたくなります。しかし teammate は、最後の要約を送ってから自分を roster から削除し、この 2 操作は atomic ではありません。roster を条件にすると、削除直後に見えるようになった最後のメールが永遠に受信されない可能性があります。そのため poller が信頼するのは mailbox だけです。送信者が roster に残っているかにかかわらず、メールがあれば wake します。
+
+> 実際の Claude Code では teammate は 10 ラウンドで終わらず、仕事を終えると idle loop に入って mailbox の横で待ち、`shutdown_request` を受け取って初めて退場します。mailbox の書込には file lock を使います。チーム固有の hook event、`TeammateIdle` と `TaskCompleted` もあり、外部システムが動作を追加できます。
+
+---
+
+## s14 からの変更点
 
 | コンポーネント | 変更前 (s14) | 変更後 (s15) |
-|--------------|------------|------------|
-| Agent 数 | 1 | 1 Lead + N チームメイトスレッド |
-| 通信 | なし | MessageBus + .mailboxes/*.jsonl |
-| 新規クラス | — | MessageBus, active_teammates dict |
-| 新規関数 | — | spawn_teammate_thread, run_send_message, run_check_inbox |
-| Lead ツール | 11 (s14) | + spawn_teammate, send_message, check_inbox (14) |
-| チームメイトツール | — | bash, read_file, write_file, send_message (4) |
-| 権限 | ローカル判断 | 教学版は省略（真实 Claude Code はバブリング機構あり） |
+|------|-----------|-----------|
+| Agent 数 | 1 | 1 lead + N teammate thread |
+| 通信 | なし | `MessageBus` file mailbox（`.mailboxes/*.jsonl`） |
+| 新しいツール | — | `spawn_teammate`, `send_message`, `check_inbox`（合計 14） |
+| main program | `input()` による request-response | event loop（ユーザー入力 + wake event） |
+| teammate のライフサイクル | — | 最大 10 ラウンド。終了時に要約を送り、roster から削除 |
 
 ---
 
@@ -158,97 +140,16 @@ cd learn-claude-code
 python s15_agent_teams/code.py
 ```
 
-以下のプロンプトを試してください：
-
-1. `Spawn alice as a backend developer. Ask her to create a file called schema.sql with a users table.`
-2. `Check your inbox for alice's result.`
-3. `Spawn bob as a tester. Ask him to check if schema.sql exists and list its contents.`
-
-観察ポイント：Lead はチームメイトをどう起動するか？`.mailboxes/` ディレクトリの JSONL ファイルの中身は？チームメイト完了後、Lead の inbox は history に注入されているか？
+1. **並行処理と自動 wake-up**: `Spawn two teammates: 'poet' (a poet) who writes a short poem to poem.md, and 'critic' (a critic) who reviews the first paragraph of README.md. Wait for both reports.` `[teammate] poet spawned` と `[teammate] critic spawned` がほぼ同時に現れ、双方の `[bus]` メッセージが交互に流れます。報告が戻ると、何も入力しなくてもターミナルが `[wake: N inbox ...]` を表示して新しい turn を始め、最後は `[all teammates done]` になります。
+2. **通信そのものを見る**: teammate に `Spawn a teammate 'worker' who runs 'sleep 15' and then writes done.md` のような遅い仕事を渡し、実行中に Lead へ `Run ls -la .mailboxes/` と伝えます。mailbox ファイルがそこにあり、この協調システムのインフラ全体が数個の JSONL ファイルにすぎないと分かります。
+3. **消費型の読取**: すべて終わったあと `Check your inbox` と入力すると、おそらく `(inbox empty)` が返ります。メッセージが失われたのではなく、wake-up の仕組みが先に受け取り、会話へ注入しました。読後削除する mailbox のコピーは 1 つだけで、先に取った側のものになります。この動作は体験しておく価値があります。
 
 ---
 
-## 次の章
+## 次へ
 
-チームメイトは仕事をし、通信できる。しかし、Lead が Alice にシャットダウンを頼む場合、スレッドを強制終了すると書きかけのファイルが残る。丁寧なシャットダウンプロトコルが必要：Lead が shutdown_request を送信、チームメイトは收尾後に終了。
+teammate は仕事と通信ができるようになりましたが、すべて自由形式です。メッセージに書式はなく、Lead が teammate を止めたくても見ているしかありません。thread を直接殺せば、ファイルを書いている途中かもしれません。
 
-s16 Team Protocols → シャットダウンハンドシェイクとメッセージの取り決め。
+s16 Team Protocols → メッセージに種類と ID を追加し、shutdown には handshake、request には acknowledgement を求めます。
 
-<details>
-<summary>Claude Code ソースコード深掘り</summary>
-
-> 以下は Claude Code ソースコード `spawnMultiAgent.ts`、`useInboxPoller.ts`（969 行）、`useSwarmPermissionPoller.ts`（330 行）、`teammateMailbox.ts`、`teamHelpers.ts` の完全分析に基づく。
-
-### 一、中央メッセージバスはない、ファイルシステム
-
-教学版は `MessageBus` クラスでメッセージを送受信。真实 Claude Code はもっと直接的、各 Agent が他の Agent の受信箱ファイルに直接書き込む。
-
-受信箱パス：`~/.claude/teams/{teamName}/inboxes/{agentName}.json`
-
-書き込み時は `proper-lockfile` で並行安全性を確保（最大 10 回リトライ）。各ファイルは JSON 配列、append 時に読み取り→追加→書き戻し。
-
-### 二、15 種のメッセージ型
-
-Claude Code のチーム通信には 15 種の構造化メッセージ（`teammateMailbox.ts`）がある：
-
-| 型 | 方向 | 用途 |
-|------|------|------|
-| `plain text` | 双方向 | 通常のチームメイト間通信 |
-| `idle_notification` | チームメイト→Lead | チームメイトが 1 ターン完了、アイドル状態に |
-| `permission_request` | チームメイト→Lead | 操作承認が必要 |
-| `permission_response` | Lead→チームメイト | Lead の承認結果 |
-| `plan_approval_request` | チームメイト→Lead | 計画提出、審査待ち |
-| `plan_approval_response` | Lead→チームメイト | Lead の計画審査 |
-| `shutdown_request` | Lead→チームメイト | 丁寧なシャットダウン要求 |
-| `shutdown_approved` | チームメイト→Lead | シャットダウン確認 |
-| `shutdown_rejected` | チームメイト→Lead | シャットダウン拒否（理由付き） |
-| `task_assignment` | Lead→チームメイト | タスク割り当て |
-| `team_permission_update` | Lead→チームメイト | 権限変更のブロードキャスト |
-| `mode_set_request` | Lead→チームメイト | チームメイトの権限モード変更 |
-| `sandbox_permission_*` | 双方向 | ネットワーク権限リクエスト/返信 |
-| `teammate_terminated` | システム | チームメイト削除通知 |
-
-テキストメッセージは `<teammate-message>` XML タグでラップされモデルに配信。
-
-### 三、権限バブリング：双方向ポーリング
-
-教学版は権限バブリングを省略。真实 Claude Code のフロー（`permissionSync.ts`）：
-
-1. **チームメイト**が承認が必要な操作に遭遇 → `permission_request` を Lead の受信箱に送信
-2. **Lead** の `useInboxPoller`（1 秒ごとにポーリング）がリクエストを検出 → `ToolUseConfirmQueue` にルーティング
-3. Lead の UI にチームメイト名と色付きの承認ダイアログを表示
-4. ユーザー承認後 → Lead が `permission_response` をチームメイトの受信箱に返信
-5. **チームメイト**の `useSwarmPermissionPoller`（500ms ごとにポーリング）が返信を受信 → 続行または拒否
-
-### 四、チームメイトライフサイクル
-
-Claude Code のチームメイトは `spawnTeammate()`（`spawnMultiAgent.ts`）で作成：
-
-1. **Spawn**：tmux ペイン（またはプロセス内）を作成、色を割り当て、team config に書き込み
-2. **Work**：`useInboxPoller` が毎秒受信箱をチェック → メッセージ到着時に新しい turn として送信
-3. **Idle**：Stop hook 発火 → `idle_notification` を Lead に送信
-4. **Shutdown**：Lead が `shutdown_request` を送信 → チームメイトが `shutdown_approved` で返信 → Lead がクリーンアップ
-
-### 五、Team Config
-
-チーム登録は `~/.claude/teams/{teamName}/config.json`（`teamHelpers.ts`）：
-
-```json
-{
-  "name": "my-team",
-  "leadAgentId": "lead@my-team",
-  "members": [{
-    "agentId": "researcher@my-team",
-    "name": "researcher",
-    "agentType": "general-purpose",
-    "color": "blue",
-    "isActive": true
-  }]
-}
-```
-
-チームメイトのネストは禁止（`AgentTool.tsx:273` で "teammates spawning other teammates" を明示的に禁止）。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

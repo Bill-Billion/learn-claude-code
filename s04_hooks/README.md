@@ -1,20 +1,16 @@
-# s04: Hooks — Hang on the Loop, Don't Write into It
+# s04: Hooks — Attach to the Loop, Don't Write into It
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → `s04` → [s05](../s05_todo_write/) → s06 → ... → s20
 
-> *"Hang on the loop, don't write into it"* — Hooks inject extension logic before and after tool execution.
+> *"Attach to the loop; don't write into it"* — hooks inject extension logic before and after tool execution.
 >
-> **Harness Layer**: Hooks, extension points that don't invade the loop.
+> **Harness layer**: Hooks — extension points without invading the loop.
 
 ---
 
-## The Problem
-
-The s03 Agent has permission checks. But every new check, "log every bash call", "auto git add after writes", requires modifying the `agent_loop` function.
-
-The loop quickly becomes this:
+The permission check from the previous lesson works, but it is still a hardcoded function call inside the loop. Now add two ordinary requirements: write one log line for every tool call, and warn when output gets too large. Using the old approach, we keep stuffing lines into the loop:
 
 ```python
 def agent_loop(messages):
@@ -23,177 +19,160 @@ def agent_loop(messages):
         for block in response.content:
             if block.type != "tool_use":
                 continue
-            log_to_file(block)          # added a line
-            check_permission(block)     # added a line
-            notify_slack(block)         # added another line
+            log_to_file(block)          # add a line
+            check_permission(block)     # add a line
+            notify_slack(block)         # another line
             output = execute(block)
-            auto_git_add(block)         # yet another line
-            # ... the loop is unrecognizable
+            auto_git_add(block)         # and another
+            # ... soon the loop is unrecognizable
 ```
 
-What you want to extend is the Agent's behavior, but what you're modifying is the loop itself. The loop should be a stable core; extensions should hang on the outside.
-
----
-
-## The Solution
+The problem is the approach: you want to extend the Agent's behavior, but you keep modifying its engine. s01 promised that every later lesson would add something around the loop while the loop itself stayed the same. To keep that promise, extensions cannot live inside the loop. They have to hang from it.
 
 ![Hooks Overview](images/hooks-overview.svg)
 
-The s03 loop and permission logic are fully preserved. The only change is moving `check_permission()` from inside the loop body onto a hook. The loop no longer directly calls any check function. Instead it calls `trigger_hooks("PreToolUse", block)`, and the registry decides what to run.
+---
 
-Four events, covering a complete agent cycle:
+## What Goes Wrong When You Edit the Loop Directly
 
-| Event | Trigger Timing | Typical Use |
-|-------|---------------|-------------|
-| UserPromptSubmit | After user input, before entering LLM | Input validation, context injection |
-| PreToolUse | Before tool execution | Permission checks, logging |
-| PostToolUse | After tool execution | Side effects (auto git add etc.), output checking |
-| Stop | When the loop is about to exit | Cleanup (Claude Code also supports force continuation) |
+**Every request touches core code.** The loop is the Agent's heart; logging, notifications, and automatic commits are peripheral needs. Repeatedly opening the heart for peripheral work means one bad change can stop everything.
 
-Extensions are added via `register_hook()`. The loop only calls `trigger_hooks()`.
+**Requirements become tangled together.** Want to remove Slack notifications? Find the line inside the loop. Want to log only bash? Add another conditional to the same loop. Every feature switch is buried in one function, so none of them can evolve independently.
+
+**The main path disappears.** The loop originally took five steps to explain. After seven or eight extensions, a new reader has to excavate it from a pile of `log_`, `notify_`, and `auto_` calls.
+
+Use a different design: reserve a few attachment points at important moments. The loop only announces "we reached this point." Registered functions decide what to do there.
 
 ---
 
-## How It Works
+## The Registry: Event Names to Callback Lists
 
-**Hook registry**: a dict mapping event names to callback lists.
+The entire hook system is one dictionary and two functions:
 
 ```python
-HOOKS = {
-    "UserPromptSubmit": [],
-    "PreToolUse": [],
-    "PostToolUse": [],
-    "Stop": [],
-}
+HOOKS = {"UserPromptSubmit": [], "PreToolUse": [], "PostToolUse": [], "Stop": []}
 
 def register_hook(event: str, callback):
-    HOOKS[event].append(callback)
+    HOOKS[event].append(callback)          # Register by appending to the list
 
 def trigger_hooks(event: str, *args):
     for callback in HOOKS[event]:
         result = callback(*args)
-        if result is not None:   # return value ≠ None → hook says "stop"
+        if result is not None:             # Teaching shortcut: non-None means intervene
             return result
     return None
 ```
 
-In the teaching version, PreToolUse returning non-None means block execution; Stop returning non-None means force continuation. UserPromptSubmit and PostToolUse return values are unused.
+The contract is simple: a hook returns `None` to say "checked; continue." Any non-`None` value means "stop here," and the remaining hooks in that chain do not run.
 
-**UserPromptSubmit**, triggers after user input, before entering the LLM. Claude Code can intercept or modify input; the teaching version only logs:
+Four events sit at four important points in one Agent cycle:
 
-```python
-def context_inject_hook(query: str) -> str | None:
-    """Inject current working directory info into every prompt."""
-    print(f"\033[90m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
-    return None   # return None = no modification, let prompt through
+| Event | When it fires | What the teaching version attaches |
+|-------|---------------|------------------------------------|
+| `UserPromptSubmit` | After user input, before the LLM | Log the working directory |
+| `PreToolUse` | Before a tool runs | Permission check and call log |
+| `PostToolUse` | After a tool runs | Large-output warning |
+| `Stop` | Just before the loop exits | Count tool calls in the turn |
 
-register_hook("UserPromptSubmit", context_inject_hook)
-```
+---
 
-In the main loop, triggered right after user input:
+## PreToolUse: Move s03's Permission Check into a Hook
 
-```python
-query = input("s04 >> ")
-trigger_hooks("UserPromptSubmit", query)   # ← before entering LLM
-history.append({"role": "user", "content": query})
-agent_loop(history)
-```
-
-**PreToolUse / PostToolUse**, hooks before and after tool execution. s03's permission check logic is now wrapped as a PreToolUse hook, plus a logging hook and a large-output reminder:
+s03's `check_permission()` moves wholesale into a hook function. The logic does not change; only its address does:
 
 ```python
-# PreToolUse: permission check (s03 logic, moved from loop to hook)
 def permission_hook(block):
+    """The s03 permission logic, now running as a hook."""
     if block.name == "bash":
         for pattern in DENY_LIST:
             if pattern in block.input.get("command", ""):
-                return "Permission denied by deny list"
-    if block.name in ("write_file", "edit_file"):
-        path = block.input.get("path", "")
-        if not (WORKDIR / path).resolve().is_relative_to(WORKDIR):
-            choice = input("   Allow? [y/N] ").strip().lower()
-            if choice not in ("y", "yes"):
-                return "Permission denied by user"
-    return None
+                return "Permission denied by deny list"     # Non-None -> block
+        for kw in DESTRUCTIVE:
+            if kw in block.input.get("command", ""):
+                choice = input("   Allow? [y/N] ").strip().lower()
+                if choice not in ("y", "yes"):
+                    return "Permission denied by user"
+    ...
+    return None                                             # allow
 
-# PreToolUse: logging
 def log_hook(block):
+    """Write one line for every tool call."""
     print(f"[HOOK] {block.name}(...)")
-
-# PostToolUse: large output reminder
-def large_output_hook(block, output):
-    if len(str(output)) > 100000:
-        print(f"[HOOK] ⚠ Large output from {block.name}")
+    return None
 
 register_hook("PreToolUse", permission_hook)
 register_hook("PreToolUse", log_hook)
+```
+
+The loop's old `if not check_permission(block)` becomes:
+
+```python
+blocked = trigger_hooks("PreToolUse", block)
+if blocked:
+    results.append({"type": "tool_result", "tool_use_id": block.id,
+                    "content": str(blocked)})   # Return the reason verbatim to the model
+    continue
+```
+
+The s03 rule still holds: a blocked call needs a `tool_result`, and the reason itself becomes its content. When the model reads `Permission denied by user`, it can choose another route.
+
+One hard rule is easy to overlook: **registration order is execution order.** `permission_hook` is registered before `log_hook`, so a blocked call is never logged — the permission hook returns a non-`None` value and short-circuits the rest of the chain. Move `log_hook` first and both allowed and blocked calls are logged. Order is semantics, not formatting.
+
+---
+
+## PostToolUse: Inspect the Output After Execution
+
+```python
+def large_output_hook(block, output):
+    if len(str(output)) > 100000:      # Warn when output exceeds 100 KB
+        print(f"[HOOK] ⚠ Large output from {block.name}: {len(str(output))} chars")
+    return None
+
 register_hook("PostToolUse", large_output_hook)
 ```
 
-**Stop**, triggers when the loop is about to exit (`stop_reason != "tool_use"`). The teaching version prints a cleanup summary:
+For now, this hook only raises a warning. It cannot stop those 100 KB from entering the conversation history. s08 actually handles large output, and the processing logic will be inserted at this exact point.
+
+---
+
+## UserPromptSubmit and Stop: The Two Ends of a Turn
+
+At the input end, the event fires after the user presses Enter but before the content enters `messages`:
 
 ```python
-def summary_hook(messages: list) -> str | None:
-    """Print a summary when the loop is about to stop."""
-    tool_count = sum(1 for m in messages
-                     for b in (m.get("content") if isinstance(m.get("content"), list) else [])
-                     if isinstance(b, dict) and b.get("type") == "tool_result")
-    print(f"\033[90m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
-    return None   # return None = allow stop, return string = force continuation
-
-register_hook("Stop", summary_hook)
+query = input("s04 >> ")
+trigger_hooks("UserPromptSubmit", query)   # Before entering the LLM
+history.append({"role": "user", "content": query})
 ```
 
-In agent_loop, triggered before exit:
+The teaching version only writes a log line. A production system can validate input or inject project context here. The position matters more than the current action: this is the shared gate for all input.
+
+The exit end is more interesting. Before the loop finishes, it asks the Stop hooks one last time:
 
 ```python
 if response.stop_reason != "tool_use":
-    force = trigger_hooks("Stop", messages)   # ← before exiting
+    force = trigger_hooks("Stop", messages)   # Ask once more before exiting
     if force:
-        # hook returned a message → inject it and continue
         messages.append({"role": "user", "content": force})
-        continue
+        continue                              # The hook says "not done"; keep running
     return
 ```
 
-**Only one change in the loop**: s03 directly called `check_permission(block)`, s04 replaces it with `trigger_hooks("PreToolUse", block)`:
+The teaching version's `summary_hook` only counts tool calls and returns `None`, allowing the exit. But notice what this mechanism permits: a Stop hook that returns a value can refuse to let the Agent finish and push it back into the loop. s01 said exiting was a model decision. This is the first time the program gains veto power over that decision. s22 turns it into a complete goal loop.
 
-```python
-for block in response.content:
-    if block.type != "tool_use":
-        continue
-
-    # s03: if not check_permission(block): ...
-    # s04: hooks replace hardcoding
-    blocked = trigger_hooks("PreToolUse", block)
-    if blocked:
-        results.append({"type": "tool_result", "tool_use_id": block.id,
-                        "content": str(blocked)})
-        continue
-
-    handler = TOOL_HANDLERS.get(block.name)
-    output = handler(**block.input) if handler else f"Unknown: {block.name}"
-
-    trigger_hooks("PostToolUse", block, output)
-
-    results.append({"type": "tool_result", "tool_use_id": block.id,
-                    "content": output})
-```
-
-That covers all hook call sites in agent_loop.
+> Real Claude Code has 27 hook events, with instrumentation for sessions, compaction, subagents, and team coordination. A hook returns a 14-field object rather than a single None/non-None channel. The key safety invariant is that even an allow result cannot override deny or ask rules in `settings.json`; an extension point must never become a privilege-escalation path. The teaching version's four events and one return channel are the smallest runnable form of the same pattern.
 
 ---
 
 ## Changes from s03
 
 | Component | Before (s03) | After (s04) |
-|-----------|-------------|-------------|
-| Extension method | check_permission() hardcoded in the loop | HOOKS registry + trigger_hooks() |
-| New functions | — | register_hook, trigger_hooks |
-| Hook callbacks | — | context_inject_hook, permission_hook, log_hook, large_output_hook, summary_hook |
-| Loop | Directly calls check_permission() | Calls trigger_hooks("PreToolUse", ...) |
-| Exit control | None | trigger_hooks("Stop", ...) can prevent exit |
-| Input interception | None | trigger_hooks("UserPromptSubmit", ...) can inject context |
+|-----------|--------------|-------------|
+| Extension style | `check_permission()` hardcoded in the loop | `HOOKS` registry + `trigger_hooks()` |
+| New functions | — | `register_hook`, `trigger_hooks` |
+| Hook callbacks | — | `context_inject_hook`, `permission_hook`, `log_hook`, `large_output_hook`, `summary_hook` |
+| Exit control | None | A non-None Stop result can force another turn |
+| Input gate | None | `UserPromptSubmit` fires before the LLM |
 
 ---
 
@@ -204,80 +183,16 @@ cd learn-claude-code
 python s04_hooks/code.py
 ```
 
-Try these prompts:
-
-1. `Read the file README.md` (should pass directly, observe hook logs)
-2. `Create a file called test.txt` (after creation, observe if PostToolUse fires)
-3. `Delete all temporary files in /tmp` (bash + rm triggers permission hook)
-
-What to watch for: Before each tool execution, does the `[HOOK]` log appear? When permission is denied, was it intercepted by a hook or hardcoded in the loop?
+1. `Read the file README.md`: watch one complete hook timeline. Input produces `[HOOK] UserPromptSubmit`, execution produces `[HOOK] read_file(...)`, and shutdown produces `[HOOK] Stop: session used N tool calls`.
+2. `Use read_file to read web/src/data/generated/docs.json without a limit`: this file exceeds 700 KB, so the `PostToolUse` large-output warning crosses its 100 KB threshold.
+3. `Create a file called test.txt, then delete it`: writing passes silently; `rm` triggers permission approval. Press N and notice that the blocked call has no `[HOOK] bash(...)` log. Registration order is responsible: the permission hook comes first and short-circuits the logging hook.
 
 ---
 
 ## What's Next
 
-The Agent can now safely execute operations, but it has no concept of execution order. Given a complex task, it executes tools as they come, without planning ahead.
+The Agent can execute safely and accept observable extensions. Give it a complex task, though, and it still starts immediately, improvising one step at a time. It makes no plan, and you cannot see where it intends to go.
 
-→ s05 TodoWrite: Give the Agent a planning tool. Make a list first, then execute.
+s05 TodoWrite → Give the Agent a planning tool. Write the checklist first, then act.
 
-<details>
-<summary>Dive into Claude Code Source Code</summary>
-
-> The following is based on a complete analysis of Claude Code source code `toolHooks.ts` (650 lines), `hooks.ts`, `stopHooks.ts`, and `coreTypes.ts`.
-
-### 1. Hook Events: Not Just 4, but 27
-
-The teaching version covers only PreToolUse and PostToolUse. Claude Code actually has 27 hook events (`coreTypes.ts:25-53`):
-
-| Category | Events |
-|----------|--------|
-| Tool-related | `PreToolUse`, `PostToolUse`, `PostToolUseFailure` |
-| Session-related | `SessionStart`, `SessionEnd`, `Stop`, `StopFailure`, `Setup` |
-| User interaction | `UserPromptSubmit`, `Notification`, `PermissionRequest`, `PermissionDenied` |
-| Sub-agents | `SubagentStart`, `SubagentStop` |
-| Compaction-related | `PreCompact`, `PostCompact` |
-| Team-related | `TeammateIdle`, `TaskCreated`, `TaskCompleted` |
-| Other | `Elicitation`, `ElicitationResult`, `ConfigChange`, `WorktreeCreate`, `WorktreeRemove`, `InstructionsLoaded`, `CwdChanged`, `FileChanged` |
-
-The teaching version covers only 4 core events (UserPromptSubmit, PreToolUse, PostToolUse, Stop) because they cover every critical node of a complete agent cycle. The other 23 follow the same pattern.
-
-### 2. HookResult Common Fields
-
-Claude Code's `HookResult` (`types/hooks.ts:260-275`) has 14 fields. Common ones:
-
-| Field | Type | Purpose |
-|-------|------|---------|
-| `message` | Message | Optional UI message |
-| `blockingError` | HookBlockingError | Blocking error → injected into conversation for model self-correction |
-| `outcome` | success/blocking/non_blocking_error/cancelled | Execution result |
-| `preventContinuation` | boolean | Prevent subsequent execution |
-| `stopReason` | string | Stop reason description |
-| `permissionBehavior` | allow/deny/ask/passthrough | Hook returns permission decision |
-| `updatedInput` | Record | Modify tool input |
-| `additionalContext` | string | Additional context |
-| `updatedMCPToolOutput` | unknown | MCP tool output modification |
-
-### 3. Key Invariant: Hook 'allow' Cannot Bypass deny/ask Rules
-
-This is the most important security design in Claude Code's permission system (`toolHooks.ts:325-331`): **when a hook returns allow, it still checks settings.json deny/ask rules.** Even if the user's hook script says "allow", if the tool is disabled in settings.json, the operation is still blocked.
-
-The teaching version doesn't have this layer; hooks returning non-None directly interrupt. This is sufficient for teaching, but would create a security vulnerability in production.
-
-### 4. stopHookActive Mechanism
-
-Claude Code's Stop hooks have an infinite-loop prevention mechanism (`query.ts:212,1300`): the `stopHookActive` state field. When stop hooks produce a blockingError, the loop re-enters with `stopHookActive: true`. Subsequent iterations see this flag and don't trigger stop hooks again. This prevents a never-stopping bug: model self-corrects → stop hook errors again → model self-corrects again → stop hook errors again...
-
-### 5. hook_stopped_continuation
-
-When PostToolUse hooks return `preventContinuation: true`, a `hook_stopped_continuation` attachment is produced (`toolHooks.ts:117-130`). query.ts (L1388-1393) detects it and sets `shouldPreventContinuation = true`, causing the loop to exit. This is the mechanism for "hooks gracefully shut down the Agent" — not a crash, but a completion.
-
-### Teaching Version Simplifications Are Intentional
-
-- 27 events → 4 (UserPromptSubmit/PreToolUse/PostToolUse/Stop): covers agent cycle critical nodes
-- 14 fields → simple return values (None = continue, non-None = interrupt/continue): minimal cognitive load
-- Hook allow vs deny/ask invariant → omitted: teaching version has no settings.json layer
-- stopHookActive → omitted: teaching version Stop hook only does simple continuation, no infinite-loop prevention needed
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

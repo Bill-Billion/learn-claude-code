@@ -1,53 +1,49 @@
-# s21: Workflow Runtime — The Model Owns Each Step, the Script Owns the Orchestration
+# s21: Workflow Runtime — The Model Decides Each Step; a Script Decides the Orchestration
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s19 → s20 → `s21`
 
-> *"One tool_use, a whole orchestration runs in the background"* — the `Workflow` tool launches a deterministic, resumable script runtime that fans out a fleet of subagents.
+> *"One tool_use starts an entire orchestration in the background"* — The `Workflow` tool starts a deterministic, recoverable script runtime that dispatches many subagents in bulk.
 >
-> **Harness layer**: Orchestration — above the single-agent loop, a deterministic multi-agent script runtime.
+> **Harness layer**: Orchestration — a deterministic multi-agent script runtime above the single-agent loop.
 
 ---
 
-## The problem
+From s01 through s20, our loop has always been model-driven and step-by-step: the model chooses one tool each round, its result enters `messages[]`, and another round begins. That is ideal for open-ended tasks because the model can inspect the current context and decide the next step on the spot.
 
-From s01 to s20 the loop is model-driven and single-step: each round the model picks one tool, the result goes back into `messages[]`, and another round begins. For open-ended tasks this is the best you can do — let the model decide the next step on the spot, looking at the context.
+Some jobs, however, require deterministic command of a group of agents. Consider reviewing a large change: inspect ten dimensions in parallel → send each finding to a separate agent for adversarial verification → combine and deduplicate the results → sort by severity. The shape is fixed, and you really need three properties:
 
-But some work needs to **orchestrate a fleet of agents deterministically**. Take reviewing a large change: find problems across ten dimensions in parallel → dispatch an adversarial verification for each finding → merge and dedup → sort by severity. The shape of this orchestration is fixed, and what you want is:
+- **Parallelism**, rather than waiting for one item at a time;
+- **Determinism**, so the same input produces the same result structure;
+- **Recoverability**, so an interruption does not rerun work that is already complete.
 
-- **parallel**, not waiting one at a time;
-- **deterministic**, the same input producing the same structure;
-- **resumable**, so that if it dies halfway through, the parts already done are not redone.
+Making the model drive this process one round at a time in the main loop is slow and nondeterministic, and an interruption starts everything over. At that point, you do not need "one more conversation turn." You need to encode the orchestration directly as code.
 
-Having the model drive all of this step by step inside the main loop is slow, non-deterministic, and starts over when interrupted. At that point what you want is not "one more chat round" but to **write the orchestration as a piece of code**.
+## Put the Plan in Code, Not in a Sequence of Chat Turns
 
-## The solution
+Claude Code includes a `Workflow` tool in its tool pool. You, or the model when it enters a high-intensity mode, provide a script that expresses deterministic orchestration through a few simple primitives: `agent()`, `parallel()`, `pipeline()`, and `phase()`.
 
-Claude Code puts a `Workflow` tool in the tool pool. You (or the model, under an `ultracode` trigger) hand it a **script**, and the script uses the primitives `agent() / parallel() / pipeline() / phase()` to write the orchestration as deterministic code.
+The main loop sees only one `tool_use` and immediately receives a "started in the background" result. Real execution continues inside the background runtime, which reports progress in real time and records every step in a journal on disk. Intermediate script results live in variables instead of taking space in conversation history. When restarted with `resumeFromRunId`, unchanged `agent()` calls hit the journal cache and reuse previous results, resuming from the checkpoint.
 
-The main loop sees a single `tool_use` and **immediately** gets back `async_launched` — the real execution proceeds in a **background runtime** that reports progress and writes a journal to disk. Intermediate results live in script variables, not in the conversation. `resumeFromRunId` lets any unchanged `agent()` hit the journal cache and resume from where it stopped.
-
-![Workflow Runtime overview](images/workflow-runtime-overview.svg)
-
-The plan is code, not a chat turn:
+![Workflow Runtime Overview](images/workflow-runtime-overview.svg)
 
 ```python
-SAMPLE_META = {"name": "review-changes", "description": "...", "phases": ["Review", "Verify"]}
+SAMPLE_META = {"name": "review-changes", "description": "Review code changes", "phases": ["Review", "Verify"]}
 
 async def sample_workflow(ctx, args):
     ctx.phase("Review")
-    results = await ctx.pipeline(DIMENSIONS, audit, verify)   # each dimension runs audit -> verify independently
+    results = await ctx.pipeline(DIMENSIONS, audit, verify)   # Each dimension independently runs audit → verify
     confirmed = [f for r in results if r for f in r["confirmed"]]
-    ctx.log(f"confirmed {len(confirmed)} real finding(s)")
+    ctx.log(f"Confirmed {len(confirmed)} real issues")
     return {"confirmed": confirmed}
 ```
 
-## How it works
+## The Workflow Tool: Start in the Background; the Main Loop Sees One Call
 
-### The Workflow tool: launches in the background, the main loop sees one tool_use
+`Workflow`, also known as `RunWorkflow`, lives in the main agent's tool pool. You may explicitly ask to "run this workflow," invoke a saved `/command`, or let the model enter a high-intensity path automatically. In each case, the model emits a `Workflow(...)` tool call.
 
-`Workflow` (aliased `RunWorkflow`) sits in the main agent's tool pool. A trigger arrives — an explicit "run/build workflow", a saved `/command`, or the high-effort `ultracode` path — and the model emits a `Workflow(...)` `tool_use`. `WorkflowTool.call` parses the arguments, validates the meta, passes permission, registers a `local_workflow` task, and **returns immediately** with `async_launched`. The main loop does not block; it keeps going while the workflow runs in the background.
+The tool parses the arguments, validates metadata, checks permissions, registers a local workflow task, and immediately returns "started asynchronously." The main loop does not block and can continue with other work while the workflow runs in the background. This is the claim-ticket pattern from s13 at a larger scale: hand over the ticket now, notify the user when the result is ready.
 
 ```python
 class WorkflowTool:
@@ -56,89 +52,95 @@ class WorkflowTool:
         check_permission(meta)
         run_id = resume_from_run_id or create_run_id(meta)
         task = LocalWorkflowTask(create_task_id(run_id), run_id, meta)
-        task.event("async_launched", runId=run_id, taskId=task.task_id)   # returns immediately
-        ...                                                                # the rest runs in the background
+        task.event("async_launched", runId=run_id, taskId=task.task_id)   # Return immediately
+        ...                                                                # The rest proceeds in the background
 ```
 
-> Real Claude Code: the tool returns immediately with `{status:'async_launched', taskId, taskType:'local_workflow', runId, summary, transcriptDir, scriptPath}`, and the background task completes later.
+> The real Claude Code immediately returns `{status:'async_launched', taskId, taskType:'local_workflow', runId, summary, transcriptDir, scriptPath}`, then sends a notification when the background task finishes.
 
-### Script and meta: the first statement
+## Script and Meta: The First Line Must Be Correct
 
-The script's **first statement** must be `export const meta = { name, description, phases }`, and it must be a pure literal — no variables, function calls, or interpolation. The runtime parses it before executing anything: `name`/`description` drive the task and the UI, `phases` name the progress groups. Bad input raises `WorkflowInputError` outright.
+The script's first line must be `export const meta = { name, description, phases }`, and it must contain only literals: no variables, function calls, or string concatenation. The runtime parses it before executing any code. `name` and `description` identify the task in the UI, while `phases` names groups in the progress display.
+
+Invalid input raises `WorkflowInputError` immediately and is rejected during registration. This is the same idea as validating cron expressions in s14: do not wait until execution to discover a bad script.
 
 ```python
 def validate_meta(meta):
     if not meta.get("name") or not meta.get("description"):
-        raise WorkflowInputError("meta requires `name` and `description`")
+        raise WorkflowInputError("meta must include name and description")
     if "phases" in meta and not isinstance(meta["phases"], list):
         raise WorkflowInputError("meta.phases must be a list")
     return meta
 ```
 
-> Real Claude Code: `parseWorkflowScript` enforces that meta is the first statement and a pure literal; the teaching version just takes a dict.
+> The real Claude Code's `parseWorkflowScript` requires meta to be the first line and a pure literal. The teaching version accepts a dict directly to simplify this part.
 
-### Orchestration primitives: agent / parallel / pipeline / phase / log / workflow
+## Orchestration Primitives: A Small Set Is Enough for Every Flow
 
-The script runs in a context whose **only** useful globals are these orchestration primitives. The script itself does not read/write files or run a shell — the actual codebase reads and writes are done by **subagents** through their own tool permissions. The primitives are methods on `ExecutionState`:
+A script runs in an isolated context with only a small set of orchestration primitives as globals. The script does not read files or run shell commands directly. All real code operations are performed by dispatched subagents under their own tool permissions. These primitives are methods on `ExecutionState`:
 
-| Primitive | What it does |
+| Primitive | Purpose |
 |------|------|
-| `agent(prompt, {schema, label, phase})` | fan out a subagent |
-| `parallel(thunks)` | **barrier**: run all concurrently, wait for all together |
-| `pipeline(items, *stages)` | per-item, staged, **no barrier** |
-| `phase(title)` | progress group (upsert) |
-| `log(message)` | a progress line |
-| `workflow(name, args)` | nested sub-workflow (one level only) |
+| `agent(prompt, {schema, label, phase})` | Dispatch one subagent |
+| `parallel(thunks)` | **Barrier**: run every task concurrently and wait until all results return |
+| `pipeline(items, *stages)` | Run each item through stages **without a barrier**; finished items proceed immediately |
+| `phase(title)` | Mark the current progress phase and update the progress display |
+| `log(message)` | Emit a progress log line |
+| `workflow(name, args)` | Run a nested sub-workflow, one level only |
 
-`pipeline` is the default — each item passes through all stages independently, so item A can be at stage 3 while item B is still at stage 1; reach for the `parallel` barrier only when you genuinely need "all of the previous stage's results at once".
+`pipeline` should be the default. Each item independently crosses every stage. Item A may reach stage three while item B is still in stage one. Use the `parallel` barrier only when the next stage truly requires every result from the previous stage. A barrier waits for the slowest task, so do not add one without need.
 
 ```python
 async def pipeline(self, items, *stages):
     async def run_item(item, idx):
         value = item
-        for stage in stages:                       # each item runs through all stages independently
+        for stage in stages:                       # Each item independently completes every stage
             value = await stage(value, item, idx)
         return value
     return await asyncio.gather(*[run_item(it, i) for i, it in enumerate(items)])
 ```
 
-> Real Claude Code: the same primitives are injected into the script context by the VM; there are also `args`, `budget` (`budget.total/spent/remaining`), an agent-count cap (1000), and a concurrency semaphore.
+> The real Claude Code injects same-named primitives into the script VM. It also exposes `args`, `budget` with total/spent/remaining values, an agent limit of up to 1000, and a concurrency semaphore.
 
-### Structured output: agent({schema}) + StructuredOutput
+## Structured Output: Do Not Let Subagents Return Essays
 
-`agent({schema})` forces the subagent to return a JSON object that matches the schema (via a single `StructuredOutput` call); the runtime validates it against the schema and retries once on a mismatch. This way downstream code consumes an **object**, not prose it has to parse again.
+`agent({schema})` requires a subagent to return a JSON object matching the schema, internally through one structured-output call. The runtime validates the result and retries once if it does not match. Downstream code receives a regular object instead of a long essay that must be parsed again.
+
+s05 warned that tool arguments cannot be trusted completely. This is the same lesson in reverse: subagent output cannot be trusted completely either. Validate at the orchestration boundary, give one retry, and keep uncertainty out of the rest of the flow.
 
 ```python
 result = self.runner.run(prompt, schema, label)
 if schema is not None:
     ok, err = SimpleJsonSchema(schema).validate(result)
-    if not ok:                                       # one nudge retry, then raise
+    if not ok:                                       # Retry once with a reminder, then fail
         result = self.runner.run(prompt + "\n\nReturn valid JSON.", schema, label)
         ok, err = SimpleJsonSchema(schema).validate(result)
         if not ok:
-            raise WorkflowInputError(f"agent({{schema}}) invalid output: {err}")
+            raise WorkflowInputError(f"agent({{schema}}) returned invalid output: {err}")
 ```
 
-> Real Claude Code: `SimpleJsonSchema` + the `StructuredOutput` tool + schema retry.
+> The real Claude Code combines `SimpleJsonSchema`, a `StructuredOutput` tool, and schema-aware retries to enforce the output format.
 
-### Background task and progress events
+## Background Tasks and Progress Events
 
-`LocalWorkflowTask` holds the status/usage and emits an SDK-style event stream: `task_started` → a series of `task_progress` (carrying batches of `workflow_phase` / `workflow_agent` / `workflow_log`) → a final `task_notification` (completed / failed / stopped, with the output file, token count, tool-call count, and elapsed time). The main session treats these as events; only the final notification re-enters the loop.
+`LocalWorkflowTask` maintains status and token usage and emits an SDK-style event stream: `task_started` → a sequence of `task_progress` events containing phase changes, subagent starts, and log batches → one final `task_notification` reporting completion, failure, or stop, plus output files, token count, tool calls, and elapsed time.
+
+The main session treats these as ordinary events. Only the final completion notification re-enters the main loop.
 
 ```python
 class LocalWorkflowTask:
-    def progress_event(self, ptype, **data):         # workflow_phase / workflow_agent / workflow_log
+    def progress_event(self, ptype, **data):         # Phase/subagent/log
         self.progress.append({"type": ptype, **data})
         print(f"  progress   {ptype} ...")
 ```
 
-> Real Claude Code: progress is folded into the task status and sent to the UI/SDK as `task_progress.workflow_progress`.
+> The real Claude Code folds progress into task state and sends it to the UI and SDK as `task_progress.workflow_progress`.
 
-### Storage: snapshot + journal
+## Storage: Snapshot + Journal for Resuming after Interruptions
 
-When a run finishes it writes five things, all under `~/.claude/projects/<project>/<session>/`: a snapshot `<runId>.json`, the output `<runId>.output.json`, the journal `<runId>.journal.jsonl`, the script `scripts/<runId>.js`, and the subagent transcripts `subagents/workflows/<runId>/`. Saved workflows live in `.claude/workflows/` (project) or `~/.claude/workflows/` (user).
+Each run writes five artifacts under `~/.claude/projects/<project>/<session>/`: a `<runId>.json` snapshot, `<runId>.output.json` output, `<runId>.journal.jsonl` journal, a `scripts/<runId>.js` script copy, and subagent transcripts under `subagents/workflows/<runId>/`. Reusable workflows that you save live in `.claude/workflows/` at project scope or `~/.claude/workflows/` at user scope.
 
-The journal is the key to resume — it records the result of every `agent()`, one line at a time:
+The journal is the core of checkpointed resume. It records every `agent()` result one line at a time:
 
 ```python
 class WorkflowJournal:
@@ -148,47 +150,47 @@ class WorkflowJournal:
         self.cache[key] = value
 ```
 
-### resume: reuse the cache from a runId
+## Resume: Continue by runId and Reuse Everything Unchanged
 
-`Workflow({scriptPath, resumeFromRunId, args})` **re-runs the script**, but each `agent()` computes a **deterministic semantic key**: a key already in the journal returns its cached result directly (no re-run), so everything unchanged is a hit; only the changed one and whatever follows it actually runs.
+Calling `Workflow({scriptPath, resumeFromRunId, args})` reruns the script, but every `agent()` computes a deterministic semantic key. If that key is present in the journal, it returns the cached result without executing again. Every unchanged call hits the cache; only a changed call and the downstream steps that depend on it actually rerun.
 
-The key here is that the key **must not depend on concurrency order** — inside `parallel`/`pipeline` the completion order of agents is undefined, so the key is computed from a stable hash of the call's content (kind, label, prompt, schema), not from a counter that would race.
+The key detail is that keys cannot depend on concurrency order. Agents in `parallel` and `pipeline` finish in nondeterministic order. If "the nth completion" became the key, cache entries would map to the wrong calls on the next run. A key therefore uses a stable hash of call content, including type, label, prompt, and schema, rather than a shared counter:
 
 ```python
 def key(self, kind, label, prompt, schema):
     basis = f"{kind}|{label}|{prompt}|{json.dumps(schema, sort_keys=True)}"
     return f"{kind}-{_stable_hash(basis) % 10**10:010d}"
 
-# inside agent():
+# Inside agent():
 cached = self.journal.cached(key)
 if cached is not MISS:
     self.task.progress_event("workflow_agent", label=label, status="cached")
     return cached
 ```
 
-> Real Claude Code: the same "deterministic semantic key + journal cache"; within the same session, an `agent()` that completed before resume returns the cache, and what comes after it actually runs.
+> The real Claude Code uses the same idea: deterministic semantic keys plus a journal cache. Resuming within the same session returns cached results for completed `agent()` calls and runs only the remaining ones.
 
-### Determinism: reproducibility is the prerequisite
+## Determinism: Reproducibility Makes Resume Meaningful
 
-For resume to hold, the script has to be reproducible. So the runtime strips `Date.now()`, the argless `new Date()`, and `Math.random()` out of the script context, and gives it no Node API either. The same script + the same args → the same key → a 100% cache hit. The teaching version reaches the same effect by computing the key from a stable hash (the real version runs the whole JS script in a sandbox VM with those non-deterministic sources removed).
+Resume works only if the script is reproducible. The runtime therefore removes nondeterministic sources such as `Date.now()`, no-argument `new Date()`, and `Math.random()` from the script context, and does not expose native Node APIs. The same script plus the same arguments produces the same keys and a 100% cache hit. The teaching version obtains the same property through stable key hashing; the real version runs the entire JavaScript inside a sandboxed VM with those sources removed.
 
-### Putting it together
+## See It Run
 
-The example workflow `review-changes`: `pipeline` runs each review dimension through "audit → verify" independently — audit uses an `agent()` with a schema to find problems, verify uses `parallel()` to dispatch one adversarial verification subagent per finding, and at the end only the `isReal` ones survive, sorted by severity.
+The sample `review-changes` workflow uses `pipeline` to send each review dimension independently through audit → verify. An `agent()` with a schema finds issues during audit. During verification, `parallel()` dispatches a separate adversarial subagent for every finding. Only confirmed issues remain, sorted by severity.
 
 ```python
 async def sample_workflow(ctx, args):
     ctx.phase("Review")
 
     async def audit(_v, dimension, _i):
-        out = await ctx.agent(f"Review the changed files for {dimension} issues.",
+        out = await ctx.agent(f"Inspect the changed code for {dimension} issues",
                               schema=FINDINGS_SCHEMA, label=f"audit:{dimension}", phase="Review")
         return {"dimension": dimension, "findings": out["findings"]}
 
     async def verify(audited, dimension, _i):
         ctx.phase("Verify")
-        verdicts = await ctx.parallel([                       # verify each finding adversarially, independently
-            (lambda f=f: ctx.agent(f"Adversarially verify ... {f['title']}",
+        verdicts = await ctx.parallel([                       # Verify every finding independently
+            (lambda f=f: ctx.agent(f"Adversarially verify whether this issue is real: {f['title']}",
                                    schema=VERDICT_SCHEMA, label=f"verify:{dimension}:{f['title']}"))
             for f in audited["findings"]])
         return {"dimension": dimension,
@@ -200,28 +202,28 @@ async def sample_workflow(ctx, args):
 
 ## Changes from s20
 
-| | s20 Comprehensive | s21 Workflow Runtime |
+| | s20 Comprehensive Agent | s21 Workflow Runtime |
 |--|-----------|---------------------|
-| Loop | single, model-driven | main loop unchanged; a deterministic orchestration layer on top |
-| Who decides the next step | the model, round by round | the script, with the orchestration written ahead of time |
-| Multiple agents | s06 subagents, a one-shot fan-out | scripted, reproducible, resumable batch orchestration |
-| New mechanisms | — | script DSL, background task, progress events, journal/resume, structured output, deterministic VM |
+| Loop | One model-driven loop | Main loop unchanged; deterministic orchestration added above it |
+| Who decides the next step | Model decides each round | Script declares the orchestration in advance |
+| Multiple agents | One-shot s06 subagents | Scripted, reproducible, recoverable bulk orchestration |
+| New mechanisms | — | Script DSL, background tasks, progress events, journal/resume, structured output, deterministic VM |
 
-s21 does not replace the main loop — it exposes `Workflow` at the tool layer, and behind it starts a `local_workflow` runtime: **one workflow deterministically drives N agent loops**. The s06 subagent is the model fanning out once on the spot; s21 is the orchestration written as a replayable script.
+s21 does not replace the main loop. It exposes `Workflow` at the tool layer and starts a local workflow runtime behind it: one workflow deterministically drives N agent loops. An s06 subagent is dispatched once at the model's discretion; s21 turns orchestration into a replayable script.
 
-## Try it
+## Try It
 
 ```bash
-python s21_workflow_runtime/code.py          # launch review-changes, watch the event stream
-python s21_workflow_runtime/code.py resume   # resume from the last runId, every agent() hits the journal cache
+python s21_workflow_runtime/code.py          # Start review-changes and watch the event stream
+python s21_workflow_runtime/code.py resume   # Resume by the last runId; every agent() hits the journal cache
 ```
 
-Watch: one launch → `async_launched` → background `workflow_phase` / `workflow_agent` progress → `task_notification`; the result stays on the task. On `resume`, `agents=0 tokens=0` (all cache hits), and the result is identical down to the character.
+Watch one launch produce `async_launched`, followed by background phase changes and subagent progress, then `task_notification`; the result is stored on the task object. A resumed run reports `agents=0 tokens=0` because every call hits the cache, and its result is byte-for-byte identical.
 
-## What's next
+## Next
 
-Orchestration is one more layer on top of agent capability: **the main loop owns the step, the script owns the whole squad**. Write the work as a deterministic, resumable script and the model turns from a "round-by-round driver" into an "execution unit scheduled by a script" — the same `agent()` can be called on the spot by the model inside the main loop, or orchestrated in batches by a script inside a workflow.
+Orchestration adds a layer above agent capabilities: the main loop handles individual operations, while a script manages the whole team's flow. Once work becomes a deterministic, recoverable script, the model changes from the round-by-round driver into an execution unit scheduled by that script. The same `agent()` can be invoked ad hoc by the model in the main loop or orchestrated in bulk inside a workflow.
 
-What's next: [s22 Goal Loop](../s22_goal_loop/) — orchestration fans work out, away from the main loop; the next chapter reverses it, with a goal pulling control back in: until it's met, the turn isn't allowed to end.
+Next: [s22 Goal Loop](../s22_goal_loop/) — Orchestration fans work out and leaves the main loop. The next chapter moves in the opposite direction: a goal pulls control back into the main loop and refuses to let the turn end until the objective is achieved.
 
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

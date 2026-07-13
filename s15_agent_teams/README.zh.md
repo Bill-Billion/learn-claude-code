@@ -152,4 +152,4 @@ python s15_agent_teams/code.py
 
 s16 Team Protocols → 给消息加上类型和编号，关机要握手，请求要回执。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

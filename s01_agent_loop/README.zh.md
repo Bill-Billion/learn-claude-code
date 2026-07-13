@@ -229,4 +229,4 @@ python s01_agent_loop/code.py
 
 s02 Tool Use → 给它 5 个真正的工具，会发生什么？模型会不会一次调用多个工具？几个工具同时跑会不会互相踩？
 
-<!-- translation-sync: zh@v2, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

@@ -1,229 +1,129 @@
-# s14: Cron Scheduler — Producing Work on a Schedule
+# s14: Cron Scheduler — Produce Work on a Schedule
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s12 → s13 → `s14` → [s15](../s15_agent_teams/) → s16 → ... → s20
-> *"Produce work on a schedule, decouple scheduling from execution"* — Cron scheduling, durable or session-level.
+> *"Produce work on a schedule; decouple scheduling from execution"* — Cron scheduling, either persistent or session-scoped.
 >
-> **Harness Layer**: Scheduling — Independent thread checks time, queue delivers triggers.
+> **Harness layer**: Scheduling — an independent thread watches the clock and passes triggers through a queue.
 
 ---
 
-## The Problem
+After s13, the agent no longer stalls on long operations, but every job still begins with something you say. "Run the tests every morning at 9" and "check CI every 30 minutes" should not require hiring someone to press Enter on schedule.
 
-An alarm clock doesn't need you to watch it. You set 7:00, it rings at 7:00. You could be sleeping, showering, cooking, it rings regardless.
+Your first instinct might be to tell the model, "Remember to run the tests every day at 9." That sentence reveals a fact we have not stated explicitly before: **the model exists only while it is being called.** With no incoming request, it is just a set of static weights. The context may say "every day at 9," but when 9 arrives, nothing wakes up to read it. A sense of time has nowhere to live in the model. It can only live in the harness.
 
-s13 lets the agent run slow operations in the background, but every operation is still triggered manually. You say something, the agent acts. "Run tests every morning at 9am", "Check CI status every 30 minutes": these recurring tasks shouldn't need a human to push them each time.
-
----
-
-## The Solution
+How should the harness provide it? Making the main loop `sleep` until 9 would freeze the entire agent. The answer looks like your alarm clock: a small, independent component that stays awake, watches the schedule, and calls out when the time arrives.
 
 ![Cron Scheduler Overview](images/cron-scheduler-overview.svg)
 
-Teaching code carries forward S13's simplified task system, background execution, and prompt assembly; to stay focused on the scheduler, it omits full error recovery, memory, and skill systems. Added: an independent cron scheduler thread that polls every second, queues matching jobs into `cron_queue`, and a queue processor that delivers them when the agent is idle.
-
-Manual vs Scheduled:
-
-| | Manual (s13) | Scheduled (s14) |
-|---|---|---|
-| Triggered by | User input | Scheduler thread |
-| Trigger timing | Anytime | Specified by cron expression |
-| Human involvement | Yes | No (scheduler auto-enqueues, idle agent auto-delivers) |
-| Persistence | — | Durable survives restart |
-
 ---
 
-## How It Works
+## Registration: Stop Bad Expressions at the Door
 
-### Four-Layer Model
-
-Cron scheduling has four layers:
-
-1. **Scheduler**: daemon thread, polls every second, checks if it's time
-2. **Queue**: `cron_queue`, scheduler writes fired jobs
-3. **Queue Processor**: sees non-empty queue and idle agent, starts one agent_loop turn
-4. **Consumer**: agent_loop consumes queue and injects into messages
-
-The teaching version implements a minimal queue processor: `agent_lock` tells whether the agent is idle, and queued cron work is delivered automatically. Real Claude Code's `useQueueProcessor.ts` also handles UI blocking, queue priority, and different message modes.
-
-### CronJob: Data Structure
-
-Each cron task is a `CronJob` object:
+A task is described by a five-field cron expression (minute, hour, day of month, month, day of week) and validated immediately at registration:
 
 ```python
 @dataclass
 class CronJob:
     id: str
-    cron: str        # "0 9 * * *" (5-field cron expression)
-    prompt: str      # Message injected to the agent when fired
-    recurring: bool  # True=recurring, False=one-shot
-    durable: bool    # True=write to disk, survives sessions
+    cron: str        # "0 9 * * *"
+    prompt: str      # Message injected into the agent when the job fires
+    recurring: bool  # True=recurring, False=one-time
+    durable: bool    # True=persist to disk and survive restarts
+
+def schedule_job(cron, prompt, recurring=True, durable=True):
+    err = validate_cron(cron)      # Validate first and reject bad expressions immediately
+    if err:
+        return err
+    job = CronJob(id=f"cron_{random.randint(0, 999999):06d}", ...)
+    with cron_lock:
+        scheduled_jobs[job.id] = job
+    if durable:
+        save_durable_jobs()        # Persist to .scheduled_tasks.json
 ```
 
-Cron expression, 5 fields, used by Unix for 50 years:
+Why must validation happen at registration? Imagine the opposite: `99 99 * * *` enters the registry and raises only when the scheduler tries to match it. There is only one global scheduler thread, so one bad job could silence every alarm. The teaching version uses two defenses: registration rejects most invalid input, and the scheduler loop wraps each job in its own try/except so one failure is logged without killing the thread.
 
-```
-min  hour  dom  month  dow
- *    *     *     *     *      Every minute
- 0    9     *     *     *      Every day at 9:00
-*/5    *     *     *     *      Every 5 minutes
- 0    9     *     *    1-5     Weekdays at 9:00
-```
+---
 
-Supports `*`, `*/N`, `N`, `N-M`, `N,M,...`.
+## Matching: Check Every Second, Ring Only Once per Minute
 
-### cron_matches: 5-Field Matching
-
-Standard cron semantics: minute, hour, month must all match; day-of-month (DOM) and day-of-week (DOW) use OR when both are constrained:
-
-```python
-def cron_matches(cron_expr: str, dt: datetime) -> bool:
-    fields = cron_expr.strip().split()
-    if len(fields) != 5:
-        return False
-    minute, hour, dom, month, dow = fields
-    dow_val = (dt.weekday() + 1) % 7  # Python Monday=0 → cron Sunday=0
-
-    m = _cron_field_matches(minute, dt.minute)
-    h = _cron_field_matches(hour, dt.hour)
-    dom_ok = _cron_field_matches(dom, dt.day)
-    month_ok = _cron_field_matches(month, dt.month)
-    dow_ok = _cron_field_matches(dow, dow_val)
-
-    if not (m and h and month_ok):
-        return False
-    # DOM and DOW: both constrained → either matching is enough (OR)
-    dom_unconstrained = dom == "*"
-    dow_unconstrained = dow == "*"
-    if dom_unconstrained and dow_unconstrained:
-        return True
-    if dom_unconstrained:
-        return dow_ok
-    if dow_unconstrained:
-        return dom_ok
-    return dom_ok or dow_ok
-```
-
-### Independent Scheduler Thread: 1-Second Polling
-
-The scheduler runs in an independent daemon thread, not dependent on whether agent_loop is executing. Individual job errors don't kill the entire thread:
+The scheduler thread wakes every second and matches each job's expression against the current time:
 
 ```python
 def cron_scheduler_loop():
     while True:
         time.sleep(1)
         now = datetime.now()
-        minute_marker = now.strftime("%Y-%m-%d %H:%M")
+        minute_marker = now.strftime("%Y-%m-%d %H:%M")   # Notice the date
         with cron_lock:
             for job in list(scheduled_jobs.values()):
                 try:
                     if cron_matches(job.cron, now):
                         if _last_fired.get(job.id) != minute_marker:
-                            cron_queue.append(job)
-                            _last_fired[job.id] = minute_marker
+                            cron_queue.append(job)               # Trigger: enter the queue
+                            _last_fired[job.id] = minute_marker  # Do not ring again this minute
                         if not job.recurring:
-                            scheduled_jobs.pop(job.id, None)
-                            if job.durable:
-                                save_durable_jobs()
+                            scheduled_jobs.pop(job.id, None)     # Discard one-time jobs after use
                 except Exception as e:
-                    print(f"[cron error] {job.id}: {e}")
+                    print(f"[cron error] {job.id}: {e}")         # One bad job cannot kill the thread
 ```
 
-Key design:
-- **Independent of agent_loop**: scheduler checks time in background even when agent_loop isn't running
-- **Date-aware minute_marker**: uses `"YYYY-MM-DD HH:MM"` to prevent same-minute double-fire while not skipping on the next day
-- **Per-job try/except**: one bad job doesn't crash the scheduler thread
-- **One-shot jobs**: auto-removed from scheduled_jobs after firing
+Two easy mistakes are hidden in `minute_marker`. First, polling every second means the same matching minute is seen 60 times, but the job should fire only once, so the scheduler must remember that it already fired this job during this minute. Second, the marker must include the date. If it stored only `09:00`, a daily job would fire on the first day, see the same marker at 9 the next morning, and never fire again. Bugs like this wait a full day before appearing, which makes them especially unpleasant to diagnose.
 
-### Queue Processor + agent_loop: Delivery
+`cron_matches` also reproduces a traditional cron oddity faithfully: when both the day-of-month and day-of-week fields are constrained, their semantics are OR, not AND. `0 9 13 * 5` means "at 9 on the 13th or on Friday." Standard cron cannot express "at 9 only when the 13th is a Friday." The teaching version does not "correct" that behavior; compatibility includes compatible quirks.
 
-The queue processor does not check time. It only starts a turn when queued work exists and the agent is idle:
+---
+
+## Decoupling: The Scheduler Only Enqueues Work; It Never Executes It
+
+When the time arrives, the scheduler thread does exactly one thing: append the job to `cron_queue`, then return to watching the clock. It never runs an agent turn itself. There are two reasons. An agent turn may take minutes, which would delay every later trigger if it blocked the scheduler. Also, the user may already be talking to the agent. If two turns write the same history concurrently, messages interleave and the pairing rule from s01 breaks immediately.
+
+An alarm clock only rings; it does not drag you out of bed. A different role handles that part:
 
 ```python
 def queue_processor_loop():
+    """Start a turn automatically when work is queued and the agent is idle."""
     while True:
         time.sleep(0.2)
         if not has_cron_queue():
             continue
-        if not agent_lock.acquire(blocking=False):
+        if not agent_lock.acquire(blocking=False):   # No lock = agent is busy; try again later
             continue
         try:
-            if has_cron_queue():
-                run_agent_turn_locked()
+            run_agent_turn_locked()                  # Start an agent turn automatically
         finally:
             agent_lock.release()
 ```
 
-agent_loop also doesn't check time. It only takes fired tasks from `cron_queue` and injects them into messages:
+`agent_lock` is the axis of the entire structure. The path where the user presses Enter and the path where a scheduled job fires compete for the same lock, so only one agent turn can run at a time. Scheduled work never interrupts an active conversation; it waits for the gap after you finish speaking.
+
+The last step happens at the beginning of `agent_loop`, where triggered jobs are injected as user messages through the same "voice of the world" channel:
 
 ```python
 fired = consume_cron_queue()
 for job in fired:
-    messages.append({"role": "user",
-                     "content": f"[Scheduled] {job.prompt}"})
+    messages.append({"role": "user", "content": f"[Scheduled] {job.prompt}"})
 ```
 
-Producer (scheduler thread), deliverer (queue processor), and consumer (agent_loop) are decoupled via `cron_queue`, `cron_lock`, and `agent_lock`.
+The four layers have separate responsibilities: scheduler (watch the clock) → queue (buffer) → queue processor (find an idle moment) → consumer (inject and execute). Each does one job. That is the entire meaning of "decouple scheduling from execution."
 
-### Validation: Prevent Bad Cron from Killing the Scheduler
+Durable jobs are stored in `.scheduled_tasks.json` and reloaded when the program starts. They are validated again during loading because someone may have damaged the file by editing it on disk; invalid jobs are skipped and logged.
 
-`schedule_job` validates the cron expression before registering, returning an error for invalid input:
-
-```python
-def schedule_job(cron, prompt, recurring=True, durable=True):
-    err = validate_cron(cron)
-    if err:
-        return err
-    # ... register job
-```
-
-Loading durable jobs from disk also skips invalid expressions, preventing a single bad task from breaking startup.
-
-### Durable vs Session-only
-
-- **Durable**: Task definition written to `.scheduled_tasks.json`. Loaded on agent restart.
-- **Session-only**: In-memory only. Gone when the agent closes.
-
-> **Important caveat**: The cron scheduler must run inside the agent process. Process exits, scheduler stops. Durable only means the task definition survives restarts. Next time the agent starts, the scheduler checks whether a job is overdue and fires it. If you need "run even when the app is closed", use system crontab or systemd timer.
-
-### Putting It Together
-
-```
-1. On startup:
-   load_durable_jobs() → restore durable tasks from .scheduled_tasks.json
-   Thread(cron_scheduler_loop, daemon=True).start() → scheduler begins polling
-   Thread(queue_processor_loop, daemon=True).start() → processor waits to deliver
-
-2. Register a task:
-   schedule_cron(cron="*/2 * * * *", prompt="run date", durable=True)
-   → CronJob written to scheduled_jobs + .scheduled_tasks.json
-
-3. Every 2 minutes:
-   Scheduler checks → cron_matches returns True → cron_queue.append(job)
-   → queue processor sees idle agent → agent_loop consume_cron_queue
-   → injects "[Scheduled] run date"
-   → LLM receives message, runs date command
-
-4. Process shutdown:
-   Scheduler thread stops (daemon=True)
-   .scheduled_tasks.json stays on disk
-   Next startup → load_durable_jobs → tasks restored
-```
+> The real Claude Code allows at most 50 registered jobs, and recurring jobs expire automatically after seven days. Trigger times include jitter: recurring work may be delayed by up to 10% of its interval so every "exactly 9:00" job in the world does not hit the API in the same second, creating a thundering herd. Cron-initiated requests are also marked as low-priority workloads and yield capacity to interactive users when resources are tight.
 
 ---
 
 ## Changes from s13
 
 | Component | Before (s13) | After (s14) |
-|-----------|-------------|-------------|
-| Trigger method | User manual trigger | Scheduler thread auto-enqueues |
-| New types | — | CronJob dataclass (id, cron, prompt, recurring, durable) |
-| New functions | — | cron_matches, validate_cron, schedule_job, cancel_job, cron_scheduler_loop, queue_processor_loop |
-| New storage | — | .scheduled_tasks.json (durable) + memory (session-only) |
-| Threads | Background execution thread | + Scheduler thread (daemon, 1s polling) + queue processor thread |
-| Queue | background_results | + cron_queue (scheduler writes, queue processor delivers, agent_loop consumes) |
-| Tools | 8 (s12/s13) | + schedule_cron, list_crons, cancel_cron (11) |
+|------|-----------|-----------|
+| Trigger | User input | +scheduled trigger through cron expressions |
+| New threads | Background execution threads | +scheduler thread (1s polling) + queue processor thread |
+| New tools | — | `schedule_cron`, `list_crons`, `cancel_cron` (11 total) |
+| Persistence | Tasks in `.tasks/` | +durable jobs in `.scheduled_tasks.json` |
+| Concurrency control | `background_lock` | +`cron_lock`, `agent_lock` (mutual exclusion between user and scheduled turns) |
 
 ---
 
@@ -234,70 +134,17 @@ cd learn-claude-code
 python s14_cron_scheduler/code.py
 ```
 
-Try these prompts:
-
-1. `Schedule a task to print the current date every 2 minutes`
-2. `List all cron jobs`
-3. `Create a one-shot reminder in 1 minute to check the build status`
-4. `Cancel the recurring job and verify with list_crons`
-
-What to observe: Is the scheduler thread running independently? Do cron tasks fire at the correct time? Without a new prompt, do you see `[queue processor]` and automatic execution? Is the durable job written to `.scheduled_tasks.json`?
+1. **Watch it move on its own**: `Schedule a cron job that runs every minute: report the current time`. At the next whole minute, the terminal becomes active without you typing anything: `[cron fire]` → `[queue processor] delivering scheduled work` → `[inject cron]`, followed by a complete agent turn reporting the time. For the first time in the course, work begins without your input.
+2. **Bad expressions cannot enter**: `Schedule a cron job with expression "99 99 * * *" that says hi`. Registration rejects it with `minute: Value 99 out of bounds [0-59]`, and the scheduler remains unharmed.
+3. **Across restarts**: press `q`, start the program again, and find `[cron] loaded 1 durable job(s)` in the startup log. It still rings at the next whole minute. When you have seen enough, use `Cancel that cron job` and check that `.scheduled_tasks.json` is empty.
+4. **It does not interrupt a conversation**: just before the whole minute, ask the agent a question that needs several tool rounds. After the cron fires, `[queue processor]` does not deliver it immediately; it waits until your current turn ends. That is `agent_lock` at work.
 
 ---
 
-## What's Next
+## Next
 
-One agent can plan, compress, background, and schedule. But some tasks are too big: "refactor the entire backend" means overhauling auth, database layer, API routes, and tests. One agent's context window can't hold all of that.
+The agent can now work and keep time, but it is still a solo worker. A real project has several streams moving in parallel: frontend, backend, and testing are each a job of their own. The subagents from s06 are serial helpers, while the background threads from s13 only run commands. Neither provides "several agents working at once, each responsible for its own area."
 
-s15 Agent Teams → Multiple agents, persistent teammates + async inboxes.
+s15 Agent Teams → Make the main agent the lead, let it start several teammates with separate jobs, and connect them through file-based mailboxes.
 
-<details>
-<summary>Deep Dive into Claude Code Source</summary>
-
-> The following is a complete analysis based on Claude Code source code `CronCreateTool.ts`, `cronScheduler.ts`, `cron.ts`, `cronTasks.ts`, `cronTasksLock.ts`, `useScheduledTasks.ts` (139 lines).
-
-### 1. Three Cron Tools
-
-Claude Code exposes three cron tools to the model: `CronCreate`, `CronDelete`, `CronList`. All controlled by compile-time gate `feature('AGENT_TRIGGERS')` and runtime GrowthBook flag `tengu_kairos_cron`. There's also a `CLAUDE_CODE_DISABLE_CRON` env var for local override.
-
-### 2. Storage: `.claude/scheduled_tasks.json`
-
-```json
-{ "tasks": [{ "id": "abc12345", "cron": "0 9 * * *", "prompt": "...", "recurring": true, "durable": true, "createdAt": 1714567890000 }] }
-```
-
-Durable tasks write to disk; session-only tasks live in `STATE.sessionCronTasks` memory array (lost on process restart). A `.scheduled_tasks.lock` file prevents duplicate firing across multiple sessions of the same project.
-
-### 3. Scheduler: 1-Second Polling
-
-`cronScheduler.ts` checks every second (`CHECK_INTERVAL_MS = 1000`). Whoever holds the lock triggers file tasks; all sessions trigger session-only tasks. A `chokidar` file watcher monitors `scheduled_tasks.json` changes.
-
-### 4. Cron Expression: Standard 5 Fields
-
-Minute hour day month weekday. Supports `*`, `*/N`, `N`, `N-M`, `N-M/S`, `N,M,...`. Doesn't support `L`, `W`, `?`. All times interpreted in local timezone. Day-of-month and day-of-week use OR semantics when both are constrained.
-
-### 5. Jitter (Thundering Herd Prevention)
-
-- Recurring tasks: trigger delay up to 10% of period (max 15 min), deterministic hash based on task ID
-- One-shot tasks: up to 90s early when firing time falls on `:00` or `:30`
-- Jitter config adjustable via GrowthBook, refreshed every 60 seconds
-
-### 6. Auto-Expiration
-
-Recurring tasks auto-expire after 7 days (configurable, max 30 days). Fire one last time before expiry, then auto-delete.
-
-### 7. Job Limit
-
-`MAX_JOBS = 50` (`CronCreateTool.ts:25`). Returns error when exceeded: "Too many scheduled jobs (max 50). Cancel one first."
-
-### 8. Trigger Injection
-
-After firing, enqueued via `enqueuePendingNotification()` with `priority: 'later'` into the command queue. Tagged `workload: WORKLOAD_CRON` — API serves cron-initiated requests at lower QoS when capacity is tight.
-
-### 9. Queue Processor: Automatic Delivery
-
-Real Claude Code auto-triggers processing through `useQueueProcessor.ts:48-60` when no query is active, UI isn't blocked, and queue is non-empty. `queueProcessor.ts:52-87` dispatches commands to `handlePromptSubmit()` by queue priority. The teaching version keeps the core behavior with `queue_processor_loop`: when queued work exists and the agent is idle, it starts one agent_loop turn automatically.
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

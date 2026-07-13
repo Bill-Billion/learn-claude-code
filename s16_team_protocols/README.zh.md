@@ -157,4 +157,4 @@ s12 的任务系统早就有 `claim_task` 了。能不能让队友自己看板�
 
 s17 Autonomous Agents → 队友自组织，不需要领导分配。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

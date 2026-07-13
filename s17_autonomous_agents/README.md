@@ -1,150 +1,92 @@
-# s17: Autonomous Agents — Check the Board, Claim the Task
+# s17: Autonomous Agents — Do Not Wait for the Lead; Claim Work from the Board
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s15 → s16 → `s17` → [s18](../s18_worktree_isolation/) → s19 → s20
 
-> *"Check the board, claim the task"* — poll when idle, work when found.
+> *"Do not wait for the lead to assign work; claim it from the board when idle"* — Poll while idle and claim available tasks.
 >
-> **Harness Layer**: Autonomy — Self-organizing teammates, no leader assignment needed.
+> **Harness layer**: Autonomy — teammates self-organize without assignments from the lead.
 
 ---
 
-## The Problem
+The team gained rules in s16, but work is still assigned by name: "Alice does this, Bob does that." If the board contains ten tasks, the lead must call ten names. As the team grows, every lead turn is spent dispatching, and every turn is a real API call that costs money. The timing is also rigid: while the lead reviews a plan, teammates who have finished can only wait even though untouched tasks remain on the board.
 
-s16's teammates can communicate and handshake shutdown. But each teammate waits for Lead to assign tasks. With 10 unclaimed tasks on the board, Lead has to manually assign 10 times. This doesn't scale. Teammates should check the task board themselves, claim unowned tasks, and look for the next one when done.
+Mature teams do not work that way. The task board is public, and whoever is free picks something up. This chapter reverses assignment from push to pull: **tasks are no longer assigned; they are claimed.**
 
----
-
-## The Solution
+The seed planted in s12 grows here. The `owner` field in each task file and the ownership check in `claim_task` looked unnecessary then; now they form the foundation that keeps several agents from fighting over the same work.
 
 ![Autonomous Agents Overview](images/autonomous-agents-overview.svg)
 
-Carries forward S16's teaching-version MessageBus and protocol tools. This chapter adds: **idle_poll** (poll every 5 seconds when idle), **scan_unclaimed_tasks** (scan the board for claimable tasks), **auto-claim** (claim on sight, no Lead needed).
+---
 
-Teammate lifecycle expands from two phases to three:
+## Lifecycle: WORK Sprints, IDLE Patrols, and Leaving When There Is Nothing to Do
 
-| Phase | Behavior | Exit condition |
-|-------|----------|----------------|
-| WORK | inbox → LLM → tool loop | `stop_reason != tool_use` |
-| IDLE | 5s poll inbox + task board | 60s timeout |
-| SHUTDOWN | Send summary, exit | — |
+Across three chapters, a teammate's lifecycle has kept evolving. In s15 it left after ten rounds. In s16 it waited for instructions after finishing. In s17 it looks for the next job itself. The code is a two-state loop:
+
+```python
+while True:
+    # WORK: one sprint (at most 10 LLM rounds) on the current job
+    for _ in range(10):
+        ...  # Check mail, call the model, execute tools
+
+    # IDLE: patrol every 5 seconds; leave after 60 seconds without work
+    idle_result = idle_poll(name, messages, name, role)
+    if idle_result in ("shutdown", "timeout"):
+        break
+```
+
+Patrol priority is explicit: the mailbox comes before the task board.
+
+```python
+def idle_poll(agent_name, messages, name, role) -> str:
+    for _ in range(IDLE_TIMEOUT // IDLE_POLL_INTERVAL):   # 60s / 5s = 12 checks
+        time.sleep(IDLE_POLL_INTERVAL)
+
+        inbox = BUS.read_inbox(agent_name)
+        if inbox:
+            ...                      # shutdown_request → acknowledge and leave
+            return "work"            # Ordinary message → inject it and return to work
+
+        unclaimed = scan_unclaimed_tasks()
+        if unclaimed:
+            result = claim_task(unclaimed[0]["id"], agent_name)
+            if "Claimed" in result:  # It counts only after a successful claim
+                return "work"
+    return "timeout"                 # Nothing for 60 seconds; leave voluntarily
+```
+
+The `timeout` branch deserves a pause: an employee with no work goes home. This is not merely convenient; it saves money. An idle polling thread may not call the model, but if it never exits, the process accumulates a collection of dead-weight teammates. Sixty seconds is a teaching parameter. A production system would use a longer window or notify the lead and let it decide whether the teammate stays.
 
 ---
 
-## How It Works
+## Competing for Work: First Come, First Served; Losers Keep Patrolling
 
-### idle_poll: Idle Polling
-
-After completing a task, the teammate doesn't exit. It enters the IDLE phase, checking every 5 seconds for new work:
-
-```python
-IDLE_POLL_INTERVAL = 5   # seconds
-IDLE_TIMEOUT = 60         # seconds
-
-def idle_poll(agent_name, messages, name, role) -> str:
-    """Return 'work', 'shutdown', or 'timeout'."""
-    for _ in range(IDLE_TIMEOUT // IDLE_POLL_INTERVAL):
-        time.sleep(IDLE_POLL_INTERVAL)
-
-        # ① Check inbox (priority)
-        inbox = BUS.read_inbox(agent_name)
-        if inbox:
-            # shutdown_request handled immediately
-            for msg in inbox:
-                if msg.get("type") == "shutdown_request":
-                    # ... reply shutdown_response
-                    return "shutdown"
-            # Regular messages: inject into context, return to WORK
-            messages.append(...)
-            return "work"
-
-        # ② Scan task board
-        unclaimed = scan_unclaimed_tasks()
-        if unclaimed:
-            task = unclaimed[0]
-            result = claim_task(task["id"], agent_name)
-            if "Claimed" in result:
-                messages.append(...)
-                return "work"
-    return "timeout"
-```
-
-Inbox takes priority (may contain protocol messages like shutdown_request), task board second. A shutdown_request received during IDLE is dispatched immediately; no need to wait for the next WORK phase.
-
-### scan_unclaimed_tasks: Scan the Task Board
-
-Find tasks that are pending, unowned, with all dependencies completed (`can_start`):
+The board scan selects only work that can actually begin, requiring all three conditions:
 
 ```python
 def scan_unclaimed_tasks() -> list[dict]:
     unclaimed = []
     for f in sorted(TASKS_DIR.glob("task_*.json")):
         task = json.loads(f.read_text())
-        if (task.get("status") == "pending"
-                and not task.get("owner")
-                and can_start(task["id"])):
+        if (task.get("status") == "pending"      # Nobody has started it
+                and not task.get("owner")        # It has no owner
+                and can_start(task["id"])):      # Every dependency is complete (the s12 check)
             unclaimed.append(task)
     return unclaimed
 ```
 
-Three conditions: must be pending, no owner, all blockedBy dependencies completed. `can_start` checks dependency task status: having dependencies doesn't mean the task can't start, only unresolved dependencies block it. Teaching version picks the first by filename; Claude Code uses file locks to prevent multiple teammates from claiming the same task.
+What happens when two teammates patrol at the same moment and see the same task? The answer is in the return-value check around `claim_task`. The ownership validation written in s12 now matters: the first writer changes the state to `in_progress`; the later call receives `"Task xxx is in_progress, cannot claim"`. A teammate therefore must verify the result after claiming. Only `"Claimed" in result` means success. A loser logs `[idle] claim failed`, continues patrolling, and looks for other work on the next pass.
 
-### claim_task: Owner Check
+The honest boundary is unchanged: the teaching version has no file lock, so a window remains in which two threads read `pending` in the same millisecond and both write. The real system re-reads and validates inside a file lock, as discussed in s12. The teaching version accepts that small race to keep the "optimistic claim + retry on failure" pattern directly visible.
 
-Auto-claim checks the claim result, not treating failure as success:
+---
 
-```python
-def claim_task(task_id: str, owner: str = "agent") -> str:
-    task = load_task(task_id)
-    if task.status != "pending":
-        return f"Task {task_id} is {task.status}, cannot claim"
-    if task.owner:
-        return f"Task {task_id} already owned by {task.owner}"
-    if not can_start(task_id):
-        return f"Blocked by: {deps}"
-    task.owner = owner
-    task.status = "in_progress"
-    save_task(task)
-    return f"Claimed {task.id} ({task.subject})"
-```
+## Reinjecting Identity: Long-Runners Forget Who They Are
 
-Teaching version has no file locks, so concurrent claims may still race. But the `task.owner` check avoids the most obvious "last writer wins" problem. Claude Code uses `proper-lockfile` to protect task files, with `claimTask` doing read-modify-write inside a file lock (`utils/tasks.ts:541-612`).
+A teammate uses the `messages[-20:]` sliding window from s15. That is fine for a short-lived teammate, but an autonomous teammate is a distance runner. As it claims task after task and the window moves forward, the original sentence "you are Alice, a poet" eventually falls out. A teammate that loses its identity may answer irrelevant questions or even decide it is the lead and start directing others.
 
-### Teammate Lifecycle: WORK → IDLE → SHUTDOWN
-
-s16's teammates exit after finishing. s17 adds the IDLE phase. Teammates cycle through WORK → IDLE in an outer loop:
-
-```python
-# Outer loop: WORK → IDLE cycle
-while True:
-    # WORK phase: inner loop (max 10 LLM rounds)
-    for _ in range(10):
-        # Check inbox, dispatch protocol, call LLM, execute tools
-        ...
-        if response.stop_reason != "tool_use":
-            break  # WORK phase ends
-
-    # IDLE phase
-    idle_result = idle_poll(name, messages, name, role)
-    if idle_result == "shutdown":
-        break
-    if idle_result == "timeout":
-        break  # 60s timeout → SHUTDOWN
-
-# SHUTDOWN: send summary to Lead
-BUS.send(name, "lead", summary, "result")
-```
-
-Key design:
-- **Outer while True**: WORK and IDLE alternate until timeout or shutdown request
-- **Inner for 10**: WORK phase caps at 10 LLM rounds (prevents infinite loops)
-- **IDLE timeout 60s**: 12 polls × 5s = 60s. Timeout sends summary and exits
-- **shutdown_request works in both phases**: WORK phase dispatches via `handle_inbox_message`; IDLE phase's `idle_poll` checks and replies directly
-
-### Identity Re-injection
-
-After autoCompact (s08), a teammate's messages list may be compressed into a summary. On each new WORK phase entry, check:
+At the beginning of each outer-loop iteration, the harness therefore checks whether the message list is short, which means it is new or has recently been trimmed, and restores the identity:
 
 ```python
 if len(messages) <= 3:
@@ -153,57 +95,21 @@ if len(messages) <= 3:
                    f"Continue your work.</identity>"})
 ```
 
-Short messages suggest compression happened, so re-inject identity. In real Claude Code, context compaction preserves the system prompt; the teaching version's simplified implementation needs manual handling.
+This shares the same nerve as preserving five categories in s08's summary and keeping s09 memory alive through compaction: **context is lost over time, so anything that must survive needs an owner responsible for putting it back.** Identity is the most important item to preserve in a multi-agent system.
 
-### consume_lead_inbox: Unified Inbox Consumer
-
-Both the `check_inbox` tool and the main loop call the same `consume_lead_inbox()` function: route protocol responses to update state first, then inject all messages into Lead's conversation history. Teammates' summaries and results don't just print to terminal. Lead's LLM can see them and coordinate next steps.
-
-### Putting It Together
-
-```
-1. Lead: "Build the backend — too many tasks, let teammates self-claim"
-2. Lead → create_task("Create database schema")
-3. Lead → create_task("Write API routes")
-4. Lead → create_task("Write unit tests")
-5. Lead → spawn_teammate("alice", "backend", "You are a backend developer")
-6. Lead → spawn_teammate("bob", "backend", "You are a backend developer")
-
-7. alice thread starts → WORK: no initial inbox → spins → IDLE
-8. bob thread starts → WORK: no initial inbox → spins → IDLE
-
-9. alice IDLE poll 1 → scan_unclaimed → finds "Create database schema"
-10. alice → claim_task → "Create database schema" → back to WORK
-11. bob IDLE poll 1 → scan_unclaimed → finds "Write API routes"
-12. bob → claim_task → "Write API routes" → back to WORK
-
-13. alice WORK: write_file("schema.sql", ...) → complete_task → WORK ends
-14. alice IDLE → scan → "Write unit tests" → claim → WORK
-15. alice WORK: write_file("test_api.py", ...) → complete_task → WORK ends
-16. alice IDLE → 60s no new tasks → SHUTDOWN
-
-17. bob similar flow → done → SHUTDOWN
-18. Lead consume_lead_inbox → sees alice and bob's summaries
-```
-
-Two teammates claim and work in parallel.
+> In the real Claude Code, an idle teammate does not leave immediately. It sends the lead an `idle_notification`, and the lead or a timeout policy decides whether it stays. Claims use file locks to prevent races. The teaching version's "leave after 60 seconds" condenses that decision into one constant.
 
 ---
 
 ## Changes from s16
 
 | Component | Before (s16) | After (s17) |
-|-----------|-------------|-------------|
-| Task assignment | Lead manually assigns | Teammates auto-claim (can_start checks deps) |
-| Teammate state | WORK or exit | WORK → IDLE (60s poll) → SHUTDOWN |
-| claim_task | No owner check | Rejects tasks that already have an owner |
-| IDLE phase shutdown | Doesn't handle shutdown_request | Dispatches shutdown immediately and exits |
-| Lead inbox | Prints only, not in context | consume_lead_inbox injects into history |
-| New functions | — | idle_poll, scan_unclaimed_tasks, consume_lead_inbox |
-| Identity persistence | System prompt only | Auto re-inject after compression |
-| Lead tools | 14 (s16) | 14 (unchanged) |
-| Teammate tools | 5 | 8 (+ list_tasks, claim_task, complete_task) |
-| Teammate exit | Exit after task done | Exit only after 60s idle timeout |
+|------|-----------|-----------|
+| Work assignment | Lead assigns by name | Teammates scan and claim from the board (pull model) |
+| Teammate lifecycle | WORK → standby → externally dismissed | WORK → IDLE patrol → auto-claim / leave on timeout |
+| Teammate tools | 5 | 8 (+`list_tasks`, `claim_task`, `complete_task`) |
+| New functions | — | `scan_unclaimed_tasks`, `idle_poll` |
+| Identity maintenance | None | Reinject `<identity>` when the message list becomes short |
 
 ---
 
@@ -214,58 +120,16 @@ cd learn-claude-code
 python s17_autonomous_agents/code.py
 ```
 
-Try this prompt:
-
-`Create 3 tasks on the board, then spawn alice and bob. Watch them auto-claim and work.`
-
-What to observe: Do teammates auto-claim unassigned tasks? Are tasks with blockedBy dependencies claimed only after their dependencies complete? Does idle timeout trigger shutdown? Does a shutdown_request in IDLE phase get an immediate response? How do task states change in `.tasks/`?
+1. **A pure pull pipeline**: `Create three tasks: write a haiku to a.md, write a limerick to b.md, write a couplet to c.md. Then spawn two teammates 'w1' and 'w2', both poets, with the prompt "Check the task board and work autonomously."` The lead never assigns a single task. Watch `[idle] w1 auto-claimed` and `[idle] w2 auto-claimed` alternate as the three tasks are divided between them; the faster teammate does more.
+2. **A failed claim in the open**: during experiment 1, you will probably see `[idle] claim failed: Task ... is in_progress`. Both teammates noticed the same task, but the loser neither crashed nor duplicated the work; it logged the failure and kept patrolling. That one line is the value of s12's ownership check.
+3. **Leaving on their own**: after all three tasks complete, create nothing else and wait 60 seconds. `[idle] w1 timeout (60s)` appears, followed by `[teammate] w1 finished`. Employees with no work leave instead of leaving zombie threads behind.
 
 ---
 
-## What's Next
+## Next
 
-Teammates self-organize now. But Alice and Bob both work in the same directory: Alice edits `config.py`, Bob also edits `config.py`, overwriting each other.
+The teammates are autonomous, and a new problem appears. Two teammates may claim separate tasks that both modify the same file. One finishes writing, and the other immediately overwrites it. The tasks are isolated; the filesystem is not. s06 warned about this, and now it is a real problem.
 
-s18 Worktree Isolation → Each task gets its own working directory, no conflicts.
+s18 Worktree Isolation → Give each task its own workspace: separate git worktrees, separate changes, and a merge when the work is done.
 
-<details>
-<summary>Deep Dive into Claude Code Source</summary>
-
-> Teaching note: This chapter's idle_poll + auto-claim mechanism is a teaching design, using a unified polling function to demonstrate "find work when idle." Claude Code's actual implementation combines multiple mechanisms, but shares the same goal: reducing Lead's manual assignment burden.
-
-### 1. Claude Code's Idle Mechanism: Combined Approach, Not Single Polling
-
-Teaching version uses a single `idle_poll()` to handle both inbox checking and task claiming during idle. Claude Code's actual implementation combines four mechanisms:
-
-**idle_notification**: After completing a round of work, `sendIdleNotification()` (`inProcessRunner.ts:569-589`) sends an idle notification to Lead. Lead knows the teammate is available and can assign new tasks or request shutdown.
-
-**mailbox polling**: `waitForNextPromptOrShutdown()` (`inProcessRunner.ts:689-868`) is a **500ms polling loop** that continuously checks three sources: pending user messages, mailbox file messages, and task list. Shutdown requests are prioritized (`inProcessRunner.ts:768-804`), preventing starvation by regular messages.
-
-**task watcher**: `useTaskListWatcher` (`hooks/useTaskListWatcher.ts:34-189`) uses `fs.watch()` to monitor the `.claude/tasks/` directory with 1-second debounce, triggering checks when new tasks are created or dependencies unblock. The dependency check (`L197-207`) verifies "no incomplete tasks in blockedBy", not "blockedBy is empty".
-
-**active claiming**: The polling loop also calls `tryClaimNextTask()` (`inProcessRunner.ts:853-860`), actively claiming tasks from the task list while waiting. So "teammates don't actively poll for tasks" is inaccurate; Claude Code has both passive notification and active claiming.
-
-### 2. Task Claiming: File Locks + Atomic Operations
-
-`claimTask()` (`utils/tasks.ts:541-612`) uses `proper-lockfile` task-level locks, performing read-check-modify-write within the lock. Checks: owner already exists (`L575-576`), already completed (`L580-581`), unresolved blockers in blockedBy (`L585-594`). `claimTaskWithBusyCheck()` (`utils/tasks.ts:614-692`) uses task-list level locks, making busy check and claim atomic to avoid TOCTOU.
-
-`findAvailableTask()` (`inProcessRunner.ts:595-604`) checks "all blockedBy completed" using `task.blockedBy.every(id => !unresolvedTaskIds.has(id))`. `tryClaimNextTask()` (`inProcessRunner.ts:624-657`) updates status to `in_progress` after claiming, so the UI immediately reflects the change.
-
-### 3. Teaching Version vs Claude Code Comparison
-
-| Dimension | Teaching (s17) | Claude Code |
-|-----------|----------------|-----|
-| Idle mechanism | idle_poll unified polling (5s) | idle_notification + 500ms mailbox polling + task watcher |
-| Task discovery | scan_unclaimed_tasks (polling) | useTaskListWatcher (file watching) + tryClaimNextTask (active polling) |
-| Dependency check | can_start (all blockedBy completed) | findAvailableTask (same semantics) |
-| Concurrency safety | Owner check (no file lock) | proper-lockfile task lock + task-list lock |
-| Shutdown handling | IDLE dispatches directly, WORK via handle_inbox_message | 500ms polling loop prioritizes shutdown_request |
-| Timeout exit | 60s with no new tasks | No fixed timeout, Lead manual shutdown |
-| Identity persistence | Messages length detection | Context compaction preserves system prompt |
-| Claim failure handling | Check return value, skip on failure | File locks guarantee atomicity |
-
-Teaching version's `idle_poll()` merges Claude Code's four mechanisms into one polling function. This is a reasonable simplification since the core semantics (find work when idle, claim after deps resolve, prioritize shutdown) are consistent.
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

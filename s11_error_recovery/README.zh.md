@@ -169,4 +169,4 @@ Agent 现在抗揍了。但它处理的任务仍然是一次性的：你给它�
 
 s12 Task System → 任务是有依赖、有状态、持久化的图。这是多 Agent 协作的地基。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

@@ -1,149 +1,110 @@
-# s18: Worktree Isolation — それぞれのディレクトリ、互いに干渉しない
+# s18: Worktree Isolation — それぞれ別に作業し、互いに干渉しない
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s16 → s17 → `s18` → [s19](../s19_mcp_plugin/) → s20
 
-> *"それぞれのディレクトリ、互いに干渉しない"* — タスクは目標を管理、worktree はディレクトリを管理、ID で紐付け。
+> *「それぞれ別のディレクトリで作業し、互いに干渉しない」* — task は目標を、worktree はディレクトリを管理し、ID で結びます。
 >
-> **Harness 層**: 隔離 — 並列実行のディレクトリ分離。
+> **Harness 層**: 分離 — 並行実行のためのディレクトリ分離。
 
 ---
 
-## 課題
+s06 の「会話 context は分離されたが、filesystem は分離されていない」という一文は、当時は注意書きのように聞こえました。s17 になると、実際に爆発する問題になります。
 
-s17 では、Alice も Bob も同じディレクトリで作業。Alice のタスクは「認証モジュールのリファクタリング」、Bob のタスクは「UI ログインページのリファクタリング」。
+Alice と Bob は別々のタスクを claim しても、同じディレクトリで働きます。Alice のタスクは `config.py` を変更し、Bob のタスクも同じです。後から書いた内容が先の変更を上書きします。もっと気づきにくい形では、2 人が古いファイルを読み、それぞれ変更して書き戻し、どちらも意図しない混合物を作ります。問題が起きても戻せません。`git diff` に 2 人の変更が絡み合い、どの行が誰のものか分からないからです。
 
-Alice が `write_file("config.py", ...)` を呼び出し、Bob も `write_file("config.py", ...)` を呼び出す。両者が同じファイルを編集し、互いに上書き。クリーンなロールバックもできず、どの変更が誰のものか区別できない。
-
-s15-s17 は「誰が何をするか」（タスクシステム）と「どう通信するか」（メッセージバス）を解決したが、「どこで作業するか」は未解決。
-
----
-
-## ソリューション
+s15 から s17 は「誰が何をするか」を task board で、「どう話すか」を mailbox で答えましたが、「どこで働くか」には答えていません。
 
 ![Worktree Overview](images/worktree-overview.svg)
 
-Git worktree を使うと、同じリポジトリ内に複数の独立した作業ディレクトリを作成でき、それぞれが独自のブランチを持つ。Alice は `.worktrees/auth-refactor/` で作業、Bob は `.worktrees/ui-login/` で作業し、ファイル操作は完全に独立する。
+---
 
-S17 の教学版 MessageBus、プロトコル、自治認領機構を踏襲。本章の追加：
+## Lock が答えではない理由
 
-| 機能 | 目的 |
-|------|------|
-| create_worktree | タスク用の独立ディレクトリ + 独立ブランチを作成 |
-| bind_task_to_worktree | タスクとディレクトリを紐付け（状態は変更しない） |
-| remove_worktree / keep_worktree | 完了後のクリーンアップまたは保持 |
-| validate_worktree_name | パストラバーサルと不正文字を拒否 |
+最初は lock を追加したくなります。repository 全体を lock すれば、並行処理が直列へ退化し、s15 でチームを組んだ意味が消えます。ファイル単位で lock するには、まず「このタスクがどのファイルに触れるか」を答えなければなりませんが、着手前にはモデル自身にも分かりません。分かったとしても、2 タスクが交差する lock を保持するのは deadlock の定番です。
+
+発想を変えましょう。この問題を git は 20 年前に解決しました。1 人 1 つ working copy を持ち、それぞれ変更し、最後に merge します。`git worktree` は clone よりずっと軽い方法です。1 つの repository から複数の作業ディレクトリを生やし、それぞれを branch へ結びながら、同じ `.git` 履歴を共有します。
+
+この章の設計は一文で表せます。**分離は lock ではなく、copy で行います。**
 
 ---
 
-## 仕組み
-
-### 作成：タスク-Worktree 紐付け
+## 作業場所を開く: 先に名前を検査する
 
 ```python
+VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+
 def create_worktree(name: str, task_id: str = "") -> str:
-    validate_worktree_name(name)       # [A-Za-z0-9._-]{1,64} のみ許可
-    path = WORKTREES_DIR / name
+    err = validate_worktree_name(name)      # 不正な名前はその場で拒否
+    if err:
+        return f"Error: {err}"
+    path = WORKTREES_DIR / name             # .worktrees/<name>
     ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
     if not ok:
         return f"Git error: {result}"
     if task_id:
         bind_task_to_worktree(task_id, name)
-    log_event("create", name, task_id)
-    return f"Worktree '{name}' created at {path}"
-
-def bind_task_to_worktree(task_id: str, worktree_name: str):
-    task = load_task(task_id)
-    task.worktree = worktree_name       # worktree フィールドのみ書き込み
-    save_task(task)                     # 状態は pending のまま、チームメイトの claim を待つ
+    log_event("create", name, task_id)      # audit log: 成功した事実だけを記録
 ```
 
-紐付けルール：1 つのタスクに 1 つの worktree を紐付け。紐付けはタスクの状態を変更しない。タスクは `pending` のままで、チームメイトが認領した時に `in_progress` に進む。これにより Lead は事前にタスクと worktree を作成でき、チームメイトは idle 時に自然に worktree 紐付け済みタスクを認領する。
+名前の検証は、古い知人が 3 度目に登場したものです。s02 の `safe_path` はファイルパスを、s07 の registry は skill 名を、この正規表現は作業場所の名前を守ります。`../../etc` のような名前を path へ連結すると、workspace の外に worktree が作られます。モデルが渡す文字列を path の一部にするなら、必ず先に検査する。この規則はどの章でも変わりません。
 
-### チームメイトツールの cwd 切り替え
-
-教学版は各チームメイトに `wt_ctx` 辞書を維持し、現在の worktree パスを追跡。チームメイトが worktree 紐付けタスクを認領すると、`wt_ctx` が自動的に worktree パスに設定され、チームメイトの `bash`、`read_file`、`write_file` は worktree ディレクトリで実行される：
-
-```python
-# チームメイトスレッド内部
-wt_ctx = {"path": None}
-
-def _run_claim_task(task_id):
-    result = claim_task(task_id, owner=name)
-    if "Claimed" in result:
-        task = load_task(task_id)
-        if task.worktree:
-            wt_ctx["path"] = str(WORKTREES_DIR / task.worktree)
-    return result
-
-def _run_bash(command):
-    return run_bash(command, cwd=wt_ctx["path"])  # worktree で実行
-```
-
-これは教学簡略化。真实 Claude Code の EnterWorktree は `process.chdir()` でプロセス全体のディレクトリを切り替え、AgentTool isolation は `cwdOverride` でサブエージェント実行をラップする。
-
-### クリーンアップ：Keep または Remove
-
-タスク完了後、2 つの選択肢：
-
-```python
-def remove_worktree(name: str, discard_changes: bool = False) -> str:
-    # 安全チェック：変更がある場合デフォルトで拒否
-    if not discard_changes:
-        files, commits = _count_worktree_changes(path)
-        if files > 0 or commits > 0:
-            return "未コミットの変更あり。discard_changes=true で強制削除、または keep_worktree で保持"
-    ok, _ = run_git(["worktree", "remove", str(path), "--force"])
-    if not ok:
-        return "削除失敗"
-    run_git(["branch", "-D", f"wt/{name}"])
-    log_event("remove", name)
-
-def keep_worktree(name: str) -> str:
-    log_event("keep", name)
-    return f"Worktree '{name}' kept for review (branch: wt/{name})"
-```
-
-Keep = ブランチを保持し、手動 review 後にマージ。Remove = 未コミット変更がある場合デフォルトで拒否、`discard_changes=true` で確認が必要。タスクの自動 complete はしない。タスク完了はチームメイトの `complete_task` で明示的にトリガー。
-
-### イベントログ：監査可能
-
-各ライフサイクル操作はログに記録され、監査に利用：
-
-```python
-def log_event(event_type: str, worktree_name: str, task_id: str = ""):
-    event = {"type": event_type, "worktree": worktree_name,
-             "task_id": task_id, "ts": time.time()}
-    # .worktrees/events.jsonl に append
-```
-
-イベントタイプ：`create`、`remove`、`keep`。教学版はイベントを記録するだけで手動監査用。完全な復元には index または `git worktree list` スキャンが必要。
-
-### run_git：成功/失敗を返す
-
-```python
-def run_git(args: list[str]) -> tuple[bool, str]:
-    r = subprocess.run(["git"] + args, cwd=WORKDIR, ...)
-    return r.returncode == 0, output
-```
-
-`create_worktree` と `remove_worktree` は git コマンド成功後のみイベントログに書き込み、ログが実際の状態を反映することを保証。
+`log_event` の位置にも意味があります。`run_git` の成功後に置きます。先に log を書いてから実行すると、失敗した操作にも「成功」という audit record が残り、log は証拠ではなく嘘になります。
 
 ---
 
-## s17 からの変更
+## Binding: 作業場所は task の属性であり、claim ではない
+
+```python
+def bind_task_to_worktree(task_id: str, worktree_name: str):
+    task = load_task(task_id)
+    task.worktree = worktree_name    # このフィールドだけを変更
+    save_task(task)                  # status は pending のまま
+```
+
+意図的に行わないことへ注目してください。status を変えず、owner も設定しません。binding が答えるのは「このタスクはどの作業場所で進めるか」だけで、「誰が進めるか」ではありません。そのため s17 の自律機構はそのままです。タスクは誰かが claim するまで board に残り、獲得した人がその作業場所へ移ります。2 つの機構は直交し、別々のフィールドを管理します。
+
+teammate 側の変更は 1 つだけです。worktree に binding されたタスクを claim すると、その後の `bash`、`read_file`、`write_file` はすべてそのディレクトリで実行します。Alice は `.worktrees/auth/` の `config.py` を、Bob は `.worktrees/ui/` の `config.py` を変更します。物理的に別の 2 ファイルなので、互いを踏みません。
+
+---
+
+## 作業場所を閉じる: 削除前に数える
+
+使い終わった作業場所を片付ける前に、1 つ答える必要があります。中に持ち出していないものが残っていないでしょうか。
+
+```python
+def remove_worktree(name: str, discard_changes: bool = False) -> str:
+    ...
+    if not discard_changes:
+        files, commits = _count_worktree_changes(path)   # 未 commit ファイルと未 push commit を数える
+        if files > 0 or commits > 0:
+            return (f"Worktree '{name}' has {files} uncommitted file(s) "
+                    f"and {commits} unpushed commit(s). "
+                    "Use discard_changes=true to force removal, "
+                    "or keep_worktree to preserve for review.")
+    ok1, _ = run_git(["worktree", "remove", str(path), "--force"])
+    run_git(["branch", "-D", f"wt/{name}"])
+    log_event("remove", name)
+```
+
+変更のある worktree は既定で削除を拒否します。s08 の「要約前に保存」、s09 の「新しい inventory を得てから古いファイルを消す」と同じ感覚が 3 度目に現れます。**破壊する前に、孤児になるデータがないことを確認します。** 逆を想像してください。teammate が commit を終えたものの未 merge のとき、Lead が何気なく「作業場所を片付けて」と言い、`branch -D` で数時間の作業が消え、log には整然とした remove の 1 行だけが残ります。
+
+本当に削除したい場合は 2 つの明示的な出口があります。`discard_changes=true` は「何を捨てるか理解している」、`keep_worktree` は「branch を残し、人が review する」という意味です。危険な操作も実行できますが、言葉にした決断でなければならず、既定動作にはしません。
+
+> 実際の Claude Code には 2 つの worktree 経路があります。`EnterWorktree` は process 単位の chdir で現在の session 全体を移します。AgentTool の `isolation: "worktree"` は global directory を変えず、1 つの subagent だけを囲み、変更のない一時 worktree は自動 cleanup されます。task と worktree を結ぶフィールドはなく、2 つのシステムは独立し、モデルが context から関連付けます。教材版の `worktree` フィールドは意図的な簡略化です。
+
+---
+
+## s17 からの変更点
 
 | コンポーネント | 変更前 (s17) | 変更後 (s18) |
-|--------------|------------|------------|
-| 作業ディレクトリ | 全 Agent が WORKDIR を共有 | 各タスクが git worktree に紐付け可能 |
-| タスクデータ | id/subject/status/owner/blockedBy | + worktree フィールド |
-| チームメイトツール cwd | 常に WORKDIR | worktree 紐付けタスク認領時に自動切り替え |
-| 新規関数 | — | create_worktree, bind_task_to_worktree, remove_worktree, keep_worktree, validate_worktree_name |
-| worktree 安全性 | なし | name 検証 + 変更ありの場合削除拒否 |
-| イベントログ | なし | events.jsonl ライフサイクル監査 |
-| Lead ツール | 14 (s17) | + create_worktree, remove_worktree, keep_worktree (17) |
-| チームメイトツール | 8 (s17) | 8（bash/read/write が worktree cwd で実行） |
+|------|-----------|-----------|
+| 作業ディレクトリ | 全員が WORKDIR を共有 | task ごとに独立 worktree を binding 可能 |
+| Task フィールド | id/subject/.../blockedBy | +`worktree` |
+| 新しい関数 | — | `create_worktree`, `bind_task_to_worktree`, `remove_worktree`, `keep_worktree`, `validate_worktree_name` |
+| Audit | なし | `.worktrees/events.jsonl` の lifecycle log |
+| teammate の実行 | 常に main directory | binding された task では cwd を作業場所へ切替 |
 
 ---
 
@@ -154,55 +115,16 @@ cd learn-claude-code
 python s18_worktree_isolation/code.py
 ```
 
-以下のプロンプトを試してください：
-
-`Create two tasks, then create worktrees for each (bind with task_id). Spawn alice and bob. Watch them auto-claim and work in isolated directories.`
-
-観察ポイント：2 つの worktree の `git status` 出力は異なるブランチを表示しているか？チームメイトが worktree 紐付けタスクを認領後、bash コマンドは worktree ディレクトリで実行されているか？`remove_worktree` は変更がある場合に拒否するか？紐付け後のタスク状態は `pending` のままか？
+1. **分離の現場**: `Create two tasks: 'write auth notes to notes.md' and 'write UI notes to notes.md'. Create worktrees wt-auth and wt-ui, bind one task to each. Spawn alice and bob to work autonomously.` 2 タスクとも同名の `notes.md` を書きますが、それぞれ無事に残ります。`cat .worktrees/wt-auth/notes.md` と `cat .worktrees/wt-ui/notes.md` を比べると、内容が異なり、互いに上書きしていません。これが copy による分離の直接的な証拠です。
+2. **検査**: `Create a worktree named ../../escape`。名前が正規表現を通らず、すぐエラーが返り、workspace の外は何も変わりません。
+3. **作業場所を閉じる gate**: 実験 1 の teammate が終わったあと、`Remove worktree wt-auth` を実行します。未 merge の commit があるため削除を拒否し、エラーにはファイルと commit の件数、2 つの明示的な出口が書かれています。この拒否が本章で最も価値のある 1 行です。
 
 ---
 
-## 次の章
+## 次へ
 
-Agent チームが隔離されたワークスペースで自己組織化できるようになった。しかし Agent の能力はツールに制限される：bash、read、write、task...
+チームは並行作業、分離、片付けまでできるようになりました。Agent の toolbox を振り返ると、bash、ファイル、タスク、チームはすべて私たちが手書きしています。しかしユーザーには、社内 Jira や独自 deployment platform のような自分たちのシステムがあります。組織ごとに別のツールセットを `code.py` へ溶接するわけにはいきません。
 
-もしユーザーが独自のツールを持っていたら？例えば社内 Jira API や独自デプロイシステム？
+s19 MCP Plugin → plugin protocol。外部ツールを標準 interface で接続し、Agent は実装者を知る必要がありません。
 
-s19 MCP Plugin → Agent にプラグインシステムを追加。外部ツールが標準プロトコルで接続、Agent は誰が書いたか知る必要がない。
-
-<details>
-<summary>Claude Code ソースコード深掘り</summary>
-
-Claude Code の worktree システムには 2 つのパスがある：**EnterWorktree**（現在のセッションが切り替え）と **AgentTool isolation**（サブエージェント隔離）。
-
-### EnterWorktree：現在のセッション切り替え
-
-`EnterWorktreeTool.ts:92-97` worktree 作成後、直ちに `process.chdir(worktreePath)`、`setCwd()`、`setOriginalCwd()`、`saveWorktreeState()` を呼び出し。現在のセッションの作業ディレクトリが直接 worktree に切り替わる。プロンプトのヒントではなく、プロセスレベルのディレクトリ変更。
-
-`ExitWorktreeTool.ts:261-320` keep/remove どちらも `restoreSessionToOriginalCwd()` で元のディレクトリに復元。Remove は未コミット変更をチェック（`ExitWorktreeTool.ts:190-220`）、`discard_changes: true` なしでは拒否。
-
-### AgentTool Isolation：サブエージェント隔離
-
-`AgentTool.tsx:590-641` `isolation: "worktree"` の場合、`createAgentWorktree()` を呼び出して worktree を作成し、`cwdOverridePath` でサブエージェント実行をラップ。サブエージェントの全操作が自動的に worktree ディレクトリで実行される。`AgentTool/prompt.ts:272` はモデルに伝える：これは一時的な worktree、変更なしで自動クリーンアップ、変更ありの場合はパスとブランチを返す。
-
-`worktree.ts:902-951` `createAgentWorktree()` はグローバル session cwd を変更せず、サブエージェント専用。`worktree.ts:961-1020` `removeAgentWorktree()` はメインリポジトリルートから削除。
-
-### name 検証
-
-`worktree.ts:76-84` slug を検証：`.`/`..` を拒否、`[a-zA-Z0-9._-]` を許可。`worktree.ts:48` で `VALID_WORKTREE_SLUG_SEGMENT` を定義。教学版の `validate_worktree_name` も同じルールを使用。
-
-### パスとブランチ命名
-
-実際のパスは `.claude/worktrees/`、ブランチ名は `worktree-{slug}`（`worktree.ts:204-227`、スラッシュは `+` に置換）。教学版は `.worktrees/` と `wt/{name}` で簡略化。
-
-作成時は `git worktree add -B`（`worktree.ts:326-328`）を使用し、現在の HEAD より `origin/<defaultBranch>` を優先。
-
-### 状態管理
-
-Claude Code にはタスク-worktree 紐付けがない。Worktree 状態は `PersistedWorktreeSession`（`worktree.ts:756-768`）で管理、フィールドは `originalCwd`、`worktreePath`、`worktreeName`、`worktreeBranch`、`originalBranch`、`originalHeadCommit`、`sessionId` 等を含む——taskId フィールドはない。`saveWorktreeState()`（`sessionStorage.ts:2883-2920`）は `type: 'worktree-state'` で session transcript に書き込み。
-
-教学版はタスクの `worktree` フィールドで紐付けを行う教学簡略化。Claude Code は worktree とタスクを 2 つの独立システムとして扱い、Agent のコンテキスト理解で関連付ける。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

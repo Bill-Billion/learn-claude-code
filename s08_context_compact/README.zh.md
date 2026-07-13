@@ -336,4 +336,4 @@ Use read_file to read s08_context_compact/code.py and s09_memory/code.py without
 
 但这只解决了"草稿纸不够写"。有些信息我们希望长期留下来，不用每次重新发现。哪些值得留、怎么留，是 s09 要回答的问题。
 
-<!-- translation-sync: zh@v6, en@v5, ja@v5 -->
+<!-- translation-sync: zh@v6, en@v6, ja@v6 -->

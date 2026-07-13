@@ -195,4 +195,4 @@ Agent 能安全执行、能被观测扩展了，但给它一个复杂任务，�
 
 s05 TodoWrite → 给 Agent 一个计划工具。先列清单，再动手。
 
-<!-- translation-sync: zh@v2, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

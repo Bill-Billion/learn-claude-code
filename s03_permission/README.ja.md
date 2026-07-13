@@ -3,43 +3,41 @@
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → `s03` → [s04](../s04_hooks/) → s05 → ... → s20
-> *"ツール実行前に権限を判断"* — 権限パイプラインは、どの操作に承認が必要かを決める。
+> *"ツールを実行する前に権限を判断する"* — 権限パイプラインが、承認を必要とする操作を決める。
 >
 > **Harness レイヤー**: 権限パイプライン（deny / ask / allow）。
 
 ---
 
-## 課題
+前章の最後には穴が残っていた。ファイルツールは `safe_path` によってワークスペース内へ制限されたが、bash は自由なままだ。Agent に「プロジェクトを整理して」と頼めば、`rm -rf ./src` を実行するかもしれない。
 
-s02 の Agent は 5 つのツールを持つ。file tools は `safe_path` で保護されるが、bash は制限なし。「プロジェクトを掃除して」と頼むと、`rm -rf /` を実行しかねない。
+s01 の `run_bash` に隠してあった拒否リストでは防げない。リストにあるのは `rm -rf /` であり、`rm -rf ./src` ではない。それでも削除されるのはあなたのコードだ。
 
-安全性はモデルを信頼することではなく、危険な操作を実行前にコードで遮断することに頼る。
-
----
-
-## ソリューション
+この章では、安全性を個々のツール実装から取り出し、すべての実行前に通る共通の関門にする。
 
 ![Permission Overview](images/permission-overview.svg)
 
-s02 のループは完全に維持される。唯一の変更は、ツール実行前に `check_permission()` を挿入すること。各ツール呼び出しは 3 つのゲートを固定順序で通過する：ハード拒否が最優先、次にソフト確認、どちらも一致しなければ許可。
-
-3 つのゲートは 3 つの決定に対応する：
-
-| ゲート | 役割 | 一致時 |
-|--------|------|--------|
-| 1. 拒否リスト | 常に禁止される操作（`rm -rf /`、`sudo`） | 即座に拒否、実行しない |
-| 2. ルールマッチング | コンテキスト依存の操作（作業ディレクトリ外への書き込み、`rm` ファイル） | ゲート 3 へ |
-| 3. ユーザー承認 | ゲート 2 が一致した場合、ユーザー確認を待機 | ユーザーが許可または拒否を決定 |
-
-3 つのゲートのどれにも一致しない → 直接実行。日常の操作の大部分はこの経路を通る。
-
 ---
 
-## 仕組み
+## 拒否リストをツール内に書くと、なぜ駄目なのか
+
+s01 と s02 は最も直感的な方法を使った。`run_bash` の先頭で危険な文字列リストを調べ、一致すれば拒否する。しかし三つの問題がある。
+
+**二段階しかなく、最もよく使う第三の段階がない。** 拒否リストの世界には「許可」と「拒否」しかない。現実の危険な操作の多くは状況次第だ。`rm /tmp/cache.txt` は問題なくても、`rm src/main.py` は致命的になる。コードだけでは区別できなくても、人なら判断できる。必要なのは二択ではなく、**常に不可（deny）、状況を見て確認（ask）、そのまま許可（allow）** の三段階だ。
+
+**安全ロジックの置き場所が違う。** チェックを `run_bash` に書いたなら、`write_file` のチェックはどこに置くのか。ツールを増やすたびに安全ロジックを実装へ書き足せば、いつか必ず一つ漏れる。遮断は全ツールが必ず通る場所、つまりディスパッチの直前でまとめて行うべきだ。
+
+**黙って拒否すると、誰にも伝わらない。** 拒否リストが無言で操作を止めれば、ユーザーには Agent が何をしようとしたか見えず、モデルには失敗だけが返る。人の承認が必要な操作なら、「何を、なぜ」実行したいかを提示すべきだ。
+
+そこでこの章では `run_bash` 内の拒否リストを削除し、実行前の三つの門に置き換える。
 
 ![Permission Pipeline](images/permission-pipeline.svg)
 
-**ゲート 1**：ハード拒否リスト。最初に確認し、一致すればブロックメッセージを返す。（教育デモ：単純な文字列マッチングは信頼できるセキュリティ機構ではない。コマンドの変種やシェル展開で回避される可能性がある。Claude Code のアプローチは付録を参照。）
+---
+
+## 第 1 の門：ハード拒否リスト
+
+最初の門が扱うのは「常に不可」の操作だ。議論の余地はなく、ユーザーを煩わせる理由もない。
 
 ```python
 DENY_LIST = [
@@ -51,23 +49,31 @@ def check_deny_list(command: str) -> str | None:
     for pattern in DENY_LIST:
         if pattern in command:
             return f"Blocked: '{pattern}' is on the deny list"
-    return None
+    return None   # 一致しなければ次の門へ
 ```
 
-**ゲート 2**：ルールマッチング。「いつユーザーに聞くべきか」を記述する。各ルールはツールとチェック条件を指定する。
+一致すれば即座に拒否し、ターミナルに ⛔ を出す。ユーザーには尋ねない。
+
+正直な注意点もある。単純な文字列照合は、信頼できるセキュリティ機構ではない。コマンドの変形や shell 展開で回避できる。教学版がこれを使うのは、パイプラインの構造を明確に見せるためだ。
+
+この門は「常に不可」を扱えるが、「状況次第」は扱えない。`rm ./src` を止めるべきかは、そのときのユーザーの意図で決まり、静的な表には書けない。
+
+---
+
+## 第 2 の門：確認すべき場面を見つけるルール
+
+第二の門はルールの集合だ。各ルールには、対象ツール、一致条件、ユーザーに見せる理由の三つを書く。
 
 ```python
 PERMISSION_RULES = [
-    {
-        "tools": ["write_file", "edit_file"],
-        "check": lambda args: not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR),
-        "message": "Writing outside workspace",
-    },
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]),
-        "message": "Potentially destructive command",
-    },
+    {"tools": ["write_file", "edit_file"],
+     # 解決後の対象パスがワークスペースの外へ出ている
+     "check": lambda args: not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR),
+     "message": "Writing outside workspace"},
+    {"tools": ["bash"],
+     # 削除、システムディレクトリへの書き込み、権限変更を含む
+     "check": lambda args: any(kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]),
+     "message": "Potentially destructive command"},
 ]
 
 def check_rules(tool_name: str, args: dict) -> str | None:
@@ -77,7 +83,13 @@ def check_rules(tool_name: str, args: dict) -> str | None:
     return None
 ```
 
-**ゲート 3**：ルールが一致した後、ユーザー入力を待機。
+ルールの責任範囲に注意しよう。ルールがするのは「この場面は人に確認すべきだ」と識別するところまでで、最終判断はしない。判断するのは次の門だ。
+
+---
+
+## 第 3 の門：ユーザーに判断を委ねる
+
+ルールに一致すると、プログラムは止まり、人の判断を待つ。
 
 ```python
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
@@ -87,146 +99,90 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
     return "allow" if choice in ("y", "yes") else "deny"
 ```
 
-**3 つのゲートを直列に接続**、ツール実行前に挿入する：
+`[y/N]` で N が大文字なのは意図的だ。何も入力せず Enter を押すと拒否になる。一度タスクを中断する代償は、一度の誤操作を許可する代償よりはるかに小さい。
+
+三つの門を一本のパイプラインへつなぐ。
 
 ```python
 def check_permission(block) -> bool:
-    # ゲート 1: ハード拒否
     if block.name == "bash":
-        reason = check_deny_list(block.input.get("command", ""))
+        reason = check_deny_list(block.input.get("command", ""))   # 第 1 の門
         if reason:
             print(f"\n⛔ {reason}")
             return False
-
-    # ゲート 2 + 3: ルールマッチング → ユーザー承認
-    reason = check_rules(block.name, block.input)
+    reason = check_rules(block.name, block.input)                  # 第 2 の門
     if reason:
-        decision = ask_user(block.name, block.input, reason)
+        decision = ask_user(block.name, block.input, reason)       # 第 3 の門
         if decision == "deny":
             return False
-
-    return True
-
-# agent_loop で — s02 のループに 1 行追加するだけ：
-for block in response.content:
-    if block.type == "tool_use":
-        if not check_permission(block):           # ← 新規
-            results.append({... "content": "Permission denied."})
-            continue
-        output = TOOL_HANDLERS[block.name](**block.input)  # s02 既存
-        results.append(...)
+    return True   # どの門にも止められなければ許可
 ```
 
 ---
 
-## s02 からの変更点
+## ループへ戻す：拒否にも結果が必要
 
-| コンポーネント | 変更前 (s02) | 変更後 (s03) |
-|---------------|-------------|-------------|
-| セキュリティモデル | なし（モデルを信頼） | 3 ゲート権限パイプライン |
-| 新規関数 | — | check_deny_list, check_rules, ask_user, check_permission |
-| ループ | すべてのツールを直接実行 | 実行前に check_permission() を挿入 |
+ループ側の変更はおなじみの形だ。実行前に判断を一つ追加する。
+
+```python
+for block in response.content:
+    if block.type != "tool_use":
+        continue
+
+    # s03 で追加：実行前に権限パイプラインを通す
+    if not check_permission(block):
+        results.append({"type": "tool_result", "tool_use_id": block.id,
+                        "content": "Permission denied."})
+        continue
+
+    handler = TOOL_HANDLERS.get(block.name)
+    output = handler(**block.input) if handler else f"Unknown: {block.name}"
+    results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+```
+
+この短いコードには、破ってはいけない二つの規則がある。
+
+**拒否は省略ではない。** 止めた呼び出しにも、`"Permission denied."` を含む `tool_result` を返す。s01 で見た対応規則どおり、各 `tool_use` には対応する `tool_result` が必要で、黙って飛ばすと API は 400 エラーを返す。また、拒否という情報自体にも価値がある。モデルはそれを見て、待ち続けるのではなく別の方法を選べる。
+
+**deny を ask より先に置く。** 門の順序は逆にできない。先にユーザーへ聞き、後からハード拒否リストを見る設計では、`sudo rm -rf /` まで「許可しますか」と尋ねることになり、絶対的な境界を一度の押し間違いに委ねてしまう。
+
+> 実際の Claude Code では、ルールは一枚の表ではない。ユーザー、プロジェクト、ローカル、企業ポリシー、CLI 引数、セッション内の許可など八つの設定元から優先順位に従って統合される。判断動作も四種類あり、ツール自身が判断しないとき共通パイプラインへ渡す `passthrough` が加わる。auto モードでは分類モデルが先に判断し、安全な操作は自動許可し、迷うものだけを人に聞く。教学版は構造を一目で見せるため、一枚の表と三つの門に絞っている。
 
 ---
 
-## 試してみよう
+## s02 からの変更
+
+| コンポーネント | 変更前 (s02) | 変更後 (s03) |
+|----------------|--------------|--------------|
+| 安全モデル | `run_bash` 内の拒否リスト | 三つの門からなる権限パイプライン |
+| 判断 | 許可 / 拒否 | deny / ask / allow |
+| 新しい関数 | — | `check_deny_list`, `check_rules`, `ask_user`, `check_permission` |
+| ループ | すべてのツールを直接実行 | 実行前に `check_permission()` を挿入 |
+
+---
+
+## 試してみる
 
 ```sh
 cd learn-claude-code
 python s03_permission/code.py
 ```
 
-以下のプロンプトを試してみよう：
+ターミナルには三つの結果が現れる。何も表示せず直接実行、第二の門に一致したときの ⚠ と `Allow? [y/N]`、第一の門に一致したときの ⛔ だ。それぞれを発生させてみよう。
 
-1. `Create a file called test.txt in the current directory`（そのまま通過するはず）
-2. `Delete the file test.txt`（bash + rm でゲート 2 が発動）
-3. `What files are in the current directory?`（読み取り専用、すべて通過）
-4. `Try to write a file to /etc/something`（作業ディレクトリ外への書き込みでゲート 2 が発動）
+1. `Create a file called test.txt in the current directory`：ワークスペース内への書き込みなのでルールに一致せず、そのまま実行される。
+2. `Delete the file test.txt`：モデルは bash で `rm test.txt` を実行しようとし、`"rm "` ルールに一致して y または N を待つ。
+3. `Run sudo whoami`：ハード拒否リストに一致し、質問せず ⛔ で拒否される。
+4. `Try to write a file to /etc/something`：ワークスペース外への書き込みなので第二の門が確認する。あえて y を押してみよう。実行時には `safe_path` がなお `Path escapes workspace` を返す。対話層の許可はパス境界の許可ではない。二つの防御は互いを信用しない。
 
-観察のポイント：どの操作がそのまま通過するか？ どれに確認が必要か？ どれが即座に拒否されるか？
+拒否された後、モデルの次の動きを見る。`Permission denied.` を受け取ると、通常は理由を説明するか、別の方法へ切り替える。これが「拒否にも結果が必要」な理由だ。
 
 ---
 
 ## 次へ
 
-権限チェックは実装されたが、毎回ループ内に `check_permission()` をハードコードしている。ツール実行の前後にログを追加したい場合は？ 特定の操作後に自動的に git commit をトリガーしたい場合は？ このような拡張ロジックがループ内に散らばると、ループはすぐに膨張する。
+権限チェックはできたが、まだループ内に直接書かれた一回の関数呼び出しだ。すべてのツール実行を記録したい、ファイル変更後に formatter を動かしたい、といった要求を一つずつループへ追加すれば、すぐに特殊処理の塊になる。
 
-→ s04 Hooks：ループにフックを追加する。拡張ロジックはフックにぶら下げ、ループはクリーンに保つ。
+s04 Hooks → ループに取り付け口を作る。拡張ロジックを hook に掛け、ループ自体はきれいなまま保つ。
 
-<details>
-<summary>Claude Code ソースコードを深掘り</summary>
-
-> 以下は Claude Code ソースコード `types/permissions.ts`、`utils/permissions/permissions.ts`、`toolExecution.ts`、`utils/permissions/yoloClassifier.ts`、`tools/AgentTool/forkSubagent.ts` の検証に基づく。
-
-### 一、PermissionResult：3 種ではなく、4 種
-
-教育版の 3 つのゲート（deny → ask → allow）は Claude Code と完全には対応しない。Claude Code の `PermissionResult` には 4 つの behavior がある（`types/permissions.ts:241-266`）：
-
-| behavior | 意味 | 教育版の対応 |
-|----------|------|-------------|
-| `allow` | 直接許可 | ゲート 3 通過 |
-| `deny` | 直接拒否 | ゲート 1 一致 |
-| `ask` | ユーザーにダイアログを表示 | ゲート 2 一致 |
-| `passthrough` | ツールが意見を表明せず、汎用パイプラインに委ねる | 教育版にはなし |
-
-### 二、本番環境の検証段階
-
-Claude Code のツール呼び出しは 3 つのゲートを通るのではなく、`checkPermissionsAndCallTool()`（`toolExecution.ts:599-1745`）、hooks、`hasPermissionsToUseToolInner()`（`utils/permissions/permissions.ts:1158-1310`）、classifier ロジックに分散する複数の段階を経る：
-
-1. **Zod schema 検証**（`toolExecution.ts:614-680`）— パラメータの型チェック
-2. **validateInput()**（`toolExecution.ts:682-733`）— ツールレベルの意味的検証
-3. **backfillObservableInput()**（`toolExecution.ts:784`）— レガシーフィールドの補完
-4. **PreToolUse hooks**（`toolExecution.ts:800-862`）— フックが allow/deny/ask を返す
-5. **resolveHookPermissionDecision()**（`toolExecution.ts:921-931`）— フック + パイプラインの決定を調整
-6. **hasPermissionsToUseToolInner()**（`permissions.ts:1158-1310`）— 多層ルールチェック：
-   - ツール全体が deny rule で無効 → `deny`
-   - ツール全体が ask rule でマーク → `ask`
-   - `tool.checkPermissions()` ツール自身の判断
-   - ツール自身が deny を返す → `deny`
-   - `requiresUserInteraction()` → `ask`
-   - コンテンツ関連の ask ルール → `ask`（バイパス不可）
-   - セキュリティチェック違反 → `ask`（バイパス不可）
-   - bypassPermissions モード → `allow`
-   - ツール全体が allow rule で許可 → `allow`
-   - passthrough → `ask` に変換
-
-### 三、拒否リスト：1 つのファイルではなく、8 つのソース
-
-Claude Code には単一の deny list はない。権限ルールは 8 つのソースから来る（`types/permissions.ts:54-62`）：
-
-| ソース | 設定場所 |
-|--------|---------|
-| `userSettings` | `~/.claude/settings.json` |
-| `projectSettings` | `.claude/settings.json` |
-| `localSettings` | `settings.local.json` |
-| `flagSettings` | フィーチャーフラグ |
-| `policySettings` | 企業管理ポリシー |
-| `cliArg` | `--allowedTools` / `--deniedTools` |
-| `command` | インラインコマンド |
-| `session` | セッション内一時承認 |
-
-各ルールの形式：`{ toolName: "Bash", ruleBehavior: "deny", ruleContent: "npm publish:*" }`。複数ソースのルールは統合され、高優先度ソースが低優先度を上書きする（低→高：user < project < local < flag < policy、さらに cliArg、command、session）。
-
-### 四、isDestructive() とは
-
-Claude Code では `isDestructive`（`Tool.ts:405-406`）は**純粋に UI 表示用** — ツール一覧に `[destructive]` ラベルを表示するだけ。権限決定には参加しない。デフォルトではすべてのツールが `false` を返す。ExitWorktree（remove 時）と MCP ツール（`annotations.destructiveHint` に依存）のみがオーバーライドする。
-
-### 五、YoloClassifier（自動承認）
-
-Claude Code の auto モードでは、毎回ダイアログを表示するわけではない。`classifyYoloAction`（`utils/permissions/yoloClassifier.ts:1012`）はツール呼び出し + 会話コンテキストを分類器 LLM に送って安全性を判断する。まず acceptEdits モードのシミュレーションを試み（`permissions.ts:620-656`、acceptEdits が許可すれば → 自動承認）、次にセーフツールホワイトリストを確認し（`permissions.ts:658-686`）、最後に分類器を呼び出す。分類器が連続して拒否しすぎた場合 → 手動承認にフォールバック。
-
-### 六、権限バブリング
-
-サブ Agent（AgentTool 経由でフォークされたもの）の `permissionMode` は `'bubble'` に設定される（`forkSubagent.ts:50`）。これは権限ダイアログが**親 Agent のターミナルにバブルアップ**することを意味する。サブ Agent で黙って拒否されるのではない。Bash 分類器はこの過程で引き続き実行され — 権限ダイアログを表示しつつ、バックグラウンドで自動承認可能か判断する。
-
-### 教育版の単純化は意図的
-
-- 多段階パイプライン → 3 ゲート：概念数が減り、理解しやすい
-- 8 ルールソース → 1 つのローカル DENY_LIST：概念量を制御可能
-- isDestructive → 省略（教育版には UI レイヤーがなく、Claude Code でも権限決定には参加しない）
-- YoloClassifier → 省略（追加の LLM 呼び出しとテレメトリに依存）
-- 権限バブリング → 省略（s15 でマルチ Agent を扱う）
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

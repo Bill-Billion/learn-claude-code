@@ -1,51 +1,49 @@
-# s06: Subagent — 大きなタスクを分割、それぞれがクリーンなコンテキストを取得
+# s06: Subagent — 大きなタスクを分け、クリーンなコンテキストを渡す
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → `s06` → [s07](../s07_skill_loading/) → s08 → ... → s20
 
-> *"大きなタスクは小さく、小さなタスクごとにクリーンなコンテキスト"* — Subagent は独立した `messages[]` を使い、メイン会話を汚染しない。
+> *"大きなタスクを小さく分け、各サブタスクにクリーンなコンテキストを"* — Subagent は独立した `messages[]` を使い、親の会話を汚さない。
 >
-> **Harness レイヤー**: サブエージェント — コンテキストの隔離、注意の散漫を防ぐ。
+> **Harness レイヤー**: Subagent — コンテキストを分離し、注意の漂流を防ぐ。
 
 ---
 
-## 課題
+前章の一覧は作業順を制御できたが、情報量は制御できない。
 
-前章で Agent に `todo_write` を加えた。大きなタスクをチェックリストに分解し、一歩ずつ進められる。しかし分解したサブタスクは、まだ同じ `messages[]` の中で動いている。
+Agent が bug を直している。呼び出し経路を追うため 30 ファイルを読み、60 ターンを往復し、`messages` は 120 件に増えた。その大半は調査途中の産物で、「bug を直す」という目的にはもう関係ない。それでもコンテキストを占め続ける。最初の bug に戻った頃には、肝心の説明のほうが見えなくなりかけている。
 
-Agent がバグを修正している：呼び出しチェーンを追跡するために 30 のファイルを読み、60 ラウンドやり取りし、`messages` は 120 件に膨らむ。その大半は「呼び出しチェーンの追跡」という中間過程で、「バグ修正」という最終目標とはもう関係がないのに、まだコンテキストを占めている。初期の重要な情報は有効ウィンドウから押し出され、モデルは最初のバグの説明を、かえって覚えていられなくなる。
+人ならどうするか。別のターミナルを開いて呼び出し経路を調べ、結論をメモし、ターミナルを閉じて元の修正へ戻る。途中で読んだ 30 ファイルは一緒に戻ってこない。
 
-別の見方をしよう：バグを修正するとき、あなたは「新しいターミナルを開いて」呼び出しチェーンを追跡し、終わったら結果をメモして、ターミナルを閉じ、元のターミナルに戻って修正を続ける。Agent にも同じ能力が要る：独立したサブプロセスを spawn し、専用のメッセージリストを与え、一つのことに集中させ、終わったら結論だけ持ち帰らせる。
-
----
-
-## ソリューション
+この章では Agent に同じ能力を与える。新しいコンテキストを持つ Subagent に面倒な調査を任せ、結論だけを持ち帰らせる。
 
 ![Subagent Overview](images/subagent-overview.svg)
 
-直感的なやり方は、メイン Agent 自身に呼び出しチェーンを追跡させ、そのまま修正を続けさせることだ。だが追跡の過程はすべてメイン会話に残る。これがまさに上の問題だ。
+---
 
-そこで発想を変える：**面倒な作業は外に出し、戻ってくるのは一言の結論だけにする。** 前章のフック構造と `todo_write` はそのまま残し、本章で `task` ツールを 1 つ加える。メイン Agent がそれを呼ぶと、サブエージェントを spawn し、新しい `messages[]` を与えて自分のループを走らせる。終わったら要約テキストだけが返り、間の 60 ラウンドはすべて破棄される。会話コンテキストはメイン Agent に入らないが、サブエージェントがファイルシステムに加えた実際の変更（書き込み、編集、コマンド実行）は作業ディレクトリに残る。
+## 親 Agent が最後まで一人でやると、なぜ駄目なのか
 
-サブエージェントのツールは制限されている：`bash`/`read`/`write`/`edit`/`glob` はあるが `task` はなく、再帰的に新しいサブエージェントを spawn できない。そして各ツール呼び出しはやはり権限フックを経由する。コンテキストを隔離しても、セキュリティポリシーは飛ばさない。
+直感的には、親 Agent が呼び出し経路を追い、そのまま修正すればよい。しかし問題は先ほど見たとおり、調査過程が永久に親の会話へ残ることだ。s08 では満杯のコンテキストを圧縮するが、後から圧縮するより、不要な情報を最初から入れないほうがよい。
+
+では途中のメッセージを「使い終わったら削除」すればよいか。それもできない。メッセージを消すと s01 の `tool_use`/`tool_result` の対応を壊す可能性があり、何を「使い終わった」とみなすかも親 Agent 自身には正確に判断できない。
+
+解決策は外注だ。「呼び出し経路を追う」という仕事全体を別の会話で実行する。その会話はいくら汚れてもよい。終わったら全履歴を捨て、要約だけを返す。
 
 ---
 
-## 仕組み
+## Subagent は s01 のループをもう一つ動かすだけ
 
-サブエージェントは本質的に、あの s01 のループのもう 1 つのインスタンスにすぎない。空の `messages[]` と、より狭いツールセットに差し替えただけだ：
+`spawn_subagent` は新しい概念を導入しない。新しい `messages[]` を用意し、s01 型のループをもう一つ始めるだけだ。
 
 ```python
 def spawn_subagent(description: str) -> str:
-    # サブエージェントのツール：基本ツールのみ、task なし（再帰禁止）
-    sub_tools = [...]
-    messages = [{"role": "user", "content": description}]  # 新規 messages[]
+    messages = [{"role": "user", "content": description}]   # タスクだけを含む新しいコンテキスト
 
-    for _ in range(30):  # safety limit
+    for _ in range(30):                                     # 安全上限：最大 30 ターン
         response = client.messages.create(
-            model=MODEL, system=SUB_SYSTEM,
-            messages=messages, tools=sub_tools, max_tokens=8000,
+            model=MODEL, system=SUB_SYSTEM,                 # Subagent 専用の system prompt
+            messages=messages, tools=SUB_TOOLS, max_tokens=8000,
         )
         messages.append({"role": "assistant", "content": response.content})
         if response.stop_reason != "tool_use":
@@ -53,141 +51,84 @@ def spawn_subagent(description: str) -> str:
         results = []
         for block in response.content:
             if block.type == "tool_use":
-                blocked = trigger_hooks("PreToolUse", block)
+                blocked = trigger_hooks("PreToolUse", block)   # 外注しても権限チェックは免除しない
                 if blocked:
-                    results.append({... "content": str(blocked)})
+                    results.append({"type": "tool_result", "tool_use_id": block.id,
+                                    "content": str(blocked)})
                     continue
                 handler = SUB_HANDLERS.get(block.name)
-                output = handler(**block.input) if handler else f"Unknown"
-                trigger_hooks("PostToolUse", block, output)
-                results.append({... "content": output})
+                output = handler(**block.input) if handler else f"Unknown: {block.name}"
+                results.append({"type": "tool_result", "tool_use_id": block.id,
+                                "content": output})
         messages.append({"role": "user", "content": results})
 
-    # 最後のテキスト結論のみを返す、中間過程はすべて破棄
-    return extract_text(messages[-1]["content"])
+    # 結論だけを持ち帰り、会話履歴全体をここで捨てる
+    result = extract_text(messages[-1]["content"])
+    ...
+    return result
 ```
 
-このループの要点をいくつか：ツールセットに `task` がない（もう spawn できず、再帰はここで止まる）；`for _ in range(30)` はラウンド数の上限（サブエージェントは最多 30 ラウンド、無限ループを避ける）；各ツール呼び出しの前にやはり `PreToolUse` フックを通る（コンテキストは隔離するが、権限は隔離しない）；最後は `extract_text(messages[-1])` で結論を 1 つ取り出すだけで、中間過程はまるごと捨てる。
+`SUB_SYSTEM` の違いは一文だけだ。「タスクを完了し、簡潔な要約を返し、さらに委任しないこと」。`SUB_TOOLS` は親 Agent のツールの部分集合で、`bash`/`read`/`write`/`edit`/`glob` はあるが、`task` も `todo_write` もない。
 
-メイン Agent の側では、それを呼ぶのは他のツールを呼ぶのとまったく同じだ：
+親 Agent 側の接続方法も同じ合言葉に従う。定義を一つ、登録を一行。
 
 ```python
-TOOLS = [
-    {"name": "bash", ...},
-    {"name": "read_file", ...},
-    {"name": "write_file", ...},
-    {"name": "edit_file", ...},
-    {"name": "glob", ...},
-    {"name": "todo_write", ...},
-    # s06: 新規 task ツール
-    {"name": "task",
-     "description": "Launch a subagent to handle a complex subtask. Returns only the final conclusion.",
-     "input_schema": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]}},
-]
-
+TOOLS.append({
+    "name": "task",
+    "description": "Launch a subagent to handle a complex subtask. Returns only the final conclusion.",
+    "input_schema": {"type": "object", "properties": {"description": {"type": "string"}}, "required": ["description"]},
+})
 TOOL_HANDLERS["task"] = spawn_subagent
 ```
 
-四つの重要な設計決定：
+親のループから見れば、`task` と `read_file` に違いはない。一回呼び出し、一つの結果を受け取る。ただし、その「結果」の裏では別の Agent が一つの仕事人生を走り切っている。
 
-| 決定 | 選択 | 理由 |
-|------|------|------|
-| コンテキスト隔離 | 新規 `messages[]` | サブエージェントの中間過程がメイン Agent のコンテキストを汚染しない |
-| 結論のみ返却 | `extract_text(last_message)` | messages リスト全体を返すのではない |
-| 再帰禁止 | サブエージェントに task ツールなし | サブエージェントがさらにサブエージェントを spawn するのを防止 |
-| セキュリティのバイパスなし | サブエージェントのツール呼び出しも PreToolUse フックを経由 | コンテキスト分離は権限分離ではない |
+---
 
-ディスパッチ機構は変わらず、task ツールは `TOOL_HANDLERS[block.name]` を経由する。サブエージェントは独立した `SUB_SYSTEM` プロンプトを持ち、「タスクを完了し、さらに委託しない」と明示される。
+## 省略できない四つの防線
+
+このコードには四つの意図的な設計があり、それぞれが異なる失敗を防ぐ。
+
+**Subagent に `task` ツールを与えない。** 与えると、Subagent が孫を生み、孫がさらに次を生む。一段ごとに最大 30 ターンの委任が暴走すれば、数段で API 予算を使い切れる。再帰を子の一段で止めるのはツールセットによる強制で、モデルの自制には頼らない。
+
+**外注しても権限は免除しない。** Subagent の各ツール呼び出しも `PreToolUse` hook を通る。これを飛ばすと、「Subagent に任せる」が権限回避になる。親で止められたコマンドも、タスク説明へ書いて子に実行させればよいからだ。コンテキスト分離と権限分離は別物で、前者は効率設計、後者は安全境界である。
+
+**結論抽出には fallback がある。** 30 ターンの上限に達したとき、最後のメッセージがモデルのテキストを含まない `tool_result` かもしれない。最後だけを読むと空文字列になり、親は空の結論を受け取る。そこでコードは直近の assistant テキストを後ろから探す。それもなければ `"Subagent stopped after 30 turns without final answer."` を返し、何が起きたかを親へ伝える。
+
+**要約にない情報は存在しない。** Subagent が読んだファイルや試した経路を、親は永遠に見ない。委任とは、親の会話をきれいに保つ代わりに、一度の非可逆な圧縮を受け入れることだ。何を要約へ残すかは `task` ツールの `description` が十分明確かどうかで決まる。
+
+> 実際の Claude Code には Subagent の実行モードが三つある。fork モードはコンテキストを空にするどころか、親と一字一句同じメッセージ接頭辞を構築する。Anthropic API の prompt cache に当て、時間と費用を節約するためだ。また Subagent がバックグラウンドで動き、完了後に親へ通知する非同期経路もある。s13 でこれを作る。
 
 ---
 
 ## s05 からの変更
 
 | コンポーネント | 変更前 (s05) | 変更後 (s06) |
-|--------------|-------------|-------------|
-| ツール数 | 6 (bash, read, write, edit, glob, todo_write) | 7 (+task) |
-| 新規関数 | — | spawn_subagent（独立 messages[] + 30 ラウンド安全制限） |
-| コンテキスト隔離 | すべてメイン会話内 | サブエージェントが新規 messages[] を使用 |
-| ループ | 不変 | ディスパッチは不変、サブエージェントに独立した SUB_SYSTEM とフック保護されたループ |
+|----------------|--------------|--------------|
+| ツール数 | 6 (`bash`, `read`, `write`, `edit`, `glob`, `todo_write`) | 7 (+`task`) |
+| 新しい関数 | — | `spawn_subagent`（独立 `messages[]` + 30 ターン上限） |
+| コンテキスト | すべて親の会話 | Subagent は新しい `messages[]` で開始 |
+| ループ | 変更なし | dispatch は同じ、Subagent は `SUB_SYSTEM` と hook で保護 |
 
 ---
 
-## 試してみよう
+## 試してみる
 
 ```sh
 cd learn-claude-code
 python s06_subagent/code.py
 ```
 
-以下のプロンプトを試してみよう：
-
-1. `Use a subtask to find what testing framework this project uses`（サブエージェントがファイルを読み、メイン Agent は結論のみ受け取る）
-2. `Delegate: read all .py files in agents/ and summarize what each one does`
-3. `Use a task to create s06_subagent/example/string_tools.py with a slugify(text: str) function, then verify it from the parent agent`
-
-観察のポイント：`[Subagent spawned]` / `[Subagent done]` が表示されるか？ サブエージェントのツール呼び出しが `[sub] ...` として出力されるか？ 親 Agent はサブエージェントが返した要約だけを受け取って続行するか？
+1. `Use a subtask to find what testing framework this project uses`：`[Subagent spawned]`、字下げされた `[sub] read_file: ...`、`[Subagent done]` の三段階を見る。親が受け取るのは一つの結論だけだ。
+2. `Delegate: read all Python files in s01_agent_loop/ and s02_tool_use/ and summarize what each one does`：Subagent は複数のファイルを読む。終了後、親に `Quote the exact SYSTEM prompt string from s01's code.py` と聞く。再度ファイルを読まない限り答えられない。詳細は破棄された子コンテキストに残ったからだ。これが実際に分離された証拠になる。
+3. `Use a task to create s06_subagent/example/string_tools.py with a slugify(text: str) function, then verify it from the parent agent`：Subagent が書いたファイルはディスクに残り、親 Agent も読める。会話コンテキストは分離されても、ファイルシステムは分離されていない。この二つを区別しよう。
 
 ---
 
 ## 次へ
 
-Agent はタスクを分割できるようになった。しかし各タスクに必要な知識は異なる。フロントエンドコンポーネントの変更には React 規約が必要で、SQL を書くにはテーブル構造を知る必要がある。これらの知識をすべて system prompt に詰め込むと、コンテキストが一気に埋まってしまうこともある。
+Agent はタスクを分けられるようになった。しかし必要な知識はタスクごとに違う。frontend の変更には component 規約、SQL には schema が必要だ。すべての分野知識を system prompt へ入れれば、どのタスクも全マニュアルを背負って走ることになる。
 
-→ s07 Skill Loading：スキルをオンデマンドで注入する。system prompt にドキュメントを積み上げるのではなく、必要なときだけ読み込む。ファイルを読むのと同じくらい自然に。
+s07 Skill Loading → 知識を必要なときだけ読み込む。カタログは常駐させ、本文は使うときにだけ、ファイルと同じように読む。
 
-<details>
-<summary>Claude Code ソースコードを深掘り</summary>
-
-> 以下は Claude Code ソースコード `AgentTool.tsx`、`runAgent.ts`、`forkSubagent.ts`、`forkedAgent.ts` の完全分析に基づく。
-
-### 一、一つのパターンではなく三つ
-
-教育版は「新規 messages[]」のみを取り上げる。Claude Code には実際に三つの実行モードがある：
-
-| モード | トリガー | コンテキスト |
-|--------|---------|-------------|
-| **Normal Subagent** | `subagent_type` 指定時（normal path） | 新規 messages[]、プロンプトのみ |
-| **Fork Subagent** | `subagent_type` 未指定、fork gate 有効時 | `buildForkedMessages()` でキャッシュフレンドリーなプレフィックスを構築、プロンプトキャッシュを共有 |
-| **General-Purpose** | `subagent_type` 未指定、fork gate 無効時 | Normal と同じ |
-
-### 二、Fork モード：プロンプトキャッシュの共有のため
-
-これは教育版にはない核心概念。Fork モード（`forkSubagent.ts:60-71`）は新規コンテキストを作成せず、`buildForkedMessages()`（`forkSubagent.ts:107-168`）でキャッシュフレンドリーなメッセージプレフィックスを構築する。親の assistant message を保持し、placeholder tool results を生成する。目的は隔離ではなく、Anthropic API のプロンプトキャッシュをヒットさせること：親子 Agent の system prompt、tools、messages プレフィックスがバイトレベルで一致するため、API 側で再計算が不要になる。
-
-キャッシュヒットの五つの重要コンポーネント（`forkedAgent.ts:57-68`）：system prompt、tools、model、messages プレフィックス、thinking config、バイトレベルで一致する必要がある。
-
-### 三、コンテキスト隔離の精密な粒度
-
-`createSubagentContext()`（`forkedAgent.ts:345-462`）はサブエージェントの `ToolUseContext` を作成：
-
-| フィールド | 挙動 |
-|-----------|------|
-| `abortController` | 新しい子コントローラ、親の abort は下に伝播 |
-| `setAppState` | デフォルトは no-op、ただし sync agent は `shareSetAppState` で共有（`runAgent.ts:697-714`） |
-| `readFileState` | **親からクローン**（同じファイルの再読み込みを回避） |
-| `queryTracking` | 新しい chainId、`depth = parentDepth + 1` |
-
-サブエージェントは完全に隔離されているわけではない。ファイル読み取り状態は共有される。UI と通知の隔離度は実行パスにより異なる（sync/async/fork/teammate でそれぞれ異なる）。
-
-### 四、再帰 Fork 防護
-
-教育版は「サブエージェントに task ツールなし」で再帰防止を表現する。実際の実装はより精密：`isInForkChild()`（`forkSubagent.ts:78-89`）が会話履歴内の `FORK_BOILERPLATE_TAG` をチェックする。しかし `constants/tools.ts:36-46` では `Agent` ツールが全エージェントの無効セットにデフォルト設定（`USER_TYPE === 'ant'` 時は例外）、`forkSubagent.ts:73-89` は fork child 向けの専用再帰保護があり、`agentToolUtils.ts:100-110` は teammate シナリオで特別な許可がある。単純な「サブエージェントの再 spawn 禁止」ではない。
-
-### 五、Permission Bubbling
-
-Fork Agent の `permissionMode: 'bubble'`（`forkSubagent.ts:67`）は、サブエージェントの権限プロンプトが親ターミナルにバブルアップすることを意味する。ユーザーはメインターミナルでサブエージェントの操作を承認する。
-
-### 六、Async vs Sync
-
-教育版は同期サブエージェントのみ（親が子の完了を待つ）を示す。Claude Code は非同期パスもサポート（`AgentTool.tsx:686-764`）：`run_in_background: true` の場合、サブエージェントは非同期で起動し、`{ status: 'async_launched' }` を直ちに親に返し、完了時に通知機構で親に知らせる。実際のトリガーは `run_in_background` だけでなく、auto-background、assistant force async、coordinator/proactive パスもある。
-
-### 教育版の簡略化は意図的
-
-- 三つのモード → 一つ（新規 messages）：概念的に明確
-- プロンプトキャッシュ共有 → 省略：教育版は API 層の最適化を扱わない
-- 再帰 fork 防護 → 「サブエージェントに task ツールなし」に簡略化
-- Async → 省略（s13 に委ねる）：s06 はまず同期モデルを理解する
-
-</details>
-
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

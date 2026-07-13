@@ -188,4 +188,4 @@ python s09_memory/code.py
 
 s10 System Prompt → 分段 + 运行时组装。不同项目、不同工具，拼出不同的 prompt。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

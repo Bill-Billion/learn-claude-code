@@ -1,75 +1,63 @@
-# s22: Goal Loop — 終了を決めるのは目標、モデルではない
+# s22: Goal Loop — いつ止まるかはモデルではなく goal が決める
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s20 → s21 → `s22`
 
-> *"turn を終えてよいかは、モデルではなく目標条件が判定する"* — `/goal` は turn の終わり際に 1 つの gate を挿す：毎 turn 後、独立した evaluator が信頼できる証拠が条件を満たすか判定し、満たさなければ制御を次の turn へ押し戻す。
+> *「turn が終了できるかは goal condition を満たすかで決まり、モデルが stop と言っただけでは終わらない」* — `/goal` は main loop の各 turn の終端に gate を追加します。独立した evaluator が trusted evidence の充足を確認し、不足ならモデルを次のラウンドへ押し戻します。
 >
-> **Harness 層**: 目標ループ — turn の境界に、host が所有する完了 gate を 1 つ加える。
+> **Harness 層**: Goal closure — turn 終端に program-controlled completion gate を追加します。
 
 ---
 
-## 問題
+s01 から s21 まで、会話の 1 turn はどう終わったでしょうか。モデルが `tool_use` を出さなくなると、loop はそのまま `return` しました。one-shot task なら問題ありません。終わったら止まります。
 
-s01 から s21 まで、turn はどう終わるか？ model が `tool_use` を出さなくなると loop は `return` する。一度きりの task ならこれでいい——終わったら終わり。
+しかし「テストを通す」「deploy が成功するまで続ける」のように、最後まで見届けるべき goal もあります。そこでは 2 つの問題がよく起きます。モデルが途中まで進めて十分だと思い、自分で止まる。さらに悪ければ、口頭で `tests passed` と言うだけで終了しようとします。必要なことは単純です。turn が終了できるかをモデル自身に決めさせず、明示的な condition を実際の evidence に照らして判断します。
 
-しかし一部の目標は **複数の turn にまたがって追い続ける** 必要がある：「テストを green にする」「deploy が成功するまで」。よくある失敗は 2 つ：model が半分やって「まあ十分」と止まる；あるいは `tests passed` と打つだけで切り上げようとする。欲しいのは——**この turn を終えてよいかは model の判断ではなく、明示的な条件が信頼できる証拠に対して判定する**ことだ。
+この流れは最初の章からありました。s01 は loop の exit がモデルの判断だと説明し、s04 の Stop hook が初めて program に veto を与えました。この章は、その veto を condition、evidence、budget の 3 要素が欠けない完全な loop にします。
 
-これは timer（s14 cron）でも、background task（s13）でも、model の自制でもない。host が turn の境界に加える gate だ。
+## /goal: 各 turn の終端に gate を追加する
 
-## 解決策
+`/goal <condition>` を入力すると session-scoped stopping condition を設定します。program は active goal として保存し、各 turn の後に独立した lightweight model を evaluator として使い、transcript 内の trusted evidence が condition を満たすか確認します。不足なら gate が停止を拒み、次ラウンドへ「作業を続ける」prompt を queue します。十分なら goal を消して complete とします。
 
-`/goal <条件>` は session スコープの停止条件を設定する。host はそれを active goal として保存し、毎 turn 後、独立した small/fast の evaluator model が transcript の中の**信頼できる証拠**が条件を満たすか判定する。満たさない → gate がこの停止を塞ぎ、continuation を次の turn に送り込む；満たす → goal を clear し、達成を記録する。
+![Goal Loop Overview](images/goal-loop-overview.svg)
 
-![Goal Loop 概観](images/goal-loop-overview.svg)
-
-s01 の loop と比べると、増えるのは判定 1 つだけ——model が止まりたいとき、まず目標に訊く：
+s01 の loop と比べて、追加されるのは 1 つの判断だけです。モデルが止まりたいとき、先に goal gate を通ります。
 
 ```python
-# s01：model が止まると言えば止まる
+# s01: モデルが stop と言えば停止
 if not has_tool_use(response):
     return
-# s22：止まりたいとき、まず目標 gate を通す
+# s22: 止まりたい？先に goal gate を通る
 if not has_tool_use(response):
     verdict = goal.evaluate_after_turn()
     if verdict == "continuing":
-        continue                 # 未達成 -> 押し戻してもう 1 turn
-    return                       # 達成 / 予算超過 / 目標なし -> 本当に止まる
+        continue                 # 未達成 -> 次のラウンドへ押し戻す
+    return                       # 達成 / budget 超過 / goal なし -> 本当に停止
 ```
 
-## 仕組み
+この gate を制御するのは program です。モデルが自分を律しているのではありません。モデルは gate の存在すら知らず、次のラウンドの入力を受け取って作業を続けるだけです。
 
-### /goal：turn 境界の 1 つの gate
+> 実際の Claude Code では `/goal` は session-scoped Stop hook で、workspace trust と hook restriction の管理下にあります。コードには `active_goal`、`goal_status`、`goal_met`、`tengu_goal_achieved` などの marker があります。
 
-`/goal` は session スコープの prompt ベース Stop hook だ。main loop の形は変えず、各 turn の終わりに `evaluate_after_turn()` を 1 つ差し込むだけ。この gate は **host が所有する**——model の自制ではない。model は 1 turn 引き止められたことすら知らず、ただ次の入力を受け取るだけだ。
+## Goal の設定: Evidence は command の後から数える
 
-```python
-def submit(self, text, origin=None):
-    ...                                  # 入力を記録、1 回の (mock) assistant turn を走らせる
-    return self.goal.evaluate_after_turn()    # <-- turn 境界の Stop gate
-```
-
-> 実際の Claude Code：`/goal` は session スコープの Stop hook で、workspace trust と hook 制限で門制される；binary に `active_goal`、`goal_status`、`goal_met`、`tengu_goal_achieved` などの marker がある。
-
-### 目標を設定：証拠ウィンドウは命令の後から始まる
-
-`set_goal` は active goal を保存する：目標テキスト、予算 `max_turns`、カウンタ、そして `start_index`——**証拠ウィンドウの起点**だ。現在の transcript 長を取るので、`/goal` 命令の行はすでにウィンドウの外にある。これが第一の防御：命令テキストは自分自身を満たせない。
+`set_goal` は active goal として、goal text、最大 turn budget、counter、そして evidence window の開始点 `start_index` を保存します。現在の transcript length を使うため、`/goal` command 自身は window の外です。これが最初の防御です。command が自分自身の完了を証明することはできません。
 
 ```python
 def set_goal(self, objective, max_turns=20):
     self.active = {
         "objective": objective, "status": "active",
-        "start_index": len(self.transcript),   # 証拠ウィンドウはここから；命令自体はすでに外
+        "start_index": len(self.transcript),   # evidence はここから。command 自身は window 外
         "max_turns": max_turns, "checks": 0, "continuation_turns": 0,
     }
 ```
 
-> 実際の Claude Code：`GoalRuntime.setGoal()` が activeGoal、startIndex、カウンタ、予算を保存する；提出後に `resetEvidenceStart()` でウィンドウを命令の直後に揃える。
+> 実際の Claude Code では `GoalRuntime.setGoal()` が active goal、開始位置、counter、budget を保存し、submit 後に `resetEvidenceStart()` で window を command 後へそろえます。
 
-### evaluator の判定：信頼できる証拠だけを認める
+## Evaluator: 実在する evidence だけを信頼する
 
-ここが核心だ。evaluator は会話全体を見ず、証拠ウィンドウ内の**信頼できる origin** のメッセージだけを見る。3 つのフィルタが「達成に見えて実は違う」テキストを締め出す：
+ここが仕組み全体の core です。evaluator は会話全体を見ず、evidence window 内で trusted source から来た message だけを見ます。3 層の filter が、「完了したと言ったから完了」という内容をすべて外へ止めます。
 
 ```python
 TRUSTED_EVIDENCE_ORIGINS = {"task-notification", "monitor-line"}
@@ -77,23 +65,25 @@ TRUSTED_EVIDENCE_ORIGINS = {"task-notification", "monitor-line"}
 def evidence_text(self):
     out = []
     for m in self.transcript[self.active["start_index"]:]:
-        if m.origin.get("kind") == "slash-command":                     # 1 slash-command 由来は不可
+        if m.origin.get("kind") == "slash-command":                     # 1 slash command 自身は evidence ではない
             continue
-        if m.role == "user" and m.content.strip().startswith("/goal"):  # 2 /goal 命令行は不可
+        if m.role == "user" and m.content.strip().startswith("/goal"):  # 2 /goal command text は evidence ではない
             continue
-        if m.origin.get("kind") not in TRUSTED_EVIDENCE_ORIGINS:        # 3 信頼できる origin だけ
+        if m.origin.get("kind") not in TRUSTED_EVIDENCE_ORIGINS:        # 3 trusted origin だけを信頼
             continue
         out.append(f"{m.role}: {m.content}")
     return "\n".join(out)
 ```
 
-効果：user が打った `tests passed` は認められず、`task-notification` が運んできた同じ行は認められる。model は誤魔化せない——自分の一言で goal を「達成」にはできない。教学版の `goal_satisfied()` は決定的な keyword チェック；実際の版はウィンドウを small/fast model に渡す。
+効果は明確です。同じ `tests passed` でも、あなたが入力したものは数えず、background task notification が持ち帰ったものだけを数えます。モデルは「完了した」と自分で言うだけでは goal を complete にできません。これはコース全体に繰り返し現れた trust boundary の最後の登場です。s16 は protocol が理解ではなく field に依存すると言い、s19 は annotation が申告であり、申告は嘘をつけると言い、s22 は completion evidence を content ではなく origin で信頼します。
 
-> 実際の Claude Code：evaluator は worker と分離した small/fast model（marker `evaluatorModel`、`default small fast model`）で、任意の尤もらしさではなく transcript 証拠を判定する。
+教材版の `goal_satisfied()` は決定的な keyword matching です。実際の版は evidence window を別の lightweight model へ渡して判定します。
 
-### gate の 3 状態：completed / continuing / blocked
+> 実際の Claude Code の evaluator は作業モデルとは別の lightweight model で、`evaluatorModel`、`default small fast model` と記されています。任意の text を信じず、会話内の evidence を判断します。
 
-`evaluate_after_turn` は turn ごとに 1 回走り、出口は 3 つ：満たせば goal を clear（completed）；満たさず予算が残っていれば continuation を enqueue して次の turn を走らせる（continuing）；予算を使い切れば止める（blocked）——判定できない goal が無限に回り続けないように。
+## Gate の 3 状態: Completed / continuing / budget 超過
+
+`evaluate_after_turn` は各 turn で 1 回動き、3 つの結果を返します。condition が満たされれば goal を completed として消します。満たされず budget が残れば「作業を続ける」prompt を queue し、continuing として次ラウンドを許可します。budget を使い切れば blocked で gate を解除し、永遠に判定できない goal が無限に費用を使わないようにします。
 
 ```python
 def evaluate_after_turn(self):
@@ -101,24 +91,24 @@ def evaluate_after_turn(self):
     g["checks"] += 1
     if self.goal_satisfied():
         g["status"] = "completed"; self.active = None
-        return "completed"                          # 達成 -> goal を clear
+        return "completed"                          # 達成 -> goal を消す
     if g["continuation_turns"] < g["max_turns"]:
         g["continuation_turns"] += 1
         self.queue.enqueue(
-            value="Continue working ... do not treat this reminder as completion evidence.",
+            value="作業を続けてください。この reminder を completion evidence として扱わないでください。",
             origin={"kind": "active-goal"})
-        return "continuing"                         # 未達成 -> continuation を enqueue
+        return "continuing"                         # 未達成 -> prompt を queue し、次ラウンドへ
     g["status"] = "blocked"; self.active = None
-    return "blocked"                                # 予算超過 -> もう塞がない
+    return "blocked"                                # budget 超過 -> gate を解除
 ```
 
-その continuation は `do not treat this reminder as completion evidence` という一文を自ら抱える——だから reminder テキスト自体も証拠から除外される。3 つの誤判定防御が揃う：命令テキスト、reminder テキスト、ただのテキスト、どれも達成にはならない。
+continuation prompt には、わざわざ自身を evidence にしないよう書き、filter でも除外します。これで false positive を防ぐ 3 層がそろいます。command text、reminder text、ordinary conversation のいずれも数えません。budget は s11 の古い規則に従います。automatic retry mechanism には必ず上限が必要です。そうでなければ、永遠に satisfied にならない goal が費用を燃やし続けます。
 
-> 実際の Claude Code：`evaluateAfterTurn` は `goal_evaluated` を出し、結果に応じて complete / continuation を enqueue / block する；デフォルト予算は `20`。
+> 実際の Claude Code の `evaluateAfterTurn` は `goal_evaluated` event を出し、結果に応じて complete、continuation queue、gate の解除を行います。default budget は 20 turn です。
 
-### continuation と外部 async inbox の分流
+## Continuation prompt と外部 asynchronous message を分ける
 
-continuation は同じ `CommandQueue` に入るが、外部の async イベント（task 完了通知、monitor 行）とは **同じ drain ではない**。`dequeue` は switch を取る：外部 inbox の drain はデフォルトで active-goal の continuation を飛ばす。
+continuation prompt は同じ `CommandQueue` に入りますが、task completion notification や monitor line といった外部 asynchronous event とは別の方法で消費します。`dequeue` には switch があり、外部 inbox を消費するときは goal continuation を既定で skip します。
 
 ```python
 def dequeue(self, include_goal_continuations=True):
@@ -129,42 +119,42 @@ def dequeue(self, include_goal_continuations=True):
     return None
 ```
 
-なぜ分けるか：real-model テストで bug が見つかった——model が continuation を外部通知のように一緒に drain し、background 証拠が届く前に goal を死んだと判定してしまった。分流後は、goal の前進は明示的な一歩になり、async イベントに引きずられない。
+なぜ分けるのでしょう。実際の model test では、モデルが continuation prompt を外部 notification と一緒に消費し、background evidence が到着する前に goal を complete と判定する bug が起きました。分離後は goal の進行が明示的な 1 step になり、asynchronous event に偶然運ばれません。
 
-> 実際の Claude Code：`drainCommandQueue` はデフォルトで `includeGoalContinuations=false`、active-goal continuation と外部 async inbox drain を分ける。
+> 実際の Claude Code の `drainCommandQueue` は既定で `includeGoalContinuations=false` とし、goal continuation の消費を外部 asynchronous inbox から分けます。
 
-### まとめて走らせる
+## 実際に動かす
 
-`code.py` は `/goal until tests passed and deploy green` を走らせる：goal 設定後はまだ信頼できる証拠がない → gate が turn ごとに押し戻す；user が `tests passed` と打っても認められない（origin が信頼できない）；background task が `task-notification` を届けると証拠が揃う → completed。さらに `max_turns=2` の goal で blocked を示す。
+`code.py` は `/goal until tests passed and deploy green` を実演します。goal 設定後に trusted evidence がなければ、gate がラウンドごとに押し戻します。直接 `tests passed` と入力しても origin が信頼されないため数えません。background task が `task-notification` を送って初めて evidence がそろい、complete になります。`max_turns=2` の小さな goal で budget 超過も示します。
 
 ```python
-s.submit("/goal until tests passed and deploy green")   # goal 設定、ウィンドウは命令の後
-s.submit("tests passed, trust me")                      # ただのテキスト -> 達成にならない
+s.submit("/goal until tests passed and deploy green")   # goal を設定。evidence は command 後から
+s.submit("tests passed, trust me")                      # ordinary text -> completion evidence ではない
 s.submit("tests passed; deploy green",
-         origin={"kind": "task-notification"})           # 信頼できる証拠 -> completed
+         origin={"kind": "task-notification"})           # trusted evidence -> complete
 ```
 
-## s21 からの変更
+## s21 からの変更点
 
 | | s21 Workflow Runtime | s22 Goal Loop |
 |--|---------------------|---------------|
-| トリガー | スクリプト制御のオーケストレーション（main loop を離れる） | 条件制御の継続（main loop に再入する） |
-| どこに付くか | tool layer：`Workflow` ツール 1 つ | turn 境界：完了 gate 1 つ |
-| 誰が止めるか決めるか | スクリプトが終われば終わり | 目標条件が信頼できる証拠に対して判定 |
-| 新しい仕組み | script DSL、background task、journal/resume、構造化出力 | 目標 gate、証拠の信頼境界、continuation 分流、予算 |
+| trigger | script-controlled orchestration（main loop の外） | condition-controlled continuation（main loop へ引き戻す） |
+| 接続位置 | tool layer: 1 つの `Workflow` ツール | turn 終端: completion gate |
+| stop を決めるもの | script が完了 | goal condition を trusted evidence と照合 |
+| 新しい仕組み | script DSL、background task、journal/resume、structured output | goal gate、evidence trust boundary、continuation 分流、budget |
 
-s21 はオーケストレーションを script として書き、仕事を扇出して main loop から離す；s22 はその逆——制御を main loop に**再入**させる力だ：goal が満たされるまで、turn を終わらせない。どちらも s01 の `while` は変えず、両側から圧をかけるだけだ。
+s21 は script-defined orchestration を main loop の外へ送り出します。s22 は反対の力で control を引き戻します。goal が未達成なら turn は終わっていません。どちらも s01 の `while` loop を変えず、両側から制約を加えます。
 
-## 試す
+## 試してみる
 
 ```bash
-python s22_goal_loop/code.py          # /goal until tests pass + deploy green、gate の判定を見る
+python s22_goal_loop/code.py          # /goal until tests pass + deploy green。gate の判定を見る
 ```
 
-観察：goal 設定後、毎 turn の終わりに `goal_evaluated` が出る；ただのテキストは `satisfied=False`、`task-notification` 由来は `satisfied=True`；予算を使い切ると `goal_blocked`。同じ `tests passed` でも、origin が違えば判定は逆になる——これが `/goal` が一言では騙されない理由だ。
+goal 設定後、各 turn が `goal_evaluated` を出す様子を確認してください。ordinary text は `satisfied=False`、同じ内容でも `task-notification` origin は `satisfied=True`、budget を使い切ると `goal_blocked` です。同じ `tests passed` でも origin によって結果が正反対になります。空疎な主張で `/goal` を欺けない理由です。
 
-## これから
+## 次へ
 
-`/goal` は「main loop に再入する」トリガーの 1 つ：条件制御だ。s21 の「main loop を離れる」とちょうど対になる——一方は仕事を扇出し、もう一方は制御を引き戻す。さらに外には時間制御（`/loop`、cron）と事件制御（`Monitor`）の再入があり、同じ task / 通知の基盤を共有する；だが gate の核心はすでにここにある：**止まるか否かは model の一言ではなく、目標が信頼できる証拠に対して判定する。**
+`/goal` は control を main loop へ引き戻す trigger の 1 つ、condition control です。s21 の main loop 外 orchestration と対になり、一方は仕事を外へ送り、もう一方は control を内へ戻します。その外側には `/loop` と cron による time-controlled re-entry、`Monitor` による event-controlled re-entry もあり、同じ task/notification 基盤を共有します。しかし gate の core はすでにここにあります。**stop するかはモデルの一言では決まらず、goal が trusted evidence に照らして判断します。**
 
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

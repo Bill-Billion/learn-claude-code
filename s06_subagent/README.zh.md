@@ -131,4 +131,4 @@ Agent 现在能拆任务了。但每类任务需要的知识不一样：改前�
 
 s07 Skill Loading → 知识按需加载：目录常驻，正文用到才读，和读文件一样自然。
 
-<!-- translation-sync: zh@v3, en@v2, ja@v2 -->
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

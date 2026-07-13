@@ -1,23 +1,15 @@
-# s10: System Prompt — Assembled at Runtime, Never Hardcoded
+# s10: System Prompt — Assemble at Runtime, Never Hardcode
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s08 → s09 → `s10` → [s11](../s11_error_recovery/) → s12 → ... → s20
-> *"prompt is assembled, not hardcoded"* — Sections + on-demand assembly + caching.
+> *"A prompt is assembled, not hardcoded."* Sections + conditional assembly + caching.
 >
-> **Harness Layer**: Runtime prompt assembly.
+> **Harness layer**: Runtime prompt assembly.
 
 ---
 
-## The Problem
-
-From s01 to s09, the system prompt was always one hardcoded line:
-
-```python
-SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks."
-```
-
-That worked for s01 with only bash, read, write. But by s09, the agent has memory, compression, skill loading. The prompt needs to describe more and more capabilities:
+Look back at how the SYSTEM prompt grew. s01 had one identity sentence, s05 added TodoWrite guidance, s07 appended the skill catalog, and s09 appended the memory index. Every lesson welded another fragment onto the same string:
 
 ```python
 SYSTEM = (
@@ -26,42 +18,19 @@ SYSTEM = (
     "Before starting any multi-step task, use todo_write. "
     "Skills are available via list_skills and load_skill. "
     "Relevant memories are injected below when available. "
-    # ... add a capability, add a line
+    # ... weld on another fragment for every capability
 )
 ```
 
-Three problems:
+Three problems follow. Changing projects means rewriting the whole string, because generic and project-specific instructions can no longer be separated. A new instruction may contradict an old one, but conflicts hide inside one blob. And s08 explained the prompt cache: its prefix must match exactly. When one character in a monolithic string is dynamic, the entire SYSTEM becomes a new prefix on every turn.
 
-1. **Switching projects requires rewriting the entire prompt**: no way to know what to change and what to keep
-2. **One change can break others**: adding a tool description might conflict with earlier instructions
-3. **Every request carries everything**: even when the current conversation doesn't need certain sections, they waste tokens
-
-The system prompt should be a configuration assembled at runtime based on current state: which tools are enabled, which context is visible, which memories are relevant, and which content must remain stable to hit prompt cache.
-
----
-
-## The Solution
+All three problems begin with the same treatment: split the string apart.
 
 ![System Prompt Overview](images/system-prompt-overview.svg)
 
-s10 focuses on prompt assembly. It builds on the s08-s09 capabilities but doesn't re-implement compression or memory. The core change: split the hardcoded `SYSTEM` into independent sections, assemble them at runtime based on real state, and cache the result.
-
-Four sections, two loading strategies:
-
-| Section | Strategy | Content | Condition |
-|---------|----------|---------|-----------|
-| identity | always | who you are, how to work | always present |
-| tools | always | available tool list | `enabled_tools` |
-| workspace | always | working directory | always present |
-| memory | on-demand | relevant memory content | whether `.memory/MEMORY.md` exists |
-
 ---
 
-## How It Works
-
-### PROMPT_SECTIONS: Topic-Keyed Fragments
-
-Split the monolithic string into a dictionary, each key is a topic:
+## Split by Topic: One Section, One Concern
 
 ```python
 PROMPT_SECTIONS = {
@@ -72,22 +41,24 @@ PROMPT_SECTIONS = {
 }
 ```
 
-Each section is maintained independently. Changing `tools` doesn't affect `identity`; adding `memory` doesn't touch `workspace`.
+Sections can now evolve independently: changing `tools` does not touch `identity`, and adding `memory` does not modify `workspace`. Conflicts become visible because each section talks about one subject.
 
-### assemble_system_prompt: On-Demand Assembly
+Splitting is only the first step. Who decides which sections belong in this turn?
 
-Not every section is needed every turn. No memory files? Loading the memory section just wastes tokens. Assembly is based on real state in context:
+---
+
+## Assemble from State, Not Keyword Guesses
 
 ```python
 def assemble_system_prompt(context: dict) -> str:
     sections = []
 
-    # Always loaded
+    # Always present: every turn needs identity, tools, and workspace
     sections.append(PROMPT_SECTIONS["identity"])
     sections.append(PROMPT_SECTIONS["tools"])
     sections.append(PROMPT_SECTIONS["workspace"])
 
-    # On-demand — based on real state, not keywords
+    # Conditional: use real state, not words in the conversation
     memories = context.get("memories", "")
     if memories:
         sections.append(f"Relevant memories:\n{memories}")
@@ -95,76 +66,60 @@ def assemble_system_prompt(context: dict) -> str:
     return "\n\n".join(sections)
 ```
 
-"Always loaded" sections are needed every turn: identity, tools, workspace. "On-demand" sections are only useful under specific conditions.
+The decision signal matters. Include the memory section when `.memory/MEMORY.md` exists and is non-empty — a fact in the filesystem. An alternative is to look for words such as "remember" or "preference" in the user's message, which is only a guess. State-driven assembly is deterministic and testable; keyword-driven assembly fails when the user changes phrasing.
 
-Why not load everything? Tokens have cost (system prompt is billed every turn), and fewer instructions means more focused output (irrelevant instructions are noise).
+The context itself comes from real state:
 
-### get_system_prompt: Cache to Avoid Re-Assembly
+```python
+def update_context(context: dict, messages: list) -> dict:
+    memories = ""
+    if MEMORY_INDEX.exists():                       # Inspect the filesystem, not the conversation
+        content = MEMORY_INDEX.read_text().strip()
+        if content:
+            memories = content
+    return {
+        "enabled_tools": list(TOOL_HANDLERS.keys()),  # Tools actually registered
+        "workspace": str(WORKDIR),
+        "memories": memories,
+    }
+```
 
-When context hasn't changed (multiple LLM calls in the same turn with the same context), re-assembling is wasteful. Use deterministic serialization to detect changes and return cached result:
+The loop recomputes context after each turn's tools execute. The reason is practical: tools change the world. If the model just wrote `MEMORY.md`, the next prompt should reflect that fact.
+
+---
+
+## Cache: Do Not Assemble the Same State Twice
+
+Context often stays unchanged across turns, so rebuilding the string is wasted work. Add a cache keyed by serialized context:
 
 ```python
 def get_system_prompt(context: dict) -> str:
     global _last_context_key, _last_prompt
     key = json.dumps(context, sort_keys=True, ensure_ascii=False, default=str)
     if key == _last_context_key and _last_prompt:
-        return _last_prompt
+        return _last_prompt                     # [cache hit]
     _last_context_key = key
     _last_prompt = assemble_system_prompt(context)
-    return _last_prompt
+    return _last_prompt                         # [assembled]
 ```
 
-`json.dumps` instead of `hash()`: Python's built-in `hash()` has process randomization (unsuitable for stable cache keys) and throws `unhashable type` on nested dicts/lists.
+Why `json.dumps(sort_keys=True)` rather than the convenient `hash()`? Two bad cases: Python randomizes string hashes per process, so the same context gets a different key on another run; and context contains lists and dictionaries, which make `hash()` raise `unhashable type`. Deterministic serialization is the stable option, while `sort_keys` removes dictionary-order differences.
 
-Note: this cache only avoids redundant string assembly within a process. It's not the same as Claude Code's API prompt cache, which uses `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` to separate static and dynamic parts — the static parts hit global cache and don't invalidate when dynamic content changes.
+One honest boundary: this cache saves string assembly inside the local process. It is not the API-side prompt cache from s08. But sections prepare for that cache too: stable sections can move to the front and changing sections to the end, keeping the stable prefix alive longer.
 
-### context: Real State, Not Keyword Guessing
-
-Context reflects the actual runtime state:
-
-```python
-def update_context(context: dict, messages: list) -> dict:
-    memories = ""
-    if MEMORY_INDEX.exists():
-        content = MEMORY_INDEX.read_text().strip()
-        if content:
-            memories = content
-    return {
-        "enabled_tools": list(TOOL_HANDLERS.keys()),
-        "workspace": str(WORKDIR),
-        "memories": memories,
-    }
-```
-
-`enabled_tools` lists actually registered tools. `memories` checks whether `.memory/MEMORY.md` exists. Section loading is based on these fields.
-
-### Putting It Together
-
-```python
-def agent_loop(messages: list, context: dict):
-    system = get_system_prompt(context)
-    while True:
-        response = client.messages.create(
-            model=MODEL, system=system, messages=messages,
-            tools=TOOLS, max_tokens=8000)
-        # ... tool execution ...
-        context = update_context(context, messages)
-        system = get_system_prompt(context)
-```
-
-At the start of each loop iteration, get the system prompt. If context changed, re-assemble; if not, return cached version.
+> Real Claude Code has a variable number of sections controlled by feature flags, output styles, and runtime modes. Static sections form one global cache block, while `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` keeps dynamic sections outside it. The only universally volatile section is `mcp_instructions`, because MCP servers can connect or disconnect between turns. The teaching version's four sections and two strategies are the smallest form of the same structure.
 
 ---
 
-## Changes From s09
+## Changes from s09
 
 | Component | Before (s09) | After (s10) |
-|-----------|-------------|-------------|
-| prompt | Hardcoded SYSTEM string | PROMPT_SECTIONS + assemble_system_prompt |
-| caching | None | get_system_prompt (json.dumps detection + cache) |
-| new functions | — | assemble_system_prompt, get_system_prompt, update_context |
-| tools | bash, read_file, write_file (3) | bash, read_file, write_file (3) — unchanged |
-| loop | Uses fixed SYSTEM | Uses get_system_prompt(context) |
+|-----------|--------------|-------------|
+| Prompt | Hardcoded SYSTEM string | `PROMPT_SECTIONS` + `assemble_system_prompt` |
+| Cache | None | `get_system_prompt` (`json.dumps` detection + cache) |
+| New functions | — | `assemble_system_prompt`, `get_system_prompt`, `update_context` |
+| Tools | 6 | 3 — narrowed to bash, read_file, write_file to focus on prompt assembly |
+| Loop | Uses fixed SYSTEM | Recompute context after tools, then obtain the prompt |
 
 ---
 
@@ -175,78 +130,18 @@ cd learn-claude-code
 python s10_system_prompt/code.py
 ```
 
-What to watch for:
+The terminal exposes the whole lesson through two labels: `[assembled] sections: ...` means the prompt was rebuilt and lists its sections; `[cache hit]` means state stayed unchanged and the cached prompt was reused.
 
-1. Output shows which sections were loaded (`[assembled] sections: ...` label)
-2. Cache hits show `[cache hit]` during continued conversation
-3. Creating `.memory/MEMORY.md` makes the memory section appear on the next turn
-
-Try these prompts:
-
-1. `Read the file README.md` (observe the three always-loaded sections)
-2. `Create a file called .memory/MEMORY.md with content "- [test](test.md) — test memory"` (write a memory index)
-3. `Read the file code.py` (observe whether the memory section appears)
+1. `Read the file README.md`: note which three sections appear on the first assembly. If you recently ran s09 and `.memory/` contains memory files, `memory` appears too.
+2. Ask another question. This time you should see `[cache hit]` because context did not change.
+3. `Create a file called .memory/MEMORY.md with content "- [test](test.md) — test memory"` if no memory exists. After the write, `[assembled]` appears again with `memory` added to the section list. The model changed the filesystem and the prompt followed it: state-driven assembly in action.
 
 ---
 
 ## What's Next
 
-System prompts can now be assembled at runtime. But the agent still crashes on errors. Network hiccups, API rate limits, truncated output, context overflow. These are not bugs; they are normal.
+The prompt is assembled and the capabilities are present, but the entire system assumes every API call succeeds. The real world includes network failures, rate limits, truncated output, and context overflow. These are routine, not exceptional. The current code crashes on any of them.
 
-s11 Error Recovery → four recovery paths. Upgrade tokens, compress context, exponential backoff, switch models.
+s11 Error Recovery → Four recovery paths: raise the token limit, compact context, back off exponentially, and switch models.
 
-<details>
-<summary>Deep Dive Into Claude Code Source Code</summary>
-
-> The following is based on analysis of Claude Code source code `constants/prompts.ts` (914 lines), `constants/systemPromptSections.ts` (68 lines), `context.ts` (189 lines), `utils/api.ts` (718 lines), `utils/systemPrompt.ts` (123 lines), and `bootstrap/state.ts`.
-
-### How many sections does Claude Code's system prompt have?
-
-The count varies based on feature flags, output style, KAIROS/Proactive mode, user type, token budget, etc. Roughly two categories:
-
-**Static sections** (always loaded): identity, system, doing_tasks, actions, using_tools, tone_style, output_efficiency, etc.
-
-**Dynamic sections** (loaded by state): session_guidance, memory, ant_model_override, env_info_simple, language, output_style, mcp_instructions, scratchpad, frc, summarize_tool_results, numeric_length_anchors, token_budget, brief, etc.
-
-`mcp_instructions` is the only volatile section (created via `DANGEROUS_uncachedSystemPromptSection()`), because MCP servers can connect and disconnect between turns.
-
-### Assembly Function
-
-```typescript
-getSystemPrompt(tools, model, additionalWorkingDirs?, mcpClients?): Promise<string[]>
-```
-
-Returns `string[]` (each element is a section), separated by `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` between static and dynamic parts.
-
-### cache scope
-
-When global cache boundary is enabled, static sections are merged into one global cache block, and dynamic sections don't use global cache (`cacheScope: null`). Only paths without boundary or skipping global cache fall back to org scope.
-
-The teaching version's cache only avoids redundant string assembly. Claude Code's three-layer cache:
-
-1. **lodash memoize**: `getSystemContext` and `getUserContext` cached per session (`context.ts`)
-2. **Section registry cache**: `STATE.systemPromptSectionCache` caches dynamic section results, cleared on `/clear` or `/compact`
-3. **API-level cache**: `splitSysPromptPrefix()` (`api.ts`) splits prompt into blocks with different cache scopes via boundary
-
-### getUserContext vs getSystemContext
-
-| | getSystemContext | getUserContext |
-|---|---|---|
-| Content | gitStatus, cacheBreaker | CLAUDE.md content, currentDate |
-| Injection | appended to system prompt array | prepended as `<system-reminder>` user message |
-| When skipped | custom system prompt | always runs |
-
-### How modes change the prompt
-
-- **CLAUDE_CODE_SIMPLE**: entire prompt is 2 lines
-- **Proactive/KAIROS**: compact prompt replaces all standard sections
-- **Coordinator**: coordinator-specific prompt fully replaces default
-- **Agent mode**: agent-defined prompt replaces or appends to default
-
-### Total size
-
-Standard interactive mode system prompt core is ~20-30KB text. CLAUDE_CODE_SIMPLE is ~150 characters. User context (CLAUDE.md) and system context (git status) add on top.
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

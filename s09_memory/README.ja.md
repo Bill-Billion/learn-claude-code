@@ -1,48 +1,43 @@
-# s09: Memory — 圧縮は詳細を失う、失わない層が必要
+# s09: Memory — 圧縮は細部を失う。重要なことはコンテキストの外へ記録する
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s07 → s08 → `s09` → [s10](../s10_system_prompt/) → s11 → ... → s20
-> *"圧縮は詳細を失う、失わない層が必要"* — ファイルストア + インデックス + オンデマンド読み込み。圧縮を越え、セッションを越えて。
+> *"圧縮は細部を失う。重要なことはコンテキストの外へ記録する"* — ファイル保存、index、必要時の読込によって圧縮と session を越える。
 >
-> **Harness レイヤー**: 記憶 — 圧縮とセッションを越える知識の蓄積。
+> **Harness レイヤー**: Memory — 圧縮や session をまたいで知識を蓄積する。
 
 ---
 
-## 課題
+前章の最後に残った問いは、どの情報を長く残す価値があるかだった。
 
-s08 の autoCompact は現在の目標、残りの作業、ユーザーの制約をサマリに保持するが、詳細は失われる：「タブでインデント、スペース不可」が「ユーザーにコードスタイルの好みあり」と簡略化される。そして新しいセッションを開始すると、サマリすらない。
+現実的な例を見よう。あなたは Agent に「indent は space ではなく tab にして」と伝えた。40 ターン後に s08 の要約が動けば、この文はおそらく「ユーザーにはコード style の好みがある」となり、具体的な好みは消える。翌日はさらに厳しい。新しい session は新しい `messages` から始まり、前日の要約すら存在しない。昨日教えた規則は、今日は教えていないのと同じになる。
 
-LLM には永続状態がなく、すべての情報はコンテキストウィンドウ内にある。コンテキストが満杯になれば圧縮され、圧縮は非可逆。コンテキストウィンドウの外にストレージ層が必要になる。
+下書き用紙の比喩に最後の一枚を足そう。下書きは満杯になり、整理される。それは避けられない。しかし「この先生は採点が厳しい」「この種類の問題では符号を間違えやすい」といった経験は、そもそも下書きに置く情報ではない。個々の問題を越える知識は別のノートへ記録し、問題を解く前に読み返す。
 
----
-
-## ソリューション
+この章では Agent にそのノートを与える。
 
 ![Memory Overview](images/memory-overview.svg)
 
-s08 の圧縮パイプラインを維持し、記憶に焦点を当てる。ストレージにはファイルシステムを採用：`.memory/` ディレクトリに各記憶を `.md` ファイルとして保存、YAML frontmatter（`name` / `description` / `type`）付き。ファイルが増えたらインデックスが必要：`MEMORY.md` に 1 行 1 リンクを記録し、SYSTEM に注入。
-
-重要な設計：インデックスは SYSTEM prompt に常駐（prompt cache でキャッシュ可能）、ファイル内容はオンデマンド注入（filename/description で現在の会話にマッチ、cache を破壊しない）。書き込みは 2 つのパス：ユーザーが明示的に「覚えて」と言うか、毎ターン終了後にバックグラウンドで抽出。ファイルが蓄積されたら、定期的に整理して重複排除。
-
-4 種類の記憶、それぞれ異なる質問に答える：
-
-| タイプ | 何に答えるか | 例 |
-|--------|-------------|-----|
-| user | あなたは誰か | "タブでスペース不可" |
-| feedback | どう作業するか | "DB をモックしない" |
-| project | 何が起きているか | "auth 書き直しはコンプライアンス主導" |
-| reference | どこで探すか | "パイプラインのバグは Linear INGEST" |
-
 ---
 
-## 仕組み
+## system prompt へ書けばよいのでは？
+
+直感的には、重要な好みを固定ファイルへ書き、起動時に system prompt へ入れる。
+
+方向は正しいが、二つ問題がある。第一に、誰が書くのか。好みは日常会話に散らばっている。「space より tab がよい」は何気なく言うもので、form に記入するものではない。ユーザーに好みファイルを手動管理させるなら、実質的に記憶システムはない。第二に、すべてを常駐させると s07 と同じ費用問題へ戻る。記憶が増えるほど毎ターン全量を再送し、その 90% は現在のタスクに関係ない。
+
+s07 はすでに答えの形を示した。**index は常駐させ、本文は必要なときに読む。** Memory は skill system の書き込み可能版と考えられる。s07 の skill は人が書く read-only の知識。s09 の memory は Agent 自身が書き、増え、代謝する知識だ。
+
+自分で書くなら、四つの問いに答えなければならない。どの形で保存し、どう読み、いつ書き、増えすぎたらどうするか。
 
 ![Memory Subsystems](images/memory-subsystems.svg)
 
-### ストレージ：Markdown ファイル + インデックス
+---
 
-各記憶は `.md` ファイル、YAML frontmatter でメタデータを記録：
+## 保存：一つの memory を一ファイルへ、さらに index を一つ
+
+各 memory は `.memory/` 内の Markdown ファイルで、frontmatter に metadata を持つ。
 
 ```markdown
 ---
@@ -56,224 +51,141 @@ User prefers using tabs, not spaces, for indentation.
 **How to apply:** Always use tabs when writing or editing files.
 ```
 
-`MEMORY.md` はインデックス、1 行に 1 リンク：
+`type` は四種類で、それぞれ別の問いに答える。
 
-```markdown
-- [user-preference-tabs](user-preference-tabs.md) — User prefers tabs for indentation
-```
+| type | 問い | 例 |
+|------|------|----|
+| user | あなたは誰か | 「space ではなく tab」 |
+| feedback | どう仕事をするか | 「database を mock しない」 |
+| project | 何が起きているか | 「auth rewrite は compliance のため」 |
+| reference | どこを探すか | 「pipeline bug は Linear INGEST」 |
 
-新しい記憶を書き込むとインデックスを自動再構築：
+`MEMORY.md` は index で、一つの memory を一行にし、書き込み後に毎回再構築する。
 
 ```python
 def write_memory_file(name, mem_type, description, body):
     slug = name.lower().replace(" ", "-")
-    filepath = MEMORY_DIR / f"{slug}.md"
-    filepath.write_text(
+    (MEMORY_DIR / f"{slug}.md").write_text(
         f"---\nname: {name}\ndescription: {description}\ntype: {mem_type}\n---\n\n{body}\n"
     )
-    _rebuild_index()
+    _rebuild_index()   # index とファイルを常に同期
 ```
 
-### 読み込み：2 つのパス
+---
 
-**パス 1：インデックスを SYSTEM に常駐。** `build_system()` は各ユーザーリクエストの開始時に 1 回だけ `MEMORY.md` を読み込み、記憶カタログを SYSTEM prompt に注入。記憶の抽出と整理はターン終了時にだけ実行されるため、同じユーザーリクエスト内で SYSTEM を繰り返し再構築する必要はない。
+## 読み込み：index は常駐、本文は一時的に注入
 
-**パス 2：関連記憶をオンデマンド注入。** 各ユーザーリクエストの開始時に、`load_memories()` は最近の会話と記憶カタログ（name + description）を LLM に軽量 side-query として送信し、関連するファイル名を選択、ファイル内容を読み込んで注入。上限 5 件でコストを制御。
+index は s07 と同じく SYSTEM へ入れる。
 
 ```python
-def select_relevant_memories(messages, max_items=5):
-    files = list_memory_files()
-    if not files:
-        return []
-
-    # Build catalog: "0: user-preference-tabs — User prefers tabs..."
-    catalog = "\n".join(f"{i}: {f['name']} — {f['description']}" for i, f in enumerate(files))
-
-    response = client.messages.create(model=MODEL, messages=[{"role": "user",
-        "content": f"Select relevant memory indices. Return JSON array.\n\n"
-                   f"Recent conversation:\n{recent}\n\nMemory catalog:\n{catalog}"}],
-        max_tokens=200)
-    indices = json.loads(re.search(r'\[.*?\]', response.content[0].text).group())
-    return [files[i]["filename"] for i in indices if 0 <= i < len(files)]
+def build_system() -> str:
+    index = read_memory_index()
+    memories_section = f"\n\nMemories available:\n{index}" if index else ""
+    return (
+        f"You are a coding agent at {WORKDIR}."
+        f"{memories_section}\n"
+        "Relevant memories are injected below. Respect user preferences from memory."
+        ...
+    )
 ```
 
-side-query が失敗した場合（API エラー、JSON パース失敗）、name + description のキーワードマッチにフォールバック。
-
-### 書き込み：毎ターン終了後の抽出
-
-ユーザーが毎回「これを覚えて」と言うわけではない。好みは通常、通常の会話の中に散らばっている：「タブの方がスペースより良い」「これからはシングルクォートにしよう」。
-
-`extract_memories()` は各ターン終了時に実行、モデルが tool_use なしで停止した場合にトリガー（会話が自然な区切りに達したことを示す）：
+本文は必要なときだけ読む。各 user turn の開始時、`select_relevant_memories()` は最近の会話と memory catalog を軽量な side query へ渡し、明確に関係する項目だけを最大 5 件選ばせる。
 
 ```python
-# In agent_loop:
+prompt = (
+    "Given the recent conversation and the memory catalog below, "
+    "select the indices of memories that are clearly relevant. "
+    "Return ONLY a JSON array of integers, e.g. [0, 3]. ..."
+)
+```
+
+API や JSON 解析で side query が失敗したら、keyword match へ fallback する。荒い選択でも、何も選べないよりよい。
+
+最も間違えやすいのは、選んだ本文を会話へ入れる方法だ。教学版では、**現在リクエストの copy へ差し込み、`messages` の履歴へは書かない。**
+
+```python
+request_messages = messages.copy()
+request_messages[memory_turn] = {
+    **messages[memory_turn],
+    "content": memories_content + "\n\n" + messages[memory_turn]["content"],
+}
+response = client.messages.create(..., messages=request_messages, ...)
+```
+
+直接 `messages.append()` すると二つの問題がすぐ起きる。同じ memory を毎ターン注入して履歴が膨らみ、さらに s08 の圧縮パイプラインが memory 本文を普通のメッセージとして placeholder 化、切り詰め、要約する。注入は一時的にし、リクエストごとに組み立て、履歴はきれいなまま保つ。
+
+---
+
+## 書き込み：終了時に、圧縮前の会話から抽出する
+
+ユーザーは毎回「これを覚えて」とは言わない。好みは普通の会話に散らばるため、横で聞いている仕組みが必要だ。`extract_memories()` がその役割を持ち、モデルがツール呼び出しを止めた turn の終了時に動く。
+
+```python
 if response.stop_reason != "tool_use":
-    extract_memories(messages)   # 最近の会話から新しい記憶を抽出
-    consolidate_memories()       # 整理が必要かチェック
+    extract_memories(pre_compress)   # 圧縮前の snapshot を使う
+    consolidate_memories()
     return
 ```
 
-抽出前に既存の記憶を確認し、重複を回避。抽出プロンプトは LLM に `{name, type, description, body}` の JSON 配列を要求、本当に新しい情報がある場合のみファイルに書き込む。
+`pre_compress` は厳格な要件だ。ループは毎回 s08 の圧縮を実行する。終了時の `messages` では、古い会話が切られ、placeholder に変わっているかもしれない。「space より tab」という文が削除領域にあったら、圧縮後の履歴から抽出するのは断片からの推測になる。そこで各 iteration で圧縮前 snapshot を取り、抽出は常に全文を見る。s08 と s09 はこの実行順で噛み合う。圧縮は自由に縮められるが、抽出は元の文を読まなければならない。
 
-```python
-def extract_memories(messages):
-    dialogue = format_recent_messages(messages[-10:])
-    existing = "\n".join(f"- {m['name']}: {m['description']}" for m in list_memory_files())
-
-    prompt = (
-        "Extract user preferences, constraints, or project facts.\n"
-        "Return JSON array: [{name, type, description, body}].\n"
-        "If nothing new or already covered, return [].\n\n"
-        f"Existing memories:\n{existing}\n\nDialogue:\n{dialogue[:4000]}"
-    )
-    # ... parse response, write files ...
-```
-
-### 整理：低頻度の重複排除
-
-記憶ファイルは蓄積される。`consolidate_memories()` はファイル数が閾値（デフォルト 10）に達した時にトリガー、LLM に重複排除、矛盾の統合、古い記憶の剪定を依頼：
-
-```python
-CONSOLIDATE_THRESHOLD = 10
-
-def consolidate_memories():
-    files = list_memory_files()
-    if len(files) < CONSOLIDATE_THRESHOLD:
-        return  # 少なすぎる、整理する価値なし
-    # Send all memories to LLM, get back deduplicated list
-    # Replace all files with consolidated results
-```
-
-Claude Code はこのプロセスを **Dream** と呼び、実際には 4 層のゲートがある：時間間隔、スキャンスロットル、セッション数、ファイルロック。教学版はファイル数閾値に簡略化。
-
-### Memory に保存するもの
-
-Memory はユーザーの好み、繰り返し出るフィードバック、プロジェクト背景、よく使う入口、調査の手がかりを保存する。インデックス + オンデマンド読み込みで現在の会話に戻す。
-
-session memory は 1 つのセッション内の連続性を扱う：compact 後も現在の会話に残すべき文脈を保持する。両者は役割が分かれている。Memory は長期知識を扱い、session memory は現在のセッションを compact 越しにつなぐ。
+抽出 prompt には既存 memory の一覧も渡し、「本当に新しい内容」があるときだけ返させる。同じ好みを十回保存しないためだ。
 
 ---
 
-## s08 からの変更点
+## 整理：増えたら統合する。ただし順序は変えない
+
+memory ファイルには重複、古い情報、矛盾が増える。件数がしきい値、教学版では 10 件に達すると、モデルに全 memory の重複排除と統合をさせ、重要な好みを残す。
+
+```python
+try:
+    response = client.messages.create(...)          # 1 まず統合後の一覧を得る
+    items = json.loads(match.group())               # 2 解析成功を確認
+    for f in MEMORY_DIR.glob("*.md"):               # 3 ここで初めて旧ファイルを削除
+        if f.name != "MEMORY.md":
+            f.unlink()
+    for mem in items:
+        write_memory_file(...)                      # 4 新ファイルを書く
+except Exception:
+    pass                                            # どこか失敗したら旧ファイルを残す
+```
+
+この順序は s08 の「要約前に保存」と同じ発想だ。**新しいものを取得し、検証してから古いものを破棄する。** 逆にして先に削除すれば、一回の network error で全 memory が backup なしに消える。
+
+> 実際の Claude Code では整理を Dream と呼び、前回から 24 時間以上、scan throttling、5 session 以上に変更、並行実行を防ぐ file lock という四つの gate を持つ。権限を制限した fork Agent が作業する。memory 選択も vector search ではなくモデルの side query だ。また user memory は session を越え、session memory は圧縮を越える。教学版は一つのしきい値と三関数に縮めるが、四つの役割は同じだ。
+
+---
+
+## s08 からの変更
 
 | コンポーネント | 変更前 (s08) | 変更後 (s09) |
-|-----------|-------------|-------------|
-| 記憶能力 | なし（圧縮後、好みはサマリと共に劣化） | ストレージ + 読み込み + 抽出 + 整理 |
-| 新規関数 | — | write_memory_file, select_relevant_memories, load_memories, extract_memories, consolidate_memories |
-| ストレージ | — | .memory/MEMORY.md インデックス + .memory/*.md ファイル |
-| ツール | bash, read, write, edit, glob, todo_write, task, load_skill, compact (9) | bash, read_file, write_file, edit_file, glob, task (6) |
-| ループ | 毎ターン圧縮のみ | 記憶注入 + 圧縮 + ターン終了後の抽出 + 定期整理 |
+|----------------|--------------|--------------|
+| Memory | なし、要約で好みが劣化 | 保存 + 読込 + 抽出 + 整理 |
+| 新しい関数 | — | `write_memory_file`, `select_relevant_memories`, `load_memories`, `extract_memories`, `consolidate_memories` |
+| 保存 | — | `.memory/MEMORY.md` index + `.memory/*.md` |
+| ツール | 9 | 6、本章では bash, read_file, write_file, edit_file, glob, task に絞る |
+| ループ | 圧縮だけ | memory 注入 + 圧縮 + 終了時抽出 + 定期整理 |
 
 ---
 
-## 試してみよう
+## 試してみる
 
 ```sh
 cd learn-claude-code
 python s09_memory/code.py
 ```
 
-以下のプロンプトを試してみてください（複数ターンに分けて入力し、記憶の蓄積と読み込みを観察）：
-
-1. `I prefer using tabs for indentation, not spaces. Remember that.`
-2. `Create a Python file called test.py`（Agent がタブを使用したか観察）
-3. `What did I tell you about my preferences?`（Agent が覚えているか観察）
-4. `I also prefer single quotes over double quotes for strings.`
-
-観察のポイント：各ターン終了後に `[Memory: extracted N new memories]` が表示されるか？`.memory/` ディレクトリに `.md` ファイルが生成されたか？`MEMORY.md` インデックスが更新されたか？新しい会話で Agent が以前の記憶を自動的に読み込んだか？
+1. `I prefer using tabs for indentation, not spaces. Remember that.`：終了時の `[Memory: extracted N new memories]` を確認する。`.memory/` に `.md` ファイル、`MEMORY.md` に index 行が一つ増えるはずだ。
+2. `Create a Python file called test.py`：indent に tab を使うかを見る。
+3. `q` で終了し、**プログラムを再起動**して `What are my preferences?` と聞く。新しい session と新しい `messages` でも答えられる。これが s08 との境界だ。要約は session を越えず、memory は越える。
+4. 関係ない話題を数ターン続ける。side query は関係する memory だけを注入し、無関係なものはディスクに残したままにする。
 
 ---
 
 ## 次へ
 
-記憶、圧縮、ツールはすべて揃った。しかし system prompt はまだハードコードされた文字列。新しいツールを追加するには手動で説明を書き、プロジェクトを変えるにはプロンプト全体を書き直す。プロンプトは実行時に組み立てられるべき。
+Memory、圧縮、ツールが揃った。SYSTEM prompt を振り返ると、identity はハードコードされた文字列、skill catalog は別の断片、memory index も別で、各章が独自に連結している。プロジェクトやツールを変えるたびにコードを直さなければならない。
 
-s10 System Prompt → セグメント + 実行時組み立て。異なるプロジェクト、異なるツール、異なるプロンプト。
+s10 System Prompt → section に分け、実行時に組み立てる。プロジェクトとツールに応じて異なる prompt を作る。
 
-<details>
-<summary>Claude Code ソースコードの詳細</summary>
-
-> 以下は Claude Code ソースコード `src/` 下の `memdir/`、`services/`、`utils/`、`query/` の分析に基づく。行番号はソースコードと照合済み。
-
-### ソースコードパス
-
-| ファイル | 行数 | 職責 |
-|------|------|------|
-| `memdir/memdir.ts` | 507 | 核心：MEMORY.md 定義（`34-38`）、記憶動作指示で memory/plan/tasks を区別（`199-266`）、`loadMemoryPrompt()` 3 パス（`419-490`） |
-| `memdir/findRelevantMemories.ts` | 141 | Sonnet side-query で記憶選択（`18-24` システムプロンプト、`97-122` 呼び出しロジック） |
-| `memdir/memoryTypes.ts` | 271 | 型定義、frontmatter フィールド |
-| `memdir/memoryScan.ts` | — | .md ファイルをスキャン、MEMORY.md を除外、frontmatter を読み取り、最大 200 ファイル、mtime 降順（`35-94`） |
-| `services/extractMemories/extractMemories.ts` | 615 | forked agent で記憶を抽出、制限付き権限、`skipTranscript: true`、`maxTurns: 5`（`371-427`） |
-| `services/autoDream/autoDream.ts` | 324 | Dream 整理、4 層ゲート（`63-66` デフォルト値、`130-190` ゲート、`224-233` forked agent） |
-| `services/SessionMemory/sessionMemory.ts` | 495 | セッションレベルの記憶管理 |
-| `services/compact/sessionMemoryCompact.ts` | — | session memory 軽量サマリ、閾値 10K/5/40K（`56-61`） |
-| `utils/attachments.ts` | — | 注入予算：200 行 / 4096 バイト/ファイル、60KB/セッション（`269-288`）；query で関連記憶を検索（`2196-2241`） |
-| `query.ts` | — | memory prefetch を毎ターン開始時に起動（`301-304`）、非ブロッキング収集（`1592-1614`） |
-| `query/stopHooks.ts` | — | stop hook fire-and-forget で抽出と Dream をトリガー（`141-155`） |
-
-### 記憶選択：embedding ではなく LLM
-
-Claude Code は **Sonnet 自身で選択**（`findRelevantMemories.ts`）、embedding ベクトル類似度ではない：
-
-1. `memoryScan.ts` が `.memory/` 下のすべての `.md` ファイルをスキャン（MEMORY.md を除外）、最大 200 ファイル、mtime 降順
-2. `name` + `description` をカタログとしてリスト化
-3. Sonnet side-query に送信：「名前と説明から本当に有用な記憶を選択（最大 5 件）。不明ならスキップ。」
-4. Sonnet が `{ selected_memories: ["file1.md", ...] }` を返却
-5. 選択されたファイルの完全な内容を読み込み（≤ 200 行 / 4096 バイト/ファイル）、注入。セッション総予算：60KB
-
-毎ターンのユーザー turn 開始時、`query.ts:301-304` が memory prefetch を起動（非同期）；ツール実行後、`1592-1614` が非ブロッキングで結果を収集。
-
-### 抽出タイミング：stop hook、autoCompact 後ではない
-
-トリガー位置（`stopHooks.ts:141-155`）：`handleStopHooks()` 内で、fire-and-forget で抽出と Dream をトリガー。教学版は `stop_reason != "tool_use"` 分岐に抽出を配置、方向は一致。
-
-Claude Code の抽出は forked agent で実行（`extractMemories.ts:371-427`）：制限付き権限、`skipTranscript: true`、`maxTurns: 5`。重複保護もある：メイン Agent が既に記憶ファイルを書き込んだ場合、抽出をスキップ。
-
-### 記憶ファイル形式
-
-Claude Code は Markdown + YAML frontmatter を使用、教学版と一致。4 種類：`user`、`feedback`、`project`、`reference`。
-
-`memdir.ts:34-38` がインデックス制約を定義：`MEMORY.md` 最大 200 行 / 25KB。`memdir.ts:199-266` が記憶動作指示を構築、memory と plan と tasks を明確に区別。保存場所：`~/.claude/projects/<sanitized-git-root>/memory/`。
-
-### Dream：4 層ゲート
-
-「アイドル時にトリガー」や「数が足りたら統合」ではなく、4 層のゲート（`autoDream.ts`、デフォルト値 `63-66`、ゲートロジック `130-190`）：
-
-1. **時間ゲート**：前回の統合から ≥ 24 時間
-2. **スキャンスロットル**：頻繁なファイルシステムスキャンを回避
-3. **セッションゲート**：前回の統合以降 ≥ 5 セッションの transcript が変更された
-4. **ロックゲート**：他のプロセスが統合中でない（`.consolidate-lock` ファイル）
-
-統合自体は forked agent で実行（`224-233`）：定位 → 直近のシグナル収集 → 統合してファイル書き込み → 剪定してインデックス更新。ロックファイルの mtime が lastConsolidatedAt。クラッシュリカバリ：1 時間後にロックが自動期限切れ。
-
-### User Memory vs Session Memory
-
-| | User Memory | Session Memory |
-|---|---|---|
-| 永続性 | セッション間 | 単一セッション |
-| ストレージ | `memory/` 下の複数 .md ファイル | `session-memory/<id>/memory.md` |
-| 注入先 | system prompt | compact サマリ |
-| 目的 | セッション間の知識蓄積 | compact を越えたコンテキストの連続性 |
-
-sessionMemoryCompact（s08 で触れた仕組み）は Session Memory を活用：autoCompact の前に session memory ファイルを読み込み、内容が十分であれば（≥ 10K token、≥ 5 テキストメッセージ、≤ 40K token、`sessionMemoryCompact.ts:56-61`）、LLM を呼び出さずにサマリとして使用。
-
-### 実際の実装が教学版より複雑な点
-
-- **Feature flags**：記憶関連機能には複数の feature gate 層がある
-- **Team memory**：チーム共有記憶、`loadMemoryPrompt()` に専用パスあり（教学版では未カバー）
-- **KAIROS**：タイミング認識型の記憶抽出戦略、`loadMemoryPrompt()` の daily-log モード
-- **Prompt cache**：記憶注入は prompt cache の TTL を考慮する必要があり、毎ターン system prompt の大部分を書き直すことを避ける
-- **ファイルロック**：マルチプロセス時の並行制御
-- **Memory prefetch**：非同期プレフェッチ、メインフローをブロックしない
-
-### 教学版の簡略化は意図的
-
-- LLM side-query → LLM side-query + キーワードフォールバック：教学版は LLM 選択を維持し、フォールバックパスを追加
-- 記憶 JSON → Markdown + frontmatter：教学版は Claude Code と一致
-- stop hook トリガー → `stop_reason != "tool_use"` 分岐：方向は一致
-- 4 層ゲート → ファイル数閾値：教学版には transcript システムやマルチセッションの概念がない
-- forked agent + 制限付き権限 → 直接呼び出し：教学版にはサブプロセス分離がない
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

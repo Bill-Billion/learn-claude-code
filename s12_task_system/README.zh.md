@@ -164,4 +164,4 @@ python s12_task_system/code.py
 
 s13 Background Tasks → 慢操作放后台跑，Agent 继续干别的，跑完了再回来收结果。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

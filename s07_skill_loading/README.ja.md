@@ -3,53 +3,49 @@
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → s03 → s04 → s05 → s06 → `s07` → [s08](../s08_context_compact/) → s09 → ... → s20
-> *"Load when needed, don't stuff the prompt"* — `tool_result` で注入、system prompt には詰め込まない。
+> *"必要なときに読み込み、すべてを prompt へ詰め込まない"* — 全文は system prompt ではなく `tool_result` から注入する。
 >
-> **Harness レイヤー**: 知識 — 必要に応じて読み込み、コンテキストに詰め込まない。
+> **Harness レイヤー**: 知識 — コンテキストを埋めず、必要に応じて読み込む。
 
 ---
 
-## 課題
+前章の最後に一つの問題が残った。タスクごとに必要な知識が違う。プロジェクトには React component 規約、SQL style guide、API 設計文書があり、Agent は作業中にそれらを守らなければならない。規則はどこから与えるべきか。
 
-前章では Agent が大きなタスクをサブ Agent に渡せるようになった。だがサブ Agent が引き継ぐとき、そのタスクの決まりを知る必要がある：React コンポーネントを変更するなら component spec を、SQL を書くなら style guide を守る。その決まりはどこから来るのか？
-
-プロジェクトには React コンポーネント仕様、SQL スタイルガイド、API 設計ドキュメントがある。最も直接的な方法は、すべて system prompt に詰め込むこと：
+最も直接的な発想は、すべて system prompt へ入れることだ。
 
 ```python
 SYSTEM = (
     f"You are a coding agent. "
-    + open("docs/react-style.md").read()       # 2000 行
-    + open("docs/sql-style.md").read()         # 1500 行
-    + open("docs/api-design.md").read()        # 3000 行
+    + open("docs/react-style.md").read()       # 2,000 行
+    + open("docs/sql-style.md").read()         # 1,500 行
+    + open("docs/api-design.md").read()        # 3,000 行
 )
 ```
 
-6500 行の system prompt。Agent は LLM を呼び出すたびにこれらのドキュメントを運ぶ。CSS の色を変えるときも SQL クエリを修正するときも同様だ。99% の内容が現在のタスクと無関係で、トークンを無駄に消費する。
-
----
-
-## ソリューション
+6,500 行の system prompt になる。s01 で見たようにモデルはステートレスなので、この 6,500 行は呼び出すたびに丸ごと再送される。今は CSS の色を一つ変えているだけでも、無関係な SQL guide と API 文書が毎ターン課金される。計算してみよう。一つの規約が約 2,000 token なら、十個で固定費 20,000 token。その 99% が現在のタスクに関係ない。
 
 ![Skill Overview](images/skill-overview.svg)
 
-折衷案は、ドキュメントを複数のファイルに分け、必要なものを Agent 自身に `read_file` させることだ。だが Agent はそもそもどんなファイルが読めるか分からない。「何があるか」を先に知らなければ、「どれを使うか」は選べない。
+---
 
-そこで 2 層に分ける：**カタログは常駐、内容はオンデマンド。** 前章のフック構造、`todo_write`、サブ Agent はそのまま残し、本章で `load_skill` ツールを 1 つ加える。起動時にスキルのカタログ（名前 + 一言の説明）を SYSTEM prompt に入れる。毎ターン携帯するが軽い。実行時に Agent が実際にあるスキルを使うとき、`load_skill` を呼んで完全な内容を取り出す。トークンを使うのはそのときだけだ。
+## 自分でファイルを読ませればよいのでは？
 
-2 層設計：
+次に思いつくのは、文書をプロジェクト内のファイルへ分け、必要なものを Agent 自身に `read_file` させる方法だ。
 
-| 層 | 場所 | タイミング | コスト |
-|---|------|-----------|--------|
-| 1. カタログ | system prompt | 起動時に注入（harness が skills/ をスキャン） | ~100 トークン/スキル、毎ターン携帯 |
-| 2. 内容 | tool_result | Agent が load_skill を呼び出したとき。SKILL.md は、必要に応じて read_file/bash で追加リソースへアクセスするための手がかりになる | ~2000 トークン/スキル、オンデマンド |
+あと一歩足りない。Agent はどんな文書が存在するかを知らない。まず「何があるか」を知って初めて、「どれを使うか」を選べる。タスクのたびにプロジェクト全体を `glob` して文書を探させるのは、設計ではなく運任せだ。
 
-ディスパッチ機構は変わらず、`load_skill` は `TOOL_HANDLERS[block.name]` を通じて自動的にディスパッチされる。
+二つの要件を分けると答えが出る。**「何があるか」は常駐させ、「中身は何か」は必要なときだけ読めばよい。** 常駐部分は名前と一文の説明だけなので安い。大きいのは規約の全文だ。
+
+| レイヤー | 場所 | タイミング | コスト |
+|----------|------|------------|--------|
+| カタログ | system prompt | 起動時に注入 | 約 100 token/skill、毎ターン保持 |
+| 内容 | `tool_result` | Agent が `load_skill` を呼んだとき | 約 2,000 token/skill、使うときだけ |
 
 ---
 
-## 仕組み
+## 第 1 層：起動時に走査し、カタログを SYSTEM へ入れる
 
-**skills/ ディレクトリ**、スキルごとに 1 つのサブディレクトリ、それぞれに `SKILL.md` ファイルを含む：
+skill は一つのディレクトリと一つの `SKILL.md` で、frontmatter に名前と一文の説明を書く。
 
 ```
 skills/
@@ -59,32 +55,26 @@ skills/
   pdf/SKILL.md
 ```
 
-**第 1 層：起動時にカタログを注入**：harness は起動時に `_scan_skills()` を呼び出して skills/ ディレクトリをスキャンし、各 SKILL.md の YAML frontmatter（`name`、`description`）を解析して `SKILL_REGISTRY` 辞書に格納する。`list_skills()` はレジストリからカタログを生成し、SYSTEM prompt に注入する。Agent は毎ターン「どのスキルが利用可能か」を確認できる。追加の API 呼び出しは不要：
+harness は起動時にディレクトリを走査し、frontmatter を解析して registry へ入れる。
 
 ```python
 SKILL_REGISTRY: dict[str, dict] = {}
 
 def _scan_skills():
-    if not SKILLS_DIR.exists():
-        return
     for d in sorted(SKILLS_DIR.iterdir()):
-        if not d.is_dir():
-            continue
         manifest = d / "SKILL.md"
         if manifest.exists():
             raw = manifest.read_text()
-            meta, body = _parse_frontmatter(raw)
+            meta, body = _parse_frontmatter(raw)          # YAML frontmatter を解析
             name = meta.get("name", d.name)
-            desc = meta.get("description", raw.split("\n")[0].lstrip("#").strip())
+            desc = meta.get("description", ...)
             SKILL_REGISTRY[name] = {"name": name, "description": desc, "content": raw}
 
-_scan_skills()  # runs once at startup
-
-def list_skills() -> str:
-    return "\n".join(f"- **{s['name']}**: {s['description']}" for s in SKILL_REGISTRY.values())
+_scan_skills()   # 起動時に一度だけ実行
 
 def build_system() -> str:
-    catalog = list_skills()
+    catalog = "\n".join(f"- **{s['name']}**: {s['description']}"
+                        for s in SKILL_REGISTRY.values())
     return (
         f"You are a coding agent at {WORKDIR}. "
         f"Skills available:\n{catalog}\n"
@@ -94,95 +84,67 @@ def build_system() -> str:
 SYSTEM = build_system()
 ```
 
-だが Agent は毎ターン、名前と一言の説明しか受け取らない。実際に SQL スタイルガイドを使うとなると、あの 1500 行の完全な内容にはまだ手が届かない。→ 第 2 層。
+これでモデルは毎ターン「自分に何ができるか」を見られる。四行のカタログで、各行は名前と一文の説明だけ。常駐させてもほとんど負担にならない。
 
-**第 2 層：load_skill**：Agent が「SQL スタイルガイドが必要」と判断し、`load_skill("sql-style")` を呼び出す。レジストリを通じて検索し、ファイルパスを経由しないため、パストラバーサルのリスクがない。SKILL.md の内容は `tool_result` を通じて注入され、既存の file および bash ツールを通じて、参照される `references/`、`scripts/`、`assets/` へのその後のアクセスも含められる。
+しかしカタログには一文しかない。実際に code review をするとき、完全な review checklist にはまだ届かない。
+
+---
+
+## 第 2 層：load_skill で本文を必要なときだけ取る
+
+モデル自身が「このタスクには code-review skill が必要」と判断し、ツールを呼んで全文を取得する。
 
 ```python
 def load_skill(name: str) -> str:
-    skill = SKILL_REGISTRY.get(name)
+    skill = SKILL_REGISTRY.get(name)      # registry を引き、ファイルパスは組み立てない
     if not skill:
         return f"Skill not found: {name}"
     return skill["content"]
 ```
 
-重要な違い：スキル内容は system prompt の一部ではなく、ツール結果として現在の `messages` に入る。後続の呼び出しでは履歴とともに携帯され、コンテキスト圧縮、切り捨て、またはセッション終了まで保持される。これは s08 の compact と自然に接続する：スキル内容は system prompt ではなく `tool_result` として `messages` に入り、compact が「捨てるべきものをどう捨てるか」を解決する。
+接続はこれまでどおり、定義を一つ、登録を一行、ループは変更しない。
+
+この数行には二つの設計判断が隠れており、それぞれ悪い実装を防いでいる。
+
+**registry を引き、ファイルパスを組み立てない。** `open(f"skills/{name}/SKILL.md")` のように実装すると、`name` がパス注入点になる。`load_skill("../../.env")` で鍵を読み、モデルへ渡せてしまう。registry は起動時に固定される。実行時の名前は辞書の中だけを探し、なければ `Skill not found` を返す。
+
+**内容は `messages` へ入れ、SYSTEM へ入れない。** skill 全文はファイル読取結果と同じ `tool_result` として会話へ入る。system prompt に追加すれば永久に残り、使い終わっても毎ターン再送される。`messages` に置けば、会話履歴に対するすべての管理規則に従う。次章ですぐにこの性質を使う。
+
+もう一つ境界を明確にしよう。**Subagent には skill system がない。** `SUB_SYSTEM` にカタログはなく、`SUB_TOOLS` に `load_skill` もない。委任するタスクに分野知識が必要なら、重要な点をタスク説明へ書いて渡す。これは s06 の「要約にない情報は存在しない」の鏡像であり、コンテキスト分離は双方向だ。
+
+> 実際の Claude Code は、ユーザーディレクトリ、プロジェクトディレクトリ、plugin、MCP remote skill、built-in など十数種類の出所を統合する。カタログ注入には約コンテキスト window の 1%、最大 8,000 文字という予算がある。`SKILL.md` は `context: fork` を宣言し、skill 自体を Subagent として実行することもできる。教学版は一つのディレクトリと一つのツールだが、二層構造は同じだ。
 
 ---
 
-## s06 からの変更点
+## s06 からの変更
 
 | コンポーネント | 変更前 (s06) | 変更後 (s07) |
-|---------------|-------------|-------------|
-| ツール数 | 7 (bash, read, write, edit, glob, todo_write, task) | 8 (+load_skill) |
-| 知識読み込み | なし | 2 層：起動時カタログ注入 SYSTEM + 実行時 load_skill。SKILL.md がその後のリソースアクセスを案内できる |
-| SYSTEM プロンプト | 静的文字列 | 起動時に skills/ をスキャンしてカタログ注入 |
-| スキルレジストリ | なし | SKILL_REGISTRY（起動時に充填、パストラバーサル防止） |
-| ループ | 変更なし | 変更なし（スキルツールは自動ディスパッチ） |
+|----------------|--------------|--------------|
+| ツール数 | 7 (bash, read, write, edit, glob, todo_write, task) | 8 (+`load_skill`) |
+| 知識の読み込み | なし | 二層：カタログは SYSTEM、内容は必要時に `messages` |
+| SYSTEM prompt | 静的な文字列 | 起動時に `skills/` を走査してカタログを注入 |
+| skill registry | なし | 起動時に構築する `SKILL_REGISTRY`、パス注入を防止 |
+| ループ | 変更なし | 変更なし |
 
 ---
 
-## 試してみよう
+## 試してみる
 
 ```sh
 cd learn-claude-code
 python s07_skill_loading/code.py
 ```
 
-以下のプロンプトを試してみよう：
-
-1. `What skills are available?`
-2. `Load the code-review skill and follow its instructions`
-3. `I need to do a code review -- load the relevant skill first`
-
-観察のポイント：Agent は SYSTEM 内のカタログから利用可能なスキルを知っているか？ 完全な手順が必要なときに `[HOOK] load_skill` が表示されるか？ 読み込んだスキルの説明を使って回答しているか？
+1. `What skills are available?`：モデルは四つの skill を直接答える。ターミナルに `[HOOK]` は出ない。カタログが最初から SYSTEM にあり、ツールを呼ばないためだ。
+2. `Without loading anything, tell me the exact review steps the code-review skill prescribes`：正確には答えられず、一文の説明から推測するしかない。カタログ層の情報が一文だけなのは意図した境界だ。
+3. `Load the code-review skill and use it to review s02_tool_use/code.py`：今度は `[HOOK] load_skill` が出て、その後の review は `SKILL.md` の構造に従う。実験 2 と比べれば、「カタログ常駐、内容は必要時」という二層の差がわかる。
 
 ---
 
 ## 次へ
 
-load_skill で起動時のトークン浪費は解消した。しかし別の問題が待っている：Agent が 30 分連続で作業すると、`messages` リストが中間プロセスで埋め尽くされる。古い `tool_result`、期限切れのファイル内容、コンテキストを占領しているが価値を生まない。
+`messages` に何が住んでいるか数えてみよう。ツール結果、ファイル内容、コマンド出力、そしてこの章で skill 文書の全文も入るようになった。入る一方で出ていかない。タスクが長くなれば、いつか呼び出しが `prompt_too_long` にぶつかる。
 
-→ s08 Context Compact：4 層圧縮戦略。安価な層を先に実行、高価な層を後に実行。
+s08 Context Compact → 四段階の整理パイプライン。安い処理を先に、高い処理を後に。整理で済むなら要約しない。
 
-<details>
-<summary>Claude Code ソースコードを深掘り</summary>
-
-> 以下は Claude Code ソースコード `loadSkillsDir.ts`、`SkillTool.ts`、`bundledSkills.ts`、`commands.ts` の分析に基づく。
-
-### 一、スキルソース：skills/ ディレクトリだけではない
-
-教育版はすべてのスキルが `skills/` ディレクトリにあると想定している。Claude Code は実際に複数のファイルに分散したソースから読み込む：`loadSkillsDir.ts` は user/project/`--add-dir` ディレクトリと legacy commands（`.claude/commands/`）を担当、`bundledSkills.ts` は組み込みスキル、`SkillTool.ts` は MCP リモートスキル、`commands.ts` はコマンド集約を担当。タイプには managed/policy skills、user skills（`~/.claude/skills/`）、project skills（`.claude/skills/`）、`--add-dir` skills、legacy commands、dynamic skills、conditional skills（`paths` frontmatter を持ち、ファイルパスでアクティベート）、bundled skills、plugin skills、MCP skills が含まれる。
-
-### 二、SKILL.md Frontmatter の一般的なフィールド
-
-Claude Code の SKILL.md YAML frontmatter は `parseSkillFrontmatterFields()`（`loadSkillsDir.ts`）で解析される。一般的なフィールド：
-
-| フィールド | 用途 |
-|-----------|------|
-| `name` / `description` | 表示名と説明 |
-| `when_to_use` | モデルにいつ呼び出すかを指導 |
-| `allowed-tools` | スキルが使用可能なツールの自動許可リスト |
-| `context` | `inline`（デフォルト）または `fork`（サブ Agent として実行） |
-| `model` | モデルオーバーライド（haiku/sonnet/opus/inherit） |
-| `hooks` | スキルレベルのフック設定 |
-| `paths` | 条件付きアクティベーションの glob パターン |
-| `user-invocable` | ユーザーが `/name` で呼び出し可能 |
-
-完全なフィールドリストはバージョンによって変動する。上記は教育版に関連するコアフィールドのみ。
-
-### 三、2 層読み込みの正確な実装
-
-1. **カタログ（起動時）**：`getSkillDirCommands()` がディレクトリをスキャン → メタデータのみを含む `Command` オブジェクトとして登録。`getSkillListingAttachments()` がスキルリストを添付ファイルとしてフォーマット、コンテキストウィンドウの ~1% を予算とする（上限 8000 文字）。
-2. **読み込み（呼び出し時）**：モデルが `Skill` ツールを呼び出す（入力フィールドは `skill` + オプションの `args`、教育版は `name` を使用）→ `getPromptForCommand()` が完全な SKILL.md 内容を展開 → `SkillTool` が返す tool_result の表示テキストは `"Launching skill: {name}"` のみ、実際のスキル内容は `newMessages` を通じて注入される。教育版では両者を「tool_result を通じて注入」として簡略化している。読み込まれた SKILL.md は、モデルが後続で既存の file/bash ツールから関連リソースへアクセスする際の手がかりにもなる。
-
-### 教育版の単純化は意図的
-
-- 複数ファイル・複数ソース → 1 つの `skills/` ディレクトリ：2 層読み込みの核心概念を示すのに十分
-- 複数の frontmatter フィールド → name/description のみ解析：解析の複雑さを削減
-- forked skills（`context: 'fork'`）→ 省略：教育版では inline skill loading のみ展開する
-- `Skill` ツールの入力 `skill`+`args` → 教育版は `name` を使用：追加の引数解析の複雑さを回避
-
-</details>
-
-<!-- translation-sync: zh@v3, en@v3, ja@v3 -->
+<!-- translation-sync: zh@v4, en@v4, ja@v4 -->

@@ -1,45 +1,43 @@
-# s03: Permission — Check Permissions Before Execution
+# s03: Permission — Decide Before You Execute
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → s02 → `s03` → [s04](../s04_hooks/) → s05 → ... → s20
-> *"Check permissions before executing"* — The permission pipeline decides which operations need approval.
+> *"Check permissions before a tool runs"* — the permission pipeline decides which operations need approval.
 >
-> **Harness Layer**: Permission pipeline (deny / ask / allow).
+> **Harness layer**: Permission pipeline (deny / ask / allow).
 
 ---
 
-## The Problem
+The previous lesson left a gap: `safe_path` keeps file tools inside the workspace, but bash remains free. Tell the Agent to "clean up the project" and it may happily run `rm -rf ./src`.
 
-s02's Agent has 5 tools. File tools are protected by `safe_path`, but bash is unrestricted. Ask it to "clean up the project," and it might run `rm -rf /`.
+The deny list hidden inside s01's `run_bash` cannot save you. It contains `rm -rf /`, not `rm -rf ./src`. Your source code is still deleted.
 
-Safety can't rely on trusting the model. It needs code that intercepts dangerous operations.
-
----
-
-## The Solution
+This lesson pulls safety out of individual tool implementations and turns it into one shared checkpoint before execution.
 
 ![Permission Overview](images/permission-overview.svg)
 
-s02's loop is fully preserved. The only change is inserting `check_permission()` before tool execution. Each tool call passes through three gates in a fixed order: hard deny first, then soft ask, and if neither matches, allow.
-
-The three gates correspond to three decisions:
-
-| Gate | Purpose | On Match |
-|------|---------|----------|
-| 1. Deny List | Permanently forbidden operations (`rm -rf /`, `sudo`) | Denied immediately, not executed |
-| 2. Rule Matching | Context-dependent operations (writing outside workspace, `rm` files) | Passed to Gate 3 |
-| 3. User Approval | After Gate 2 matches, pauses for user confirmation | User decides allow or deny |
-
-None of the three gates match → execute directly. Most routine operations take this path.
-
 ---
 
-## How It Works
+## Why a Deny List Inside the Tool Fails
+
+s01 and s02 used the most obvious approach: check a list of dangerous strings at the start of `run_bash`, and reject any match. It has three problems.
+
+**It has only two outcomes and misses the most useful third one.** A deny list can only allow or reject. Most risky operations in the real world depend on context: `rm /tmp/cache.txt` is harmless, while `rm src/main.py` is disastrous. Code cannot always tell the difference, but a person can. The decision therefore needs three states: **never allowed (deny), ask in context (ask), and run directly (allow).**
+
+**The safety logic lives in the wrong place.** If the check is inside `run_bash`, where does the check for `write_file` go? Repeating security logic inside every new tool guarantees that one will eventually be missed. Interception belongs on the shared path every tool must take: immediately before dispatch.
+
+**A silent rejection informs nobody.** When the deny list blocks an operation without explanation, the user does not know what the Agent attempted and the model only sees a failure. An operation that needs human approval should present what it wants to do and why.
+
+So this lesson removes the deny list from `run_bash` and replaces it with three gates before execution.
 
 ![Permission Pipeline](images/permission-pipeline.svg)
 
-**Gate 1**: A hard deny list. Check first; if matched, return a block message. (Teaching demo: simple string matching is not a reliable security mechanism. Command variants and shell expansion can bypass it. Claude Code's approach is in the appendix.)
+---
+
+## Gate 1: The Hard Deny List
+
+The first gate handles operations that are never acceptable. There is nothing to discuss and no reason to interrupt the user:
 
 ```python
 DENY_LIST = [
@@ -51,23 +49,31 @@ def check_deny_list(command: str) -> str | None:
     for pattern in DENY_LIST:
         if pattern in command:
             return f"Blocked: '{pattern}' is on the deny list"
-    return None
+    return None   # No match; move to the next gate
 ```
 
-**Gate 2**: Rule matching, which describes "when to ask the user." Each rule specifies a tool and a check condition.
+A match is rejected immediately. The terminal prints ⛔ and never asks for approval.
+
+An honest warning: simple string matching is not a reliable security mechanism. Command variations and shell expansion can bypass it. The teaching version uses it to make the shape of the pipeline visible.
+
+This gate handles "never," but not "it depends." Whether `rm ./src` should run depends on what the user intends right now, which cannot be written into a static list.
+
+---
+
+## Gate 2: Rules That Recognize When to Ask
+
+The second gate is a set of rules. Every rule states three things: which tools it covers, what counts as a match, and what reason to show the user:
 
 ```python
 PERMISSION_RULES = [
-    {
-        "tools": ["write_file", "edit_file"],
-        "check": lambda args: not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR),
-        "message": "Writing outside workspace",
-    },
-    {
-        "tools": ["bash"],
-        "check": lambda args: any(kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]),
-        "message": "Potentially destructive command",
-    },
+    {"tools": ["write_file", "edit_file"],
+     # The resolved target path leaves the workspace
+     "check": lambda args: not (WORKDIR / args.get("path", "")).resolve().is_relative_to(WORKDIR),
+     "message": "Writing outside workspace"},
+    {"tools": ["bash"],
+     # The command deletes, writes into a system directory, or changes permissions
+     "check": lambda args: any(kw in args.get("command", "") for kw in ["rm ", "> /etc/", "chmod 777"]),
+     "message": "Potentially destructive command"},
 ]
 
 def check_rules(tool_name: str, args: dict) -> str | None:
@@ -77,7 +83,13 @@ def check_rules(tool_name: str, args: dict) -> str | None:
     return None
 ```
 
-**Gate 3**: After a rule matches, pause for user input.
+Notice the boundary of responsibility: a rule only identifies a situation that needs a person. It does not make the final decision. The next gate does that.
+
+---
+
+## Gate 3: Put the Decision in Front of the User
+
+When a rule matches, the program pauses and waits for a person:
 
 ```python
 def ask_user(tool_name: str, args: dict, reason: str) -> str:
@@ -87,45 +99,65 @@ def ask_user(tool_name: str, args: dict, reason: str) -> str:
     return "allow" if choice in ("y", "yes") else "deny"
 ```
 
-**All three gates chained together**, inserted before tool execution:
+The uppercase N in `[y/N]` is deliberate: pressing Enter means no. Interrupting one task costs far less than approving one accidental destructive operation.
+
+The three gates form one pipeline:
 
 ```python
 def check_permission(block) -> bool:
-    # Gate 1: Hard deny
     if block.name == "bash":
-        reason = check_deny_list(block.input.get("command", ""))
+        reason = check_deny_list(block.input.get("command", ""))   # Gate 1
         if reason:
             print(f"\n⛔ {reason}")
             return False
-
-    # Gate 2 + 3: Rule matching → User approval
-    reason = check_rules(block.name, block.input)
+    reason = check_rules(block.name, block.input)                  # Gate 2
     if reason:
-        decision = ask_user(block.name, block.input, reason)
+        decision = ask_user(block.name, block.input, reason)       # Gate 3
         if decision == "deny":
             return False
-
-    return True
-
-# In agent_loop — s02's loop with just one line added:
-for block in response.content:
-    if block.type == "tool_use":
-        if not check_permission(block):           # ← NEW
-            results.append({... "content": "Permission denied."})
-            continue
-        output = TOOL_HANDLERS[block.name](**block.input)  # s02 original
-        results.append(...)
+    return True   # No gate blocked it; allow execution
 ```
+
+---
+
+## Put It Back in the Loop: A Rejection Still Needs a Result
+
+The change inside the loop follows the familiar pattern: add one check before execution.
+
+```python
+for block in response.content:
+    if block.type != "tool_use":
+        continue
+
+    # New in s03: pass through the permission pipeline before execution
+    if not check_permission(block):
+        results.append({"type": "tool_result", "tool_use_id": block.id,
+                        "content": "Permission denied."})
+        continue
+
+    handler = TOOL_HANDLERS.get(block.name)
+    output = handler(**block.input) if handler else f"Unknown: {block.name}"
+    results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+```
+
+Two rules are hidden in this small block of code.
+
+**Rejected does not mean skipped.** A blocked call still receives a `tool_result` containing `"Permission denied."` s01 established the pairing rule: every `tool_use` needs a matching `tool_result`, or the API returns a 400 error. The rejection is also useful information. Once the model sees it, it can choose another route instead of waiting forever.
+
+**Deny comes before ask.** The order of the gates cannot be reversed. If the program asks first and checks the hard deny list second, even `sudo rm -rf /` becomes a question — handing an absolute boundary to one accidental keystroke.
+
+> Real Claude Code does not have just one rule table. Rules from eight configuration sources — user, project, local, enterprise policy, CLI arguments, in-session grants, and others — merge by priority. There are four decision behaviors, including `passthrough`, which delegates when a tool makes no decision. Auto mode can also use a classifier model first: safe actions proceed automatically, and only uncertain ones prompt the user. The teaching version compresses this into one table and three gates so the structure is easy to see.
 
 ---
 
 ## Changes from s02
 
 | Component | Before (s02) | After (s03) |
-|-----------|-------------|-------------|
-| Security model | None (trust the model) | Three-gate permission pipeline |
-| New functions | — | check_deny_list, check_rules, ask_user, check_permission |
-| Loop | Executes all tools directly | Inserts check_permission() before execution |
+|-----------|--------------|-------------|
+| Safety model | Deny list inside `run_bash` | Three-gate permission pipeline |
+| Decisions | Allow / reject | deny / ask / allow |
+| New functions | — | `check_deny_list`, `check_rules`, `ask_user`, `check_permission` |
+| Loop | Execute every tool directly | Insert `check_permission()` before execution |
 
 ---
 
@@ -136,97 +168,21 @@ cd learn-claude-code
 python s03_permission/code.py
 ```
 
-Try these prompts:
+The terminal now shows three outcomes: direct execution with no prompt, ⚠ followed by `Allow? [y/N]` when gate 2 matches, and ⛔ when gate 1 matches. Trigger each one:
 
-1. `Create a file called test.txt in the current directory` (should pass through)
-2. `Delete the file test.txt` (bash + rm triggers Gate 2)
-3. `What files are in the current directory?` (read-only, all pass)
-4. `Try to write a file to /etc/something` (writing outside workspace triggers Gate 2)
+1. `Create a file called test.txt in the current directory`: the write remains inside the workspace, so no rule matches and it runs directly.
+2. `Delete the file test.txt`: the model uses bash to run `rm test.txt`, which matches the `"rm "` rule and waits for y or N.
+3. `Run sudo whoami`: the hard deny list matches, so ⛔ rejects it without asking.
+4. `Try to write a file to /etc/something`: writing outside the workspace triggers gate 2. Deliberately press y and observe what happens: `safe_path` still returns `Path escapes workspace` during execution. Approval at the interaction layer does not override the path boundary. The two defenses do not trust each other.
 
-What to watch for: Which operations pass through? Which need your confirmation? Which are denied outright?
+After a rejection, watch the model's next move. Once it receives `Permission denied.`, it will usually explain the limitation or choose another approach. That is why a rejection still needs a result.
 
 ---
 
 ## What's Next
 
-Permission checks are in place, but every check is hardcoded as `check_permission()` inside the loop. What if you want to add logging before and after each tool execution? What if you want to auto-trigger a git commit after certain operations? Scattering this extension logic throughout the loop makes it bloat.
+Permission checks exist, but the loop still calls them directly. What if you want to log every tool call, or run a formatter after every file edit? Adding each requirement to the loop would soon turn it into a tangled block of special cases.
 
-→ s04 Hooks: Add hooks to the loop. Extension logic hangs on hooks; the loop stays clean.
+s04 Hooks → Add attachment points to the loop. Extension logic hangs from hooks while the loop itself stays clean.
 
-<details>
-<summary>Dive into Claude Code Source Code</summary>
-
-> The following is based on a review of Claude Code source code `types/permissions.ts`, `utils/permissions/permissions.ts`, `toolExecution.ts`, `utils/permissions/yoloClassifier.ts`, `tools/AgentTool/forkSubagent.ts`.
-
-### 1. PermissionResult: Not 3, but 4
-
-The teaching version's three gates (deny → ask → allow) don't fully correspond to Claude Code. Claude Code's `PermissionResult` has 4 behaviors (`types/permissions.ts:241-266`):
-
-| behavior | Meaning | Teaching Version Equivalent |
-|----------|---------|---------------------------|
-| `allow` | Allow directly | Gate 3 passes |
-| `deny` | Deny directly | Gate 1 matches |
-| `ask` | Show dialog to user | Gate 2 matches |
-| `passthrough` | Tool doesn't express opinion, passes to generic pipeline | Not in teaching version |
-
-### 2. Production Verification Stages
-
-Claude Code's tool calls don't go through three gates — they go through multiple stages distributed across `checkPermissionsAndCallTool()` (`toolExecution.ts:599-1745`), hooks, `hasPermissionsToUseToolInner()` (`utils/permissions/permissions.ts:1158-1310`), and classifier logic:
-
-1. **Zod schema validation** (`toolExecution.ts:614-680`) — parameter type checking
-2. **validateInput()** (`toolExecution.ts:682-733`) — tool-level semantic validation
-3. **backfillObservableInput()** (`toolExecution.ts:784`) — backfill legacy fields
-4. **PreToolUse hooks** (`toolExecution.ts:800-862`) — hooks can return allow/deny/ask
-5. **resolveHookPermissionDecision()** (`toolExecution.ts:921-931`) — coordinate hook + pipeline decisions
-6. **hasPermissionsToUseToolInner()** (`permissions.ts:1158-1310`) — multi-layer rule check:
-   - Entire tool disabled by deny rule → `deny`
-   - Entire tool flagged by ask rule → `ask`
-   - `tool.checkPermissions()` tool's own judgment
-   - Tool itself returns deny → `deny`
-   - `requiresUserInteraction()` → `ask`
-   - Content-related ask rules → `ask` (not bypassable)
-   - Security check violation → `ask` (not bypassable)
-   - bypassPermissions mode → `allow`
-   - Entire tool allowed by allow rule → `allow`
-   - passthrough → converted to `ask`
-
-### 3. Deny List: Not One File, but 8 Sources
-
-Claude Code doesn't have a single deny list. Permission rules come from 8 sources (`types/permissions.ts:54-62`):
-
-| Source | Configuration Location |
-|--------|----------------------|
-| `userSettings` | `~/.claude/settings.json` |
-| `projectSettings` | `.claude/settings.json` |
-| `localSettings` | `settings.local.json` |
-| `flagSettings` | Feature flags |
-| `policySettings` | Enterprise management policy |
-| `cliArg` | `--allowedTools` / `--deniedTools` |
-| `command` | Inline command |
-| `session` | In-session temporary authorization |
-
-Each rule format: `{ toolName: "Bash", ruleBehavior: "deny", ruleContent: "npm publish:*" }`. Rules from multiple sources are merged, with higher-priority sources overriding lower ones (low to high: user < project < local < flag < policy, plus cliArg, command, session).
-
-### 4. What is isDestructive()
-
-In Claude Code, `isDestructive` (`Tool.ts:405-406`) is **purely for UI display** — showing a `[destructive]` label in the tool list. It doesn't participate in permission decisions. All tools return `false` by default. Only ExitWorktree (on remove) and MCP tools (depending on `annotations.destructiveHint`) override it.
-
-### 5. YoloClassifier (Auto-Approval)
-
-In Claude Code's auto mode, it doesn't pop a dialog every time. `classifyYoloAction` (`utils/permissions/yoloClassifier.ts:1012`) sends the tool call + conversation context to a classifier LLM to judge safety. It first tries acceptEdits mode simulation (`permissions.ts:620-656`, if acceptEdits allows → auto-approve), then checks the safe tool whitelist (`permissions.ts:658-686`), and finally calls the classifier. If the classifier rejects too many times in a row → falls back to manual approval.
-
-### 6. Permission Bubbling
-
-A sub-Agent's (forked via AgentTool) `permissionMode` is set to `'bubble'` (`forkSubagent.ts:50`). This means permission dialogs **bubble up to the parent Agent's terminal**, rather than being silently denied in the sub-Agent. The Bash classifier continues running during this process — displaying the permission dialog while judging in the background whether auto-approval is possible.
-
-### The Teaching Version's Simplification Is Intentional
-
-- Multi-stage pipeline → 3 gates: fewer concepts to learn
-- 8 rule sources → 1 local DENY_LIST: manageable concept count
-- isDestructive → omitted (teaching version has no UI layer, and it doesn't participate in permission decisions in Claude Code either)
-- YoloClassifier → omitted (depends on additional LLM calls and telemetry)
-- Permission bubbling → omitted (s15 covers multi-Agent)
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

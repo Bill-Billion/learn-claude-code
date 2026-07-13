@@ -144,4 +144,4 @@ prompt 会组装了，能力也齐了。但这一切建立在一个假设上：�
 
 s11 Error Recovery → 四条恢复路径：升级 token、压缩上下文、指数退避、切换模型。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

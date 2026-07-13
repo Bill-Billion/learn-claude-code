@@ -1,140 +1,91 @@
-# s19: MCP Tools — External Tools, Standard Protocol
+# s19: MCP Tools — External Tools through a Standard Protocol
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s17 → s18 → `s19` → [s20](../s20_comprehensive/)
 
-> *"External tools, standard protocol"* — Discover, assemble, invoke. Agent doesn't need to know who wrote them.
+> *"External tools, standard protocol"* — Discover, assemble, and call tools without the agent needing to know who wrote them.
 >
-> **Harness layer**: Plugins — External capabilities via a standard protocol.
+> **Harness layer**: Plugins — external capabilities connect through a standard protocol.
 
 ---
 
-## The Problem
+Take inventory of the toolbox: bash, files, tasks, teams, and worktrees were all written directly into `code.py`. Now a user asks, "Let the agent query our company's Jira and our custom deployment platform."
 
-From s01 through s18, every tool the agent uses was hand-written: bash, read, write, task, worktree. Input validation, execution logic, error handling, all written line by line.
+The old s02 slogan still seems applicable: define one item, register one line. But something is wrong this time. You must write the Jira tools, then the deployment tools, then rewrite everything for the next company's systems and ship another version. Tool authors and harness authors become permanently coupled, while the world's systems are far too numerous to implement one by one.
 
-Now you have 3 external services to integrate: the company's Jira API (query issues, create tickets), an in-house deployment system (trigger deploys, view logs), and the team's Notion knowledge base (search docs, create pages). You don't want to rewrite tool code for every service.
-
-You need a standard protocol. As long as an external service implements it, the agent can call its tools directly, regardless of what language the service is written in.
-
----
-
-## The Solution
+The problem is the direction of coupling: the harness knows every concrete tool. To undo it, the harness should know only two things: how to discover tools and how to call them. Think of USB. Every manufacturer builds its own device, but the port follows one standard. In the agent world, that standard is MCP, the Model Context Protocol.
 
 ![MCP Architecture](images/mcp-architecture.svg)
 
-MCP (Model Context Protocol) defines how agents discover and invoke external tools. Core concepts:
-
-| Concept | Purpose |
-|------|------|
-| MCPClient | Agent-side client that connects to servers, discovers tools, invokes tools |
-| MCP Server | External service implementing `tools/list` + `tools/call` |
-| assemble_tool_pool | Assembles built-in tools and MCP tools into one tool pool |
-| mcp\_\_server\_\_tool naming | Prevents tool name collisions across different servers |
-
-Carries forward s18's teaching-version worktree isolation, autonomous claiming, idle polling, and protocol system. This chapter adds the `connect_mcp` tool, which connects to external services, discovers tools, and adds them to the tool pool.
-
-The tutorial uses mock handlers to simulate external servers. The real version would spawn subprocesses and communicate via stdin/stdout JSON-RPC. Mocks let you run the full flow without external dependencies; the tradeoff is you don't see real network communication or process management.
-
 ---
 
-## How It Works
+## Discovery: Ask at Runtime, Do Not Hardcode at Compile Time
 
-### MCPClient: Discovery + Invocation
-
-```python
-class MCPClient:
-    def __init__(self, name: str):
-        self.name = name
-        self.tools: list[dict] = []
-        self._handlers: dict[str, callable] = {}
-
-    def register(self, tool_defs, handlers):
-        """Simulates tools/list discovery."""
-        self.tools = tool_defs
-        self._handlers = handlers
-
-    def call_tool(self, tool_name: str, args: dict) -> str:
-        """Simulates tools/call."""
-        handler = self._handlers.get(tool_name)
-        if not handler:
-            return f"MCP error: unknown tool '{tool_name}'"
-        return handler(**args)
-```
-
-The tutorial uses Python functions to simulate server tool implementations. The real version communicates with subprocesses via stdio JSON-RPC.
-
-### connect_mcp: Connect + Discover
+The first step in connecting an MCP server is not registering its tools. It is asking, "what do you have?"
 
 ```python
 def connect_mcp(name: str) -> str:
-    if name in mcp_clients:
-        return f"MCP server '{name}' already connected"
-    factory = MOCK_SERVERS.get(name)
-    if not factory:
-        return f"Unknown server '{name}'. Available: ..."
-    mcp_client = factory()
+    mcp_client = MOCK_SERVERS[name]()          # Establish the connection
     mcp_clients[name] = mcp_client
-    return f"Connected to '{name}'. Discovered: ..."
+    tool_names = [t["name"] for t in mcp_client.tools]   # Tools are discovered
+    return (f"Connected to MCP server '{name}'. "
+            f"Discovered {len(mcp_client.tools)} tools: {', '.join(tool_names)}")
 ```
 
-After connecting, the server's tools are immediately available.
+The server reports its own tool inventory. Each tool has a name, description, and parameter schema in exactly the same shape as the hand-written `TOOLS` from s02. The harness does not need to know which endpoints Jira offers in advance; it learns when the connection is made. That is discovery.
 
-### normalize_mcp_name: Name Normalization
+The teaching servers are in-process mocks: one `docs` documentation service and one `deploy` deployment service. Real MCP uses JSON-RPC over stdio or HTTP to communicate with separate processes. But the shape, connect, discover, call, return a result, is the same. The teaching version preserves that shape and removes the transport.
+
+---
+
+## Naming: The Prefix Is the Namespace
+
+Discovered tools cannot be poured directly into the tool pool. They must be renamed first:
 
 ```python
-_DISALLOWED_CHARS = re.compile(r'[^a-zA-Z0-9_-]')
-
 def normalize_mcp_name(name: str) -> str:
-    return _DISALLOWED_CHARS.sub('_', name)
+    return _DISALLOWED_CHARS.sub('_', name)    # Replace everything outside [a-zA-Z0-9_-] with underscores
+
+prefixed = f"mcp__{safe_server}__{safe_tool}"  # mcp__docs__search
 ```
 
-All non-`[a-zA-Z0-9_-]` characters are replaced with `_`. Prevents special characters in server or tool names from causing naming conflicts or injection issues.
+The prefix prevents collisions. Both the `docs` and `deploy` servers may expose a tool called `status`; after adding `mcp__{server}__`, they are independent and can never collide with a built-in such as `bash`. Normalization is the inspection philosophy making a fourth appearance: s02 guarded paths, s07 guarded skill names, and s18 guarded worktree names. Server-provided names are external input, and a name with unexpected characters can make the API reject the entire request.
 
-### assemble_tool_pool: Assemble Tool Pool
+---
+
+## Assembly: Built-in and External Tools Enter the Same Pool
 
 ```python
 def assemble_tool_pool() -> tuple[list[dict], dict]:
     tools = list(BUILTIN_TOOLS)
     handlers = dict(BUILTIN_HANDLERS)
     for server_name, mcp_client in mcp_clients.items():
-        safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
-            safe_tool = normalize_mcp_name(tool_def["name"])
-            prefixed = f"mcp__{safe_server}__{safe_tool}"
-            tools.append(...)
+            prefixed = f"mcp__{normalize_mcp_name(server_name)}__{normalize_mcp_name(tool_def['name'])}"
+            tools.append({"name": prefixed,
+                          "description": tool_def.get("description", ""),
+                          "input_schema": tool_def.get("inputSchema", {})})
             handlers[prefixed] = (
-                lambda *, c=mcp_client, t=tool_def["name"], **kw:
-                    c.call_tool(t, kw))
+                lambda *, c=mcp_client, t=tool_def["name"], **kw: c.call_tool(t, kw))
     return tools, handlers
 ```
 
-The prefix `mcp__{server}__{tool}` namespaces each server's tools. Names are normalized through `normalize_mcp_name`.
+To the model, the assembled pool has no distinction between "built-in" and "external." `mcp__docs__search` and `read_file` look identical: each is a name plus a schema. The dispatch mechanism from s02 works unchanged, which is the compounding return from choosing table-driven dispatch at the start.
 
-MCP tool descriptions include `(readOnly)` or `(destructive)` annotations. The tutorial uses text annotations; real Claude Code uses structured tool annotations for the permission system.
+The handler lambda contains an old Python trap worth naming. The intuitive `lambda **kw: mcp_client.call_tool(tool_def["name"], kw)` closes over loop variables. After the loop ends, every handler points to the **last** tool, so calling `search` might execute `get_version`. Default arguments, `c=mcp_client, t=tool_def["name"]`, freeze the values when the lambda is defined, giving every handler its own binding. This is late binding, a trap to consider whenever creating closures inside a loop.
 
-### No Cache: Tool Pool Changes, Prompt Changes Too
+Assembly is not a one-time operation. `agent_loop` assembles the pool again after every tool round. If the model calls `connect_mcp` in one round, the new tools are present in the next. The cost must also be explicit: when the tool list changes, the request's `tools` parameter changes, invalidating the prompt-cache prefix discussed in s08's optional section. The comparison in s10 said that `mcp_instructions` is the only volatile segment in the real system; this is why. MCP is the one runtime-variable part of the tool pool.
 
-s10-s18's agent_loop used prompt caching to avoid re-serialization. s19 removes the cache:
+---
 
-```python
-def agent_loop(messages, context):
-    tools, handlers = assemble_tool_pool()     # Rebuild every time
-    system = assemble_system_prompt(context)    # Regenerate every time
-    ...
-    if any(b.name == "connect_mcp" ...):
-        tools, handlers = assemble_tool_pool()  # Rebuild after connection
-        system = assemble_system_prompt(context)
-```
+## Annotations: External Tools Describe Themselves
 
-Reason: after `connect_mcp`, the tool pool changes. New tools like `mcp__docs__search` are added. The cached tool list is stale; continuing to use it means the model can't call the new tools. The tutorial simply removes caching, at the cost of slightly more serialization time.
+Look at the mock server's tool descriptions. `search` is marked `(readOnly)`, while `deploy.trigger` is marked `(destructive)`. These annotations connect to the permission system. We know whether a built-in tool reads or writes because we implemented it. For an external tool, its server must declare that behavior.
 
-### MCP Tools: Lead Only
+One more layer of honesty is required: annotations come from the server, and a server can lie. A malicious server may label a database-deletion tool readOnly, and the teaching version would believe it. Real systems therefore use annotations only in the conservative direction: readOnly may reduce interruptions, but destructive always triggers approval, and a declaration can never let a dangerous tool bypass the gate from s03. The trust boundary is drawn around the protocol, not around the other party's goodwill.
 
-In the tutorial, `connect_mcp` is a Lead tool, and `assemble_tool_pool` only serves the Lead's agent_loop. Teammates still use a fixed 8-tool subset (bash, read_file, write_file, send_message, submit_plan, list_tasks, claim_task, complete_task).
-
-This is a teaching simplification. In real Claude Code, MCP tools are available to both the main agent and sub-agents. Sub-agents inherit the parent's MCP configuration.
+> The real Claude Code supports six transports, including stdio, HTTP, and SSE, plus OAuth authentication, server-pushed notifications, and merged configuration from multiple sources. MCP readOnly/destructive annotations feed into the actual permission pipeline, and destructive tools require user approval by default. The teaching mocks preserve four essential stages: discovery, naming, assembly, and annotations.
 
 ---
 
@@ -142,141 +93,32 @@ This is a teaching simplification. In real Claude Code, MCP tools are available 
 
 | Component | Before (s18) | After (s19) |
 |------|-----------|-----------|
-| Tool source | All hand-written built-in | Hand-written + MCP external tools with dynamic discovery |
-| Tool pool | Fixed BUILTIN_TOOLS | assemble_tool_pool dynamically assembles mcp\_\_ prefixed tools |
-| Name safety | None | normalize_mcp_name normalization |
-| New type | — | MCPClient class (simulates tools/list + tools/call) |
-| Namespace | — | mcp\_\_server\_\_tool prevents collisions |
-| Tool descriptions | No annotations | (readOnly)/(destructive) annotations |
-| Prompt cache | Yes (since s10) | Removed because tool pool is dynamic; cache goes stale |
-| Lead tools | 17 (s18) | 18 (+connect_mcp) |
-| Teammate tools | 8 (s18) | 8 (unchanged, MCP tools are Lead-only) |
-| Extension method | Write code to add tools | MCP protocol; implement servers in any language |
+| Tool source | All built in and fixed at compile time | Built-in + MCP discovery, variable at runtime |
+| New type | — | `MCPClient` (discovery + invocation) |
+| New functions | — | `connect_mcp`, `assemble_tool_pool`, `normalize_mcp_name` |
+| Naming | Bare names | MCP tools use the `mcp__{server}__{tool}` prefix |
+| Tool pool | Static `TOOLS` | Reassembled after every tool round |
 
 ---
 
-## Try It Out
+## Try It
 
 ```sh
 cd learn-claude-code
 python s19_mcp_plugin/code.py
 ```
 
-Try these prompts:
-
-1. `Connect to the docs MCP server and search for something`
-2. `Connect to the deploy server and trigger a deployment`
-3. `Connect both servers — what tools are now available?`
-
-What to observe: After connecting to an MCP server, do tool names have `mcp__docs__` or `mcp__deploy__` prefixes? Are both servers' tools available simultaneously? Do MCP tool descriptions include (readOnly)/(destructive) annotations?
+1. **The moment of discovery**: `Connect to the docs MCP server, then list what tools you have now.` After `[mcp] connected: docs → ['search', 'get_version']`, the model can name new tools such as `mcp__docs__search`. They are in the pool.
+2. **Calls from one pool**: `Search the docs for "authentication" and also read README.md`. An external tool and a built-in tool are called together in one round; to the model, there is no difference.
+3. **Connecting a missing server**: `Connect to the jira MCP server`. The response is `Unknown server 'jira'. Available: docs, deploy`. The error includes the valid inventory, so the model can correct itself.
+4. **How annotations feel**: `Connect to deploy and check the status of service 'web'`, then try `Trigger a deployment of 'web'`. Both tools run because the teaching version does not connect the permission gate, but `(readOnly)` and `(destructive)` are already in their descriptions. Recall s03: those annotations provide the input for applying the three permission gates to external tools.
 
 ---
 
-## What's Next
+## Next
 
-The Agent can now connect external tools through MCP. But the first 19 chapters each add one mechanism in isolation; a real Agent does not run as 19 separate demos.
+With MCP connected, the last piece of the toolbox is in place. Looking back over nineteen chapters, each added one mechanism in an independent demo. But a real agent is not nineteen demos; it is one process where compaction, memory, permissions, teams, and scheduling all operate around the same loop at once.
 
-Tools, permissions, hooks, todo, task graph, memory, compact, background work, cron, teams, worktrees, and MCP should all attach to the same loop, not live in separate examples.
+s20 Comprehensive Agent → Combine the first nineteen chapters into one complete harness. Many mechanisms, one loop.
 
-s20 Comprehensive Agent → Combine the first 19 chapters into one complete harness. Many mechanisms, one loop.
-
-<details>
-<summary>Deep Dive into Claude Code Source</summary>
-
-> The following is based on analysis of Claude Code source: `services/mcp/client.ts`, `auth.ts`, `config.ts`, `channelNotification.ts`.
-
-### 1. Six Transport Types
-
-The tutorial only shows a stdio mock. Claude Code supports 6 transport types (`types.ts:23-25`):
-
-| Transport | Communication method |
-|-----------|---------|
-| `stdio` | Subprocess stdin/stdout (cross-platform default) |
-| `sse` | HTTP Server-Sent Events |
-| `http` | Streamable HTTP (POST/SSE bidirectional) |
-| `ws` | WebSocket |
-| `sse-ide` | IDE-embedded SSE transport |
-| `sdk` | In-process SDK transport |
-
-On connection, local (stdio) and remote (http/sse/ws) servers are batched concurrently: local batch of 3, remote batch of 20.
-
-### 2. Tool Pool Merging Algorithm
-
-`assembleToolPool()` (`tools.ts:345-364`):
-
-```typescript
-// Dedup with priority: built-in tools win on name collision (sorted first)
-return uniqBy(
-  [...builtInTools.sort(byName), ...filteredMcpTools.sort(byName)],
-  'name',
-)
-```
-
-Built-in and MCP tools are sorted separately, not together. The reason is Claude Code's `claude_code_system_cache_policy` places a global cache breakpoint after the last built-in tool at a specific position. Mixing the sort would break this design.
-
-### 3. Naming Convention: `mcp__server__tool`
-
-`buildMcpToolName()` (`mcpStringUtils.ts:50-52`):
-
-```
-mcp__<normalizedServerName>__<normalizedToolName>
-```
-
-All non-`[a-zA-Z0-9_-]` characters are replaced with `_` (`normalization.ts:17-23`). The tutorial's `normalize_mcp_name` uses the same rule.
-
-### 4. Permission Checks
-
-Claude Code has a separate permission system for MCP tools. `checkPermissions()` applies different logic for MCP tools than for built-in tools: MCP tools can declare their own permission requirements (readOnly, destructive, etc.), and Claude Code decides whether user confirmation is needed based on the declaration. The tutorial only uses text annotations `(readOnly)` / `(destructive)` in descriptions, without permission enforcement.
-
-### 5. Configuration Sources and Priority
-
-MCP server configuration comes from multiple sources. Claude Code's priority from lowest to highest:
-
-```
-claude.ai connectors < plugin < user settings.json < approved project .mcp.json < local settings.local.json
-```
-
-`claude.ai` connectors are fetched separately, deduplicated by content signature, and merged at the lowest precedence (`config.ts:1267-1289`). When enterprise `managed-mcp.json` exists, all other configurations are excluded.
-
-The tutorial passes server names directly to the `MOCK_SERVERS` dict, without config merging.
-
-### 6. Channel Notifications: Servers Push Messages Back
-
-The tutorial only covers agent → MCP Server unidirectional calls. Claude Code also supports reverse notifications (`channelNotification.ts`):
-
-1. Server declares `capabilities.experimental['claude/channel']`
-2. Server sends messages to agent via MCP notification `notifications/claude/channel`
-3. Messages are wrapped in `<channel source="serverName">...</channel>` XML tags
-4. Agent is woken up by SleepTool (within 1 second)
-
-Servers can also request permissions: `notifications/claude/channel/permission_request` → Agent replies `notifications/claude/channel/permission`. Users confirm/deny via a 5-letter short ID.
-
-### 7. OAuth Authentication Flow
-
-Claude Code's MCP authentication (`auth.ts`) supports a full OAuth 2.0 + PKCE flow:
-- OAuth metadata discovery via public client + PKCE (RFC 8414 / RFC 9728)
-- Local callback server receives authorization code
-- Tokens persisted via `getSecureStorage()` (macOS Keychain / Linux encrypted file / Windows Credential Manager)
-- Auto-refresh 5 minutes before expiry
-- Cross-application access (XAA): browser gets id_token → RFC 8693 + RFC 7523 exchange → no repeated browser popups
-
-### 8. Connection Lifecycle Error Handling
-
-Claude Code has fine-grained error classification and retry for MCP connections (`client.ts:1266-1402`):
-- Terminal errors (ECONNRESET, ETIMEDOUT, EPIPE, etc.): 3 consecutive failures → close + reconnect
-- Tool call 401: Token expired → throw `McpAuthError` → trigger re-authentication
-- Tool call timeout: `Promise.race` timeout (configurable, default ~28 hours)
-- Stdio disconnect: Kill process in SIGINT → SIGTERM → SIGKILL order
-
-### The Tutorial's Simplifications
-
-- 6 transport types → 1 (mock stdio): Manageable concept count
-- Channel reverse notifications → omitted: Tutorial agent is always the initiator
-- OAuth flow → omitted: Tutorial assumes servers need no auth
-- Multi-layer config priority → omitted: Tutorial passes server name directly
-- Complex error classification → omitted: Tutorial uses try/except as fallback
-- MCP tools Lead-only → omitted sub-agent inheritance: Simplifies code structure
-
-</details>
-
-<!-- translation-sync: zh@v2, en@v2, ja@v0 -->
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

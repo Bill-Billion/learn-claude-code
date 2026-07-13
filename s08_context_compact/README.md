@@ -1,4 +1,4 @@
-# s08: Context Compact — The Context Will Fill Up: Tidy First, Summarize Last
+# s08: Context Compact — Context Always Fills Up: Tidy First, Summarize Last
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
@@ -6,99 +6,102 @@ s01 → s02 → s03 → s04 → s05 → s06 → s07 → `s08` → [s09](../s09_m
 
 ---
 
-On a long task, reading one file can cost thousands of tokens, and one test run dumps another wall of logs. File contents, command output, tool results: everything gets appended back into `messages`, and the pile keeps growing.
+By s07, the Agent can use tools, manage permissions, send work to Subagents, and load skills on demand. A new problem appears on long tasks: after enough files and commands, one model call suddenly fails with `prompt_too_long`.
 
-The more context, the more the model's attention spreads thin; once it is truly full, the request simply fails: `prompt_too_long`.
-
-So s08 solves one thing:
-
-> Keep the agent working through long tasks.
+This lesson explains what that error means, why it is inevitable, and how to keep an Agent working through tasks of any length.
 
 ![Context Compact overview](images/compact-overview.svg)
 
 ---
 
-## Don't Start by Summarizing the History
+## First, Understand Context
 
-The most intuitive move is to have the model summarize the history.
+When you solve a problem, you spread out scratch paper. The assignment, your current step, intermediate results, and copied reference material all sit on that page where you can see them.
 
-But that should not be the first step.
+A model has the same kind of scratch paper: the context window. Everything you say, every model response, every tool request, and every tool result is written there in order. When the model reasons, it can see everything on the page.
 
-A lot of content doesn't need summarizing: old logs, old file contents, tool results that have already served their purpose. They just take up space, and much of it no longer matters. For content like that, tidy first: persist to disk what can be persisted, replace with a placeholder what can be placeholdered, snip what can be snipped.
+The page has one defining property: its size is fixed. Some models have larger pages than others, but every page has a limit. Once it is full, new content cannot fit and the request fails.
 
-Only when all of that is done and the context is still close to the limit do you let the model generate a summary.
+Conversation is not what takes most of the space. Tool results do:
 
-The reason is simple: the first three steps are mostly recoverable, while a summary is lossy. Once a summary replaces the history, the details are no longer in the current context.
+- reading a 1,000-line source file puts all 1,000 lines into context;
+- running tests can add tens of kilobytes of logs;
+- searching a dozen files stacks one result after another.
+
+Suppose a context window holds 200,000 tokens and an ordinary file averages 5,000 tokens. Reading 40 files fills the window. A real development task can easily make dozens or hundreds of tool calls across files, commands, and error logs.
+
+> Given a long enough task, context will fill up. It is not a question of probability, only time.
+
+Problems begin even before the window is full. With too much on the page, the model loses the main thread; important constraints drown in old logs and requirements fade from attention. Context compaction is not only about preventing an error. It keeps the model able to see what it is doing.
 
 ---
 
-## The Overall Flow
+## Why the Obvious Fix Cannot Come First
 
-Before every model call, tidy `messages` once:
+The first idea is usually: have the model summarize everything so far into a few sentences and make room.
 
-```python
-messages = tool_result_budget(messages)  # park large results first
-messages = snip_compact(messages)        # trim the middle of the history
-messages = micro_compact(messages)       # placeholder older tool results
+We will eventually do that, but not as the first step. When scratch paper fills up, you do not immediately tear out the earlier pages and rewrite them as an outline. There are three reasons.
 
-if estimate_size(messages) > CONTEXT_LIMIT:
-    messages = compact_history(messages) # still too big, only then summarize
-```
+First, summaries always lose detail. An outline cannot contain as much information as the original work. A function argument, the exact wording of an error, or a small user constraint can disappear. Once a summary replaces history, omitted details are no longer in current context.
+
+Second, summarization has a cost. It requires another model call, which takes time and money. There is no reason to ask a model to rewrite content that ordinary code can organize.
+
+Third, and most importantly, the largest content often does not deserve a summary. Files remain on disk and commands can run again. If the Agent needs the information later, it can retrieve the complete version instead of carrying it forever.
+
+The right approach is as ordinary as cleaning scratch paper: first organize without losing information. Put away what can be stored and erase what can be recreated. Write an outline only when those steps still do not free enough room.
+
+The four stages follow that order. Earlier stages lose less information and cost less. Later stages reclaim more space at a higher price.
 
 ![Four-step compaction pipeline](images/compaction-layers.svg)
 
-> The order is not arbitrary.
->
-> In particular, `tool_result_budget` must run before `micro_compact`. `micro_compact` replaces old tool results with placeholders; if it ran first, the full content would already be gone, and there would be nothing left to persist.
-
 ---
 
-## Step 1: tool_result_budget — Park Large Results First
+## Step 1: tool_result_budget — Persist Large Results First
 
-Sometimes the problem isn't a long history but a single oversized tool result.
+Sometimes the problem is not a long history but the size of the newest batch. If the Agent reads several large files at once, the `tool_result` blocks in the last message can exceed 200 KB. They are new, so we cannot delete them, but they do not need to remain fully expanded in context.
 
-Say the agent reads several large files at once: the last `tool_result` can easily exceed 200KB. It is the newest result, so it can't just be dropped; but it shouldn't sit in the context in full either.
+Treat them like copied reference material: save the full text in a notebook and leave a note on the scratch page saying where it went. In code, write the complete output to disk and leave only the path and a short preview in context.
 
-The move: write the full content to disk, and keep only the path plus a short preview in context.
-
-![Park large results to disk](images/layer1-budget.svg)
+![Persist large results first](images/layer1-budget.svg)
 
 ```python
 def tool_result_budget(messages, max_bytes=200_000):
+    # Inspect only tool results in the newest message
     blocks = [b for b in messages[-1]["content"] if b.get("type") == "tool_result"]
     total = sum(len(str(b["content"])) for b in blocks)
 
-    if total <= max_bytes:
+    if total <= max_bytes:      # Already within budget
         return messages
 
+    # Persist the largest results first
     for block in sorted(blocks, key=lambda b: len(str(b["content"])), reverse=True):
+        # Save the full content; keep only a path and 2,000-character preview in context
         block["content"] = persist_large_output(block["tool_use_id"], str(block["content"]))
         total = sum(len(str(b["content"])) for b in blocks)
         if total <= max_bytes:
             break
-
     return messages
 ```
 
-This step loses nothing. It only moves content from "current context" to disk.
+This step loses nothing. It only changes where the content is stored, makes no model call, and finishes in milliseconds. The model still knows where the full output lives and how it begins; it can read the file later if needed.
 
-The model can still see where the content was saved and roughly how it starts. If the full content is needed later, read it back.
+But this handles only the size of the newest batch. It does nothing about the number of messages accumulating over time.
 
 ---
 
-## Step 2: snip_compact — Trim the Old Conversation
+## Step 2: snip_compact — Remove the Old Middle
 
-When there are too many messages, keep the beginning and the end.
+Across many pages of scratch work, the two useful regions are often the edges: the beginning contains the assignment and rules, while the end contains the current calculation. Finished work in the middle mostly takes up space.
 
-The beginning usually holds the original task and constraints; the end is what is being worked on right now. The old stretch in the middle can be replaced with a single note.
+`snip_compact` keeps the beginning and end, removes old messages from the middle, and inserts a note saying how many were omitted:
 
 ```python
 def snip_compact(messages, max_messages=50):
-    if len(messages) <= max_messages:
+    if len(messages) <= max_messages:   # No need to trim a short history
         return messages
 
-    head = safe_head(messages, 3)
-    tail = safe_tail(messages, max_messages - 3)
+    head = safe_head(messages, 3)                  # First three: original task
+    tail = safe_tail(messages, max_messages - 3)   # End: current work
     snipped = len(messages) - len(head) - len(tail)
 
     return head + [
@@ -106,87 +109,83 @@ def snip_compact(messages, max_messages=50):
     ] + tail
 ```
 
-One thing to watch: never separate an `assistant` `tool_use` from its matching `tool_result`. Otherwise the model sees a tool result that came from nowhere, and the API rejects the request outright.
+One rule is absolute: never separate an `assistant` message's `tool_use` from its corresponding `tool_result`. If split, the model sees a result with no origin and the API rejects the request. `safe_head` and `safe_tail` are therefore not ordinary slices. They move a cut point away from a pair boundary (see `code.py`).
 
-That is why `safe_head` and `safe_tail` are not plain slices: they move the cut away from such break points (see `code.py`).
-
-This step reduces the number of messages.
-
-But it does nothing about large content inside a single message. If an old `tool_result` still carries tens of KB of file content, it keeps occupying the context.
-
-So the tool results still need tidying.
+This step reduces the number of messages. It does not shrink old `tool_result` content inside the messages that remain; a 30 KB file result is still 30 KB.
 
 ---
 
-## Step 3: micro_compact — Replace Older Tool Results with Placeholders
+## Step 3: micro_compact — Replace Earlier Tool Results with Placeholders
 
-Tool results usually take more space than the conversation itself.
+After an Agent reads ten files, it may still compare the newest two or three; it rarely needs every earlier one. Those results are recoverable: files remain on disk and commands can run again.
 
-The agent reads ten files in a row; the full contents of the first several rarely need to stay in context. Keeping the most recent few is enough. If an older result turns out to matter later, fetch it again.
+`micro_compact` keeps the three newest results in full. Older results longer than 120 characters become one-line placeholders:
 
-![Placeholder older results](images/micro-compact.svg)
+![Replace old results with placeholders](images/micro-compact.svg)
 
 ```python
-KEEP_RECENT = 3
+KEEP_RECENT = 3   # Keep the three newest results in full
 
 def micro_compact(messages):
     results = collect_tool_results(messages)
 
+    # Replace longer, earlier results with a placeholder
     for _, _, block in results[:-KEEP_RECENT]:
         if len(block.get("content", "")) > 120:
             block["content"] = "[Earlier tool result compacted. Re-run if needed.]"
-
     return messages
 ```
 
-This step summarizes nothing. It just swaps older full results for a one-line note.
+This differs from step 1: persistence keeps a copy; a placeholder does not. The replaced content exists neither in context nor in a saved output file. Recovering it means running the tool again. That is acceptable for reproducible content such as files and command output.
 
-It handles "too many tool results", not "still too big after tidying". If the context is still over the limit at this point, the only option left is a model-generated summary.
+At this point, everything easy to store has been stored and everything easy to recreate has been erased, without a single model call. If context is still too large, only one option remains: ask the model to help.
 
 ---
 
-## Step 4: compact_history — Still Over the Limit, Then Summarize
+## Step 4: compact_history — Summarize Only After Tidying
 
-If the context is still too big after the first three steps, let the model summarize the history.
-
-Three things happen:
-
-Write the full conversation to disk.
-Have the model generate a summary.
-Replace the old history with the summary.
+This step runs only if the first three are insufficient. It does three things: save the complete conversation, ask the model for a summary, and replace the history with that summary.
 
 ![Full LLM summary](images/auto-compact.svg)
 
 ```python
 def compact_history(messages):
-    transcript_path = write_transcript(messages)  # ① write the full conversation to disk
-    summary = summarize_history(messages)         # ② generate the summary
+    transcript_path = write_transcript(messages)  # 1 Save the complete conversation
+    summary = summarize_history(messages)         # 2 Ask the model for a summary
     return [{
         "role": "user",
-        "content": f"[Compacted]\n\n{summary}",   # ③ replace old history with the summary
+        "content": f"[Compacted]\n\n{summary}",   # 3 Replace history with the summary
     }]
 ```
 
-The summary is required to preserve five kinds of information: current goal, user constraints, key findings, files changed, next steps.
+The summary prompt asks the model to preserve five things: current goal, user constraints, important findings, files changed, and next steps.
 
-This step is the most effective, and the riskiest.
+This stage reclaims the most space and has the highest cost. It is lossy: even a detailed summary omits information, and generating it takes a model call. The complete history remains on disk, but on later turns the model can see only the summary. Details left out of it temporarily cease to exist from the model's perspective.
 
-The full history is still on disk, but the model can now see only the summary. Any detail that didn't make it into the summary is, for every later turn, effectively invisible.
-
-That is why summarizing must come last.
+That is why it must come last. If the first three steps solve the problem, never reach this one.
 
 ---
 
-## Emergency Compaction After an Error
+## Why the Order Cannot Change
 
-Normally the context is tidied before the model is called.
+The four stages have two ordering constraints.
 
-But token estimates can be off, or one turn's tool output suddenly balloons, and the API may still return `prompt_too_long`. At that point, do one more aggressive pass: save the full record, squash most of the earlier history into a summary, and keep only the last few messages.
+The first is cost and loss: persistence is lossless, trimming is low-loss, and placeholders are recoverable; none of those three calls a model. Summarization is lossy and costs a call. Run cheap steps first, expensive steps last. Often the fourth stage never needs to run.
+
+The second is a hard dependency: `tool_result_budget` must run before `micro_compact`. They handle content differently. Persistence writes complete output to disk, while a placeholder preserves nothing. If `micro_compact` runs first and the newest batch contains more than three results, the extra results may become placeholders before `tool_result_budget` sees them. By the time persistence runs, the full content is already gone.
+
+Reversing the order does not produce an error. It silently turns a lossless operation into a lossy one, which is harder to notice than a crash.
+
+---
+
+## Emergency: reactive_compact After an Error
+
+Cleanup runs before every call, but `estimate_size` is an estimate and estimates can be wrong. A single tool output can also spike unexpectedly. The API may still return `prompt_too_long`. In that case, run one more aggressive pass: save the complete transcript, keep only the last five messages, and summarize everything before them.
 
 ```python
 def reactive_compact(messages):
-    write_transcript(messages)
-    tail = safe_tail(messages, 5)   # tail slice, same boundary guard
+    write_transcript(messages)         # Preserve the complete record
+    tail = safe_tail(messages, 5)      # Keep five messages without breaking pairs
     summary = summarize_history(messages[:len(messages) - len(tail)])
 
     return [{
@@ -195,24 +194,22 @@ def reactive_compact(messages):
     }] + tail
 ```
 
-This is not the normal path.
-
-It runs only after an error has already occurred, and it retries a limited number of times (once, in the teaching version). Otherwise, if the summary itself fails, you can end up retrying forever.
+This path runs only after an error and retries once (`MAX_REACTIVE_RETRIES = 1`). Without a limit, another failure could create a summary of a summary of a summary, losing more information each time until the model no longer knows what it is doing. If one retry fails, stop and let a person inspect the problem.
 
 ---
 
-## Back Into the Agent Loop
-
-The tidying logic ultimately plugs back into the agent loop.
+## Put It Back in the Agent Loop
 
 ```python
 def agent_loop(messages):
     reactive_retries = 0
     while True:
-        messages[:] = tool_result_budget(messages)
-        messages[:] = snip_compact(messages)
-        messages[:] = micro_compact(messages)
+        # Run three tidiers before each model call (zero API calls)
+        messages[:] = tool_result_budget(messages)   # 1 Persist large results
+        messages[:] = snip_compact(messages)         # 2 Trim the old middle
+        messages[:] = micro_compact(messages)        # 3 Placeholder old results
 
+        # Summarize only if tidying still leaves too much (one API call)
         if estimate_size(messages) > CONTEXT_LIMIT:
             messages[:] = compact_history(messages)
 
@@ -227,41 +224,33 @@ def agent_loop(messages):
                 continue
             raise
 
-        # ... run tools, append results back into messages ...
+        # ... execute tools and append their results to messages ...
 ```
 
-What matters most here is the order:
-
-```text
-park large results → trim middle history → placeholder older results → still over the limit, then summarize
-```
-
-The first three steps involve no model at all; they mostly clear space. Step 4 actually rewrites history, which is why it must come last.
+One teaching simplification is worth naming. `estimate_size` uses `len(str(messages))`, which counts characters rather than real tokens. Exact counting requires a tokenizer and would distract from the mechanism. The teaching `CONTEXT_LIMIT` is deliberately small — 50,000 characters — so you can actually see automatic summarization occur.
 
 ---
 
-## The compact Tool: Let the Model Ask
+## The compact Tool: Let the Model Raise Its Hand
 
-Besides automatic tidying, the model can be given a `compact` tool.
+The previous stages trigger automatically in code. Another useful moment is visible only to the model: the task enters a new phase and details from the previous phase are no longer needed. Give the model a `compact` tool so it can request cleanup:
 
-When the model notices the context getting long, or the task moving into a new phase, it can call the tool itself. The program then runs `compact_history`, ends the current turn, and starts the next one with the compacted context.
+```python
+{"name": "compact",
+ "description": "Summarize earlier conversation to free context space.",
+ "input_schema": {"type": "object", "properties": {"focus": {"type": "string"}}}}
+```
 
-This way compaction isn't only program-triggered; the model can also request it at the right moment.
+```python
+if block.name == "compact":
+    messages[:] = compact_history(messages)
+    results.append({"type": "tool_result", "tool_use_id": block.id,
+                    "content": "[Compacted. Conversation history has been summarized.]"})
+    messages.append({"role": "user", "content": results})
+    break   # End this turn; continue next turn with compacted context
+```
 
----
-
-## Changes from s07
-
-| Component | s07 | s08 |
-|-----------|-----|-----|
-| Context management | None | Tidy before every model call |
-| Tool results | Stay in context forever | Large ones persisted, old ones placeholdered |
-| Message history | Accumulates forever | Middle history can be snipped |
-| Over the limit | Request fails | Tidy first, summarize only if needed |
-| New tool | None | `compact` |
-
-s07 made the agent better at its work.
-s08 keeps the agent from being crushed by its own history on long tasks.
+The responsibility split remains clear: the model decides that this is a good moment to tidy; the program actually archives, summarizes, and replaces history. Raising a hand to say "I should clean this up" is not the same as doing the cleanup.
 
 ---
 
@@ -272,35 +261,79 @@ cd learn-claude-code
 python s08_context_compact/code.py
 ```
 
-Tasks to try:
+**Experiment 1: placeholders.** Read five files in sequence:
 
 ```text
-Read README.md, then read code.py, then read s01_agent_loop/README.md
+Use read_file separately to read s01_agent_loop/README.md, s02_tool_use/README.md, s03_permission/README.md, s04_hooks/README.md, and s05_todo_write/README.md. Then say done.
 ```
 
-Watch whether older tool results get replaced with placeholders.
+Then ask:
 
 ```text
-Read every file in s08_context_compact/
+Without re-reading, quote the first heading of s01_agent_loop/README.md.
 ```
 
-Watch whether large outputs get persisted to disk.
+With `KEEP_RECENT = 3`, the first two of the five results have become `[Earlier tool result compacted. Re-run if needed.]`. The model either says the old result was compacted or reads the file again. That is step 3 at work.
+
+**Experiment 2: persisting a large result.** Read a file larger than 700 KB:
 
 ```text
-Keep discussing and editing for more than 20 turns
+Use read_file to read web/src/data/generated/docs.json without a limit. Then say what kind of file it is.
 ```
 
-Watch whether a summary is triggered as the context nears the limit.
+The result exceeds the 200 KB budget and is persisted. Check two places: `.task_outputs/tool-results/` gains a `toolu_*.txt` file containing the full output, and the model mentions that it received only a preview and path. That is step 1.
+
+**Experiment 3: automatic summary.** Read two files whose combined size exceeds the threshold:
+
+```text
+Use read_file to read s08_context_compact/code.py and s09_memory/code.py without a limit. Then explain the main difference between them.
+```
+
+At roughly 24.7K + 27.1K characters, they cross the teaching `CONTEXT_LIMIT = 50000`. After the second read, the terminal prints `[auto compact]` and `[transcript saved: ...]`; the model continues from a summary beginning with `[Compacted]`. The complete conversation remains in `.transcripts/`.
+
+---
+
+## Optional: Production Systems Must Consider Prompt Caching
+
+The four-stage pipeline is complete. Real Claude Code has another constraint that strongly shapes compaction: the prompt cache.
+
+Return to the scratch-paper metaphor. A few lines at the top never change: "you are a coding assistant," "these tools are available," "follow these rules." Reprocessing the same fixed prefix on every call costs time and money. Model platforms can cache a stable prefix and reuse it when the next request begins with exactly the same content.
+
+In the Anthropic API, reading a cache hit is much cheaper than ordinary input. Writing the cache the first time costs extra, and cache entries expire. It is not free; it is an optimization whose value increases as the prefix stays stable across repeated calls.
+
+This affects compaction order because cache reuse depends on a byte-for-byte stable prefix. Change content before a cache breakpoint and the cache likely misses; change only content after it and the prefix may remain reusable. A production compactor therefore tries not to disturb the beginning:
+
+- step 1 handles only the newest result batch;
+- step 2 preserves the initial task and rules, keeping a stable prefix;
+- step 3 changes earlier reproducible tool content, not system instructions or tool definitions;
+- step 4 rewrites the entire history shape and has the largest cache impact, so it comes last.
+
+Strictly speaking, editing only the middle does not guarantee a cache hit. It depends on breakpoint placement, whether system and tool definitions changed, and whether the prefix is identical. Still, "organize the tail and middle before rewriting history" has a practical benefit beyond information preservation: stable prefixes live longer. It cannot prevent every invalidation, but it avoids unnecessary ones.
+
+The teaching version implements no API-level cache and computes no cache breakpoints. It uses observable code to explain the trade-off. Real Claude Code has more layers, more fallbacks, and extensive cache optimization, but the underlying order is the same: tidy before summarizing; preserve recoverable information before compressing it into a lossy summary.
+
+---
+
+## Changes from s07
+
+| Component | s07 | s08 |
+|-----------|-----|-----|
+| Context management | None | Tidy before every model call |
+| Tool results | Stay in context forever | Persist large results; placeholder old ones |
+| Message history | Accumulates forever | Old middle history can be removed |
+| Over the limit | Request fails | Tidy first, summarize only if needed |
+| New tool | None | `compact` |
 
 ---
 
 ## Recap
 
-The core principle of Context Compact fits in one line:
+This lesson has one core principle:
 
-> Tidy what you can, don't summarize what you can recover; only when that's still not enough, have the model summarize the history.
+> Tidy whatever you can. Do not summarize what you can recover. Only when that is not enough should the model summarize history.
 
-s08 lets long tasks continue.
-s09 tackles the next question: which information deserves to be kept for the long haul.
+Four functions implement the four stages, all following one ordinary order: lossless before lossy, zero-cost before model calls. With that pipeline, the Agent is no longer crushed by its own history.
 
-<!-- translation-sync: zh@v5, en@v5, ja@v5 -->
+But this only solves "the scratch paper is full." Some information deserves to live much longer without being rediscovered. s09 asks what to keep and how to keep it.
+
+<!-- translation-sync: zh@v6, en@v6, ja@v6 -->

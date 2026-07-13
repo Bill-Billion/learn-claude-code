@@ -121,4 +121,4 @@ MCP 接上，工具箱的最后一块拼图归位。回望这十九课，每课�
 
 s20 Comprehensive Agent → 把前十九章合回一个完整的 harness。机制很多，循环一个。
 
-<!-- translation-sync: zh@v3, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

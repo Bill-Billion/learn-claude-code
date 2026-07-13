@@ -147,4 +147,4 @@ python s07_skill_loading/code.py
 
 s08 Context Compact → 四步整理管线。便宜的先跑，贵的后跑；能整理就不总结。
 
-<!-- translation-sync: zh@v4, en@v3, ja@v3 -->
+<!-- translation-sync: zh@v4, en@v4, ja@v4 -->

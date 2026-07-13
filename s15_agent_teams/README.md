@@ -1,153 +1,135 @@
-# s15: Agent Teams — One Agent Isn't Enough, Form a Team
+# s15: Agent Teams — When One Is Not Enough, Form a Team
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s13 → s14 → `s15` → [s16](../s16_team_protocols/) → s17 → s18 → s19 → s20
-> *"One agent isn't enough, form a team"* — File-based inboxes + teammate threads.
+> *"When one is not enough, form a team"* — File-based inboxes and teammate threads.
 >
-> **Harness Layer**: Teams — Multi-agent collaboration, message bus.
+> **Harness layer**: Teams — multi-agent collaboration and a message bus.
 
 ---
 
-## The Problem
+A job like "refactor the entire backend" unfolds into four workstreams: authentication, the database layer, API routes, and tests. If one agent handles them serially, details of the authentication module have already been pushed out of context by the time it reaches the API routes.
 
-"Refactor the entire backend" touches auth, database layer, API routes, and tests. One agent working on API routes no longer has auth module details in context. The context window is limited, a single agent can't cover every module.
+Can the subagents from s06 share the load? Almost, but not quite. `spawn_subagent` is a blocking call: after dispatching one, the main agent stands still until it returns, so the four workstreams still form a queue. A subagent also has only one communication channel, its return value. If it discovers halfway through that "the database schema does not match the task description," it cannot come back and ask a question.
 
-s06's sub-agents are temps, called in for one job, then gone. Some tasks need teammates that can communicate and collaborate.
-
----
-
-## The Solution
+What we really need is coworkers, not temporary help. Coworkers have two properties that subagents lack: **they work at the same time** and **they can send messages at any time**. s13 already gave us the answer to concurrent work (threads). Messages at any time are the subject of this chapter.
 
 ![Agent Teams Overview](images/agent-teams-overview.svg)
 
-Teaching code carries forward S14's capabilities (prompt assembly, task system, background execution, cron scheduling). To stay focused on the team mechanism, it omits full error recovery, memory, and skill systems. Added: **MessageBus** (file-based inboxes), **spawn_teammate_thread** (launch teammate threads), **inbox injection** (Lead receives teammate messages and injects into history).
-
-Sub-agent vs Teammate:
-
-| | s06 Sub-agent | s15 Teammate |
-|---|---|---|
-| Lifetime | One-shot, destroyed after use | Multi-turn (teaching: 10 rounds; real Claude Code: idle loop) |
-| Communication | Only returns conclusion | Async inbox, communicate anytime |
-| Context | Fully isolated | Shared via messages |
-| Count | One lead + occasional sub-agent | One Lead + multiple teammates |
-
 ---
 
-## How It Works
+## Coworkers Do Not Return; They Send Messages
 
-![Team Topology](images/team-topology.svg)
+Function calls use a one-shot request-response model: the caller waits, the callee returns, and the channel closes. Team collaboration needs a different model. Everyone has a mailbox; anyone can leave a message, and the recipient reads it when free.
 
-### MessageBus: File-Based Inboxes
-
-Each agent (including Lead and teammates) has a `.jsonl` inbox. Send = append a JSON line to the target's file. Read = read file + delete (consumption):
+`MessageBus` is that mailbox system, with an implementation simple enough to see through directly:
 
 ```python
 class MessageBus:
-    def send(self, from_agent: str, to_agent: str,
-             content: str, msg_type: str = "message"):
+    def send(self, from_agent, to_agent, content, msg_type="message"):
         msg = {"from": from_agent, "to": to_agent,
-               "content": content, "type": msg_type,
-               "ts": time.time()}
+               "content": content, "type": msg_type, "ts": time.time()}
         inbox = MAILBOX_DIR / f"{to_agent}.jsonl"
-        with open(inbox, "a") as f:
+        with open(inbox, "a") as f:                  # Sending = append one line to the recipient's file
             f.write(json.dumps(msg) + "\n")
 
-    def read_inbox(self, agent: str) -> list[dict]:
+    def read_inbox(self, agent) -> list[dict]:
         inbox = MAILBOX_DIR / f"{agent}.jsonl"
         if not inbox.exists():
             return []
-        msgs = [json.loads(line) for line in inbox.read_text().splitlines()]
-        inbox.unlink()  # consume: read + delete
+        msgs = [json.loads(line) for line in inbox.read_text().splitlines() if line.strip()]
+        inbox.unlink()                               # Receiving = delete after reading (consuming read)
         return msgs
+
+    def peek(self, agent) -> bool:
+        inbox = MAILBOX_DIR / f"{agent}.jsonl"
+        return inbox.exists() and inbox.stat().st_size > 0   # Check presence without touching contents
 ```
 
-Why files instead of in-memory queues? Teaching code uses files because they're intuitive and observable across threads. Real Claude Code also uses file inboxes (`~/.claude/teams/{team}/inboxes/`) but adds `proper-lockfile` for concurrent write safety. The teaching version's `read_inbox` has a read + unlink race, concurrent reads could lose messages, acceptable for teaching purposes.
+Why files rather than an in-memory queue? There are two reasons. Observability: the `.mailboxes/` directory is right there, and at any moment `cat` shows who is saying what to whom. That is much more useful than logs when debugging a multi-agent system. Extensibility: files naturally cross process boundaries. Today's teammates may be threads; tomorrow they may be separate processes or even separate machines, while the mailbox interface remains unchanged.
 
-### spawn_teammate_thread: Launching a Teammate
+Two boundaries need to be explicit. Reads are consuming: after the file is read, it is deleted, so received messages must be handled immediately and there is no second copy if one is lost. The teaching version also has no file lock, so two writers may interleave lines under an unlucky timing. The real Claude Code protects every append with `proper-lockfile`.
 
-Lead calls the `spawn_teammate` tool to start a teammate. The teammate runs in its own daemon thread with its own system prompt, messages, and simplified tool set:
+---
+
+## A Teammate: The Same Loop, Plus a Name and a Mailbox
+
+The old pattern appears for a third time. Like the subagent in s06, a teammate is another copy of the s01 loop with different configuration. It has a name and role in its own system prompt, owns a mailbox, and checks that mailbox before every round:
 
 ```python
 def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
-    system = f"You are '{name}', a {role}. Use tools to complete tasks."
+    system = (f"You are '{name}', a {role}. "
+              f"Use tools to complete tasks. Send results via send_message to 'lead'.")
 
     def run():
         messages = [{"role": "user", "content": prompt}]
-        sub_tools = [bash, read_file, write_file, send_message]
-        for _ in range(10):           # max 10 rounds
-            inbox = BUS.read_inbox(name)
+        for _ in range(10):                          # Teaching version: at most 10 rounds
+            inbox = BUS.read_inbox(name)             # Check the mailbox before each round
             if inbox:
                 messages.append({"role": "user",
-                    "content": f"<inbox>{json.dumps(inbox)}</inbox>"})
+                                 "content": f"<inbox>{json.dumps(inbox)}</inbox>"})
             response = client.messages.create(
-                model=MODEL, system=system, messages=messages[-20:],
+                model=MODEL, system=system, messages=messages[-20:],   # Sliding window
                 tools=sub_tools, max_tokens=8000)
-            # ... execute tools, process results
-        # Send final summary to Lead
-        BUS.send(name, "lead", summary, "result")
+            ...
+        BUS.send(name, "lead", summary, "result")    # Send the lead a summary before leaving
+        active_teammates.pop(name, None)             # Remove itself from the roster
 
     threading.Thread(target=run, daemon=True).start()
 ```
 
-Key design:
-- **Simplified tool set**: bash, read, write, send_message. Teaching code omits tasks and cron to focus on communication. Real Claude Code teammates also have TaskCreate, TaskUpdate, etc., the task system is shared across the team
-- **Teaching: 10 rounds max**: prevents infinite loops. Real Claude Code uses idle loop: after each round, send `idle_notification`, wait for inbox messages, resume on arrival, exit only on `shutdown_request`
-- **Auto-report on completion**: `BUS.send(name, "lead", summary)` sends the final result to Lead's inbox
+The tool set is narrowed as usual: `bash`, `read_file`, `write_file`, and `send_message`. It does not include `spawn_teammate`, so teammates cannot recruit more teammates, following the anti-recursion rule from s06. Context management uses a `messages[-20:]` sliding window instead of the compaction pipeline from s08. Teammates are short-lived, with a ten-round limit, and the most recent twenty messages cover their entire lives; a four-step cleanup pipeline would be needless overhead.
 
-### Lead's Inbox Injection
+The lead gains three tools: `spawn_teammate` to recruit, `send_message` to communicate, and `check_inbox` to read mail.
 
-Lead checks inbox after each main loop iteration. Teammate messages are injected into history so the LLM can see and react to them:
+---
+
+## The Lead's Terminal: From Request-Response to an Event Loop
+
+The first fourteen chapters all used the same main-program shape: `input()` waits for you, runs one turn, then waits again. That no longer works because teammate reports may arrive at any time, and they cannot depend on you pressing Enter at exactly that moment.
+
+The main program becomes an event loop. Two sources, your input and background activity, flow into one queue; whichever arrives is handled next:
 
 ```python
-# After main loop iteration
-inbox = BUS.read_inbox("lead")
-if inbox:
-    inbox_text = "\n".join(
-        f"From {m['from']}: {m['content'][:200]}" for m in inbox)
-    history.append({"role": "user",
-                    "content": f"[Inbox]\n{inbox_text}"})
+def inbox_poller():
+    while True:
+        time.sleep(1)
+        if BUS.peek("lead") or has_pending_background():
+            events.put(("wake", None))       # Mail or completed background work: request a wake-up turn
+
+while True:
+    kind, payload = events.get()
+    if kind == "user":
+        history.append({"role": "user", "content": payload})
+    else:  # wake
+        inbox = BUS.read_inbox("lead")
+        ...
+        if not parts:
+            continue                          # A previous wake drained it; skip
+        history.append({"role": "user", "content": "\n".join(parts)})
+    agent_loop(history, context)
 ```
 
-Teaching code injects in the user input loop. Real Claude Code is more refined, Lead's `useInboxPoller` checks every 1 second, submitting messages as new turns without waiting for user input.
+Each of the two defenses addresses a real failure mode.
 
-### Permission Bubbling
+**Wake-ups must be idempotent.** The poller checks every second, so one teammate message may enqueue two wake events. The first drains the mailbox; the second must see that there is nothing left and skip. Without that `continue`, every message would come with a bonus empty API call.
 
-Teaching code omits permission bubbling. Real Claude Code's flow (`permissionSync.ts`, `useSwarmPermissionPoller.ts`):
+**The poller must not consult the roster.** The intuitive implementation is "check for mail only while a teammate is alive." But when a teammate leaves, it first sends its final summary and then unregisters itself, and those operations are not atomic. If the roster gates polling, a final message that becomes visible just after unregistration may never be collected. The poller therefore trusts only the mailbox: if mail exists, wake up, whether or not the sender is still listed.
 
-1. Teammate encounters an operation needing approval → sends `permission_request` to Lead's inbox
-2. Lead's `useInboxPoller` detects the request → routes to approval queue
-3. User approves → Lead sends `permission_response` back to teammate
-4. Teammate's `useSwarmPermissionPoller` (polls every 500ms) receives reply → continue or reject
-
-### Putting It Together
-
-```
-1. Lead: "Build the backend: split into three modules, spawn teammates"
-2. Lead → spawn_teammate("alice", "backend dev", "Create database schema")
-3. Lead → spawn_teammate("bob", "frontend dev", "Write API client")
-4. Alice thread starts → her own LLM call → bash "python manage.py migrate"
-5. Bob thread starts → his own LLM call → write_file("client.ts", ...)
-6. Alice done → BUS.send("alice", "lead", "Schema done: users, orders tables")
-7. Bob done → BUS.send("bob", "lead", "Client written with types")
-8. Lead next iteration → inbox injected into history → LLM sees both results
-```
-
-Two teammates work in parallel.
+> In the real Claude Code, teammates do not stop after ten rounds. They enter an idle loop after finishing and wait by the mailbox until a `shutdown_request` arrives. Mailbox writes use file locks. Teams also have their own hook events, `TeammateIdle` and `TaskCompleted`, where external systems can attach behavior.
 
 ---
 
 ## Changes from s14
 
 | Component | Before (s14) | After (s15) |
-|-----------|-------------|-------------|
-| Agent count | 1 | 1 Lead + N teammate threads |
-| Communication | None | MessageBus + .mailboxes/*.jsonl |
-| New classes | — | MessageBus, active_teammates dict |
-| New functions | — | spawn_teammate_thread, run_send_message, run_check_inbox |
-| Lead tools | 11 (s14) | + spawn_teammate, send_message, check_inbox (14) |
-| Teammate tools | — | bash, read_file, write_file, send_message (4) |
-| Permissions | Local decisions | Teaching code omits (real Claude Code has bubbling) |
+|------|-----------|-----------|
+| Number of agents | 1 | 1 lead + N teammate threads |
+| Communication | None | `MessageBus` file mailboxes (`.mailboxes/*.jsonl`) |
+| New tools | — | `spawn_teammate`, `send_message`, `check_inbox` (14 total) |
+| Main program | Request-response through `input()` | Event loop (user input + wake events) |
+| Teammate lifecycle | — | At most 10 rounds; sends summary and unregisters on completion |
 
 ---
 
@@ -158,97 +140,16 @@ cd learn-claude-code
 python s15_agent_teams/code.py
 ```
 
-Try these prompts:
-
-1. `Spawn alice as a backend developer. Ask her to create a file called schema.sql with a users table.`
-2. `Check your inbox for alice's result.`
-3. `Spawn bob as a tester. Ask him to check if schema.sql exists and list its contents.`
-
-What to observe: How does Lead spawn teammates? What do the `.mailboxes/` JSONL files look like? After teammates finish, is Lead's inbox injected into history?
+1. **Concurrency and automatic wake-up**: `Spawn two teammates: 'poet' (a poet) who writes a short poem to poem.md, and 'critic' (a critic) who reviews the first paragraph of README.md. Wait for both reports.` Watch `[teammate] poet spawned` and `[teammate] critic spawned` appear almost together while their `[bus]` messages interleave. When reports return, the terminal prints `[wake: N inbox ...]` and starts another turn without your input, ending with `[all teammates done]`.
+2. **See the communication itself**: give a teammate a slow job, such as `Spawn a teammate 'worker' who runs 'sleep 15' and then writes done.md`. While it works, tell the lead `Run ls -la .mailboxes/`. The mailbox files are sitting there; this collaboration system's entire infrastructure is only a few JSONL files.
+3. **Consuming reads**: after everything finishes, enter `Check your inbox`. You will probably get `(inbox empty)`. The messages were not lost; the wake-up mechanism fetched them first and injected them into the conversation. A read-and-delete mailbox has only one copy, and whoever collects it first owns it. That behavior is worth experiencing directly.
 
 ---
 
-## What's Next
+## Next
 
-Teammates can work and communicate. But if Lead wants Alice to shut down, killing the thread outright could leave half-written files. A graceful shutdown protocol is needed: Lead sends shutdown_request, teammate wraps up and exits.
+Teammates can work and communicate, but everything remains free-form. Messages have no structure, and if the lead wants a teammate to stop, it can only look on helplessly. Killing the thread directly is unsafe because it may be halfway through writing a file.
 
-s16 Team Protocols → Shutdown handshake and message conventions.
+s16 Team Protocols → Add types and IDs to messages; shutdown requires a handshake, and requests require acknowledgements.
 
-<details>
-<summary>Deep Dive into Claude Code Source</summary>
-
-> The following is a complete analysis based on Claude Code source code `spawnMultiAgent.ts`, `useInboxPoller.ts` (969 lines), `useSwarmPermissionPoller.ts` (330 lines), `teammateMailbox.ts`, `teamHelpers.ts`.
-
-### 1. No Central Message Bus, It's the Filesystem
-
-Teaching code uses a `MessageBus` class to send and receive messages. Real Claude Code is more direct, each agent writes directly to other agents' inbox files.
-
-Inbox path: `~/.claude/teams/{teamName}/inboxes/{agentName}.json`
-
-Writes use `proper-lockfile` for concurrent write safety (up to 10 retries). Each file is a JSON array; appending reads → appends → writes back.
-
-### 2. 15 Message Types
-
-Claude Code team communication has 15 structured message types (`teammateMailbox.ts`):
-
-| Type | Direction | Purpose |
-|------|-----------|---------|
-| `plain text` | Both ways | Normal inter-teammate communication |
-| `idle_notification` | Teammate→Lead | Teammate finished a turn, now idle |
-| `permission_request` | Teammate→Lead | Teammate needs operation approval |
-| `permission_response` | Lead→Teammate | Lead's approval result |
-| `plan_approval_request` | Teammate→Lead | Teammate submits plan for review |
-| `plan_approval_response` | Lead→Teammate | Lead's plan review |
-| `shutdown_request` | Lead→Teammate | Request graceful shutdown |
-| `shutdown_approved` | Teammate→Lead | Confirm shutdown |
-| `shutdown_rejected` | Teammate→Lead | Reject shutdown (with reason) |
-| `task_assignment` | Lead→Teammate | Assign a task |
-| `team_permission_update` | Lead→Teammate | Broadcast permission changes |
-| `mode_set_request` | Lead→Teammate | Change teammate's permission mode |
-| `sandbox_permission_*` | Both ways | Network permission request/reply |
-| `teammate_terminated` | System | Teammate removed notification |
-
-Text messages are wrapped in `<teammate-message>` XML tags for delivery to the model.
-
-### 3. Permission Bubbling: Bidirectional Polling
-
-Teaching code omits permission bubbling. Real Claude Code's flow (`permissionSync.ts`):
-
-1. **Teammate** encounters operation needing approval → sends `permission_request` to Lead's inbox
-2. **Lead's** `useInboxPoller` (polls every 1s) detects request → routes to `ToolUseConfirmQueue`
-3. Lead's UI shows approval dialog with teammate name and color
-4. User approves → Lead sends `permission_response` back to teammate's inbox
-5. **Teammate's** `useSwarmPermissionPoller` (polls every 500ms) receives reply → continue or reject
-
-### 4. Teammate Lifecycle
-
-Claude Code teammates are created by `spawnTeammate()` (`spawnMultiAgent.ts`):
-
-1. **Spawn**: Create tmux pane (or in-process), assign color, write team config
-2. **Work**: `useInboxPoller` checks inbox every 1s → submit as new turn when messages arrive
-3. **Idle**: Stop hook fires → send `idle_notification` to Lead
-4. **Shutdown**: Lead sends `shutdown_request` → teammate replies `shutdown_approved` → Lead cleans up
-
-### 5. Team Config
-
-Team registry at `~/.claude/teams/{teamName}/config.json` (`teamHelpers.ts`):
-
-```json
-{
-  "name": "my-team",
-  "leadAgentId": "lead@my-team",
-  "members": [{
-    "agentId": "researcher@my-team",
-    "name": "researcher",
-    "agentType": "general-purpose",
-    "color": "blue",
-    "isActive": true
-  }]
-}
-```
-
-Teammates cannot be nested (`AgentTool.tsx:273` explicitly forbids "teammates spawning other teammates").
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

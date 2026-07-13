@@ -132,4 +132,4 @@ python s17_autonomous_agents/code.py
 
 s18 Worktree Isolation → 给每个任务一间独立工位：git worktree，各改各的副本，改完再合。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

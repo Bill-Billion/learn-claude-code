@@ -162,4 +162,4 @@ python s02_tool_use/code.py
 
 s03 Permission → 在工具执行之前加一道门：这个操作安全吗？需要用户批准吗？
 
-<!-- translation-sync: zh@v2, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

@@ -151,4 +151,4 @@ Agent 能计划了。但如果任务本身太大，比如"重构整个认证模�
 
 s06 Subagent → 把大任务拆出去，每个子任务派一个独立的 Agent，用自己的干净上下文干活，只把结论带回来。
 
-<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
