@@ -10,42 +10,23 @@ s01 → ... → s11 → s12 → `s13` → [s14](../s14_cron_scheduler/) → s15 
 
 ---
 
-## 问题
+从 s01 到现在，`run_bash` 里一直藏着一行没发作过的代码：`timeout=120`。命令超过两分钟，直接杀掉。全量测试要跑十分钟？在前面任何一课里，它都到不了终点。
 
-你用过洗衣机吗？把衣服扔进去，按下启动，然后去干别的——做饭、回消息、看论文。30 分钟后洗衣机"滴滴滴"提醒你：好了。你不会站在洗衣机前面干等 30 分钟。
+就算把超时调大，问题只是换了个姿势：`subprocess.run` 是阻塞的，命令跑十分钟，Agent 就在那儿站十分钟。不能调模型，不能干别的活，终端一动不动，你也不知道它是在跑还是死了。
 
-Agent 的 bash 工具也一样。`pip install torch` 要 10 分钟，`npm run build` 要 3 分钟。这些命令一跑，Agent 就在等 bash 工具返回，没法利用这段时间处理别的任务。
-
-读文件是毫秒级，不等。`git status` 一秒内返回，不等。但 `npm install`是分钟级。Agent 等 10 分钟什么都不做，而 LLM 按 token 计费，空转就是浪费。
-
----
-
-## 解决方案
+你自己不会这么干活。衣服丢进洗衣机，你不会站在旁边盯着滚筒，你去做饭，听到"叮"再回来收。这一课给 Agent 装上同一套流程：慢命令派出去，转身干别的，好了再收结果。
 
 ![Background Tasks Overview](images/background-tasks-overview.svg)
 
-教学代码沿用 S12 的简化任务系统和 prompt 组装；为了聚焦后台任务，省略完整错误恢复、记忆和技能系统。唯一的变动：把工具调用扔到后台线程，完成后把结果作为通知注入到对话里。
-
-同步 vs 后台：
-
-| | 同步 (s12) | 后台 (s13) |
-|---|---|---|
-| 慢操作 | Agent 干等 | 后台线程执行 |
-| Agent 空闲 | 是 | 否，继续处理 |
-| 结果 | 立即返回 | 下轮注入通知 |
-| 判断标准 | — | `run_in_background` 参数（模型显式请求），启发式兜底 |
-
 ---
 
-## 工作原理
+## 谁进后台：模型说了算，启发式兜底
 
-### should_run_background: 显式请求优先，启发式兜底
-
-模型通过 bash 工具的 `run_in_background` 参数显式请求后台执行。如果模型没指定，教学版用关键词启发式兜底：
+第一个问题是判定。哪些命令该进后台？
 
 ```python
 def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
-    """Fallback heuristic: commands likely to take > 30s."""
+    """兜底启发式：这些关键词的命令大概率超过 30 秒。"""
     if tool_name != "bash":
         return False
     cmd = tool_input.get("command", "").lower()
@@ -55,127 +36,86 @@ def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
     return any(kw in cmd for kw in slow_keywords)
 
 def should_run_background(tool_name: str, tool_input: dict) -> bool:
-    """Model explicit request takes priority; fallback to heuristic."""
-    if tool_input.get("run_in_background"):
+    if tool_input.get("run_in_background"):   # 模型显式要求，直接进后台
         return True
-    return is_slow_operation(tool_name, tool_input)
+    return is_slow_operation(tool_name, tool_input)   # 没表态，看启发式
 ```
 
-Claude Code 的 bash 工具 schema 里有 `run_in_background: boolean` 参数（`BashTool.tsx:241`）。模型自己决定哪些命令丢后台，不靠关键词猜。教学版保留启发式作为兜底，但主路径是模型显式请求。
+判断哪条命令慢，模型比关键词表准得多，所以 `bash` 工具的参数里新增了 `run_in_background`，模型的显式请求优先。启发式只是兜底：模型忘了传参数时，别让一条 `npm install` 把循环卡死。
 
-### start_background_task: 后台执行与生命周期
+诚实说一句这套兜底的毛病：关键词匹配必有误判，`echo running tests` 也含 "test"，照样会被丢进后台。而且注意代码的形状：显式 `True` 能压过启发式，显式 `False` 压不过。教学版给了模型单向的否决权，这是个简化，实验里你会亲眼撞见它。
 
-把工具调用包装成 worker 函数，扔到 daemon 线程里执行。每个后台任务有唯一 ID，状态存在 `background_tasks` 字典里：
+---
+
+## 派发：线程加一本登记簿
 
 ```python
-_bg_counter = 0
 background_tasks: dict[str, dict] = {}   # bg_id → {tool_use_id, command, status}
-background_results: dict[str, str] = {}   # bg_id → output
+background_results: dict[str, str] = {}  # bg_id → 输出
 background_lock = threading.Lock()
 
 def start_background_task(block) -> str:
-    """Run tool in a daemon thread. Returns background task ID."""
     global _bg_counter
     _bg_counter += 1
     bg_id = f"bg_{_bg_counter:04d}"
 
     def worker():
-        result = execute_tool(block)
+        result = execute_tool(block)          # 在子线程里真正执行
         with background_lock:
             background_tasks[bg_id]["status"] = "completed"
             background_results[bg_id] = result
 
     with background_lock:
-        background_tasks[bg_id] = {
-            "tool_use_id": block.id,
-            "command": block.input.get("command", ""),
-            "status": "running",
-        }
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
+        background_tasks[bg_id] = {"tool_use_id": block.id,
+                                   "command": ..., "status": "running"}
+    threading.Thread(target=worker, daemon=True).start()
     return bg_id
 ```
 
-返回 `bg_id` 而不是只返回 `[Running in background...]`。`daemon=True` 确保 Agent 进程退出时线程跟着退出。教学版用内存字典追踪状态；真实 Claude Code 有 `LocalShellTaskState`，输出重定向到文件，支持停止任务、读取后续输出等完整生命周期。
+那把 `background_lock` 不是摆设。工作线程在写 `status`，主线程可能同时在遍历、弹出这两个字典，不加锁就是数据竞争：轻则丢一条通知，重则字典结构损坏。规矩很简单，碰这两个字典必须持锁，两个线程都一样。
 
-### collect_background_results: 通知收集
+`daemon=True` 是另一个要知道的边界：主进程退出时，后台线程直接陪葬，没跑完的结果就丢了。教学版接受这一点，生产系统会把后台任务落到独立进程和磁盘上。
 
-后台任务完成后，收集结果并格式化为 `<task_notification>` 通知：
+---
 
-```python
-def collect_background_results() -> list[str]:
-    """Collect completed results as task_notification messages."""
-    with background_lock:
-        ready_ids = [bid for bid, task in background_tasks.items()
-                     if task["status"] == "completed"]
-    notifications = []
-    for bg_id in ready_ids:
-        with background_lock:
-            task = background_tasks.pop(bg_id)
-            output = background_results.pop(bg_id, "")
-        notifications.append(
-            f"<task_notification>\n"
-            f"  <task_id>{bg_id}</task_id>\n"
-            f"  <status>completed</status>\n"
-            f"  <command>{task['command']}</command>\n"
-            f"  <summary>{output[:200]}</summary>\n"
-            f"</task_notification>")
-    return notifications
-```
+## 占位凭条：配对规矩不许等
 
-通知不复用原始 `tool_use_id`。原始 tool call 已经用占位 `tool_result` 回复了，后台完成是独立事件，用 `task_notification` 格式注入。这符合 Messages API 的工具配对语义：一个 `tool_use` 只对应一个 `tool_result`。
+派发解决了"不阻塞"，马上撞上 s01 的老规矩：每个 `tool_use` 必须在下一条 user 消息里有对应的 `tool_result`。可真正的结果还在线程里跑着，本轮拿什么回给 API？
 
-### 循环中的集成
-
-agent_loop 里，工具执行分两条路，通知和结果合并为一条 user 消息：
+回一张取件凭条：
 
 ```python
-results = []
-for block in response.content:
-    if block.type != "tool_use":
-        continue
-    if should_run_background(block.name, block.input):
-        bg_id = start_background_task(block)
-        results.append({"type": "tool_result",
-            "tool_use_id": block.id,
-            "content": f"[Background task {bg_id} started] "
-                       f"Result will be available when complete."})
-    else:
-        output = execute_tool(block)
-        results.append({"type": "tool_result",
-            "tool_use_id": block.id, "content": output})
-
-# 通知和工具结果合入同一条 user 消息
-user_content = []
-bg_notifications = collect_background_results()
-if bg_notifications:
-    for notif in bg_notifications:
-        user_content.append({"type": "text", "text": notif})
-user_content.extend(results)
-messages.append({"role": "user", "content": user_content})
+if should_run_background(block.name, block.input):
+    bg_id = start_background_task(block)
+    results.append({"type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": f"[Background task {bg_id} started] "
+                               f"Command: ... Result will be available when complete."})
 ```
 
-慢操作先回一个带 `bg_id` 的占位 tool_result，LLM 知道这个命令还在跑，可以先做别的事。后台完成后，通知作为独立 text block 和当前轮的 tool_result 一起组成 user 消息。
+配对规矩当轮满足，模型也拿到了凭条号。它看到"结果稍后可取"，就知道现在该去干别的，而不是原地等待。
 
-教学版在 agent loop 继续运行时轮询后台结果。真实 Claude Code 通过通知队列（`messageQueueManager.ts`）把后台完成事件送入后续 turn，不需要等工具循环。
+---
 
-### 合起来跑
+## 收结果：通知走文本通道，不冒充工具结果
 
+后台跑完了，结果怎么回到对话里？最容易犯的错，是拿着当初那个 `tool_use_id` 再造一条 `tool_result` 塞回去。不行：那个 id 在凭条那轮已经配对完毕，API 对每个 id 只认一次配对，复用直接报错。
+
+所以通知走另一条通道，s01 讲过的那条：`user` 消息是"外部世界的声音"。后台结果就是世界发生的新鲜事，用普通文本块注入，格式是结构化的 XML，模型好认：
+
+```python
+notifications.append(
+    f"<task_notification>\n"
+    f"  <task_id>{bg_id}</task_id>\n"
+    f"  <status>completed</status>\n"
+    f"  <command>{task['command']}</command>\n"
+    f"  <summary>{summary}</summary>\n"
+    f"</task_notification>")
 ```
-Turn 1:
-  LLM → bash "npm install" (run_in_background=true)
-  → start_background_task → bg_0001
-  → tool_result: "[Background task bg_0001 started]..."
-  → LLM: "OK, I'll check later. Let me also read the config."
 
-Turn 2:
-  LLM → read_file "package.json" (fast, sync)
-  → tool_result: file content
-  → collect: bg_0001 done! inject <task_notification>
-  → LLM sees: config file + install notification in one message
-```
+注入时机在每个工具轮之后：本轮的 `tool_result` 和攒到的后台通知装进同一条 user 消息发回去。这也带来一个教学版的边界：**通知只在工具轮后注入。** 如果模型已经收工、你也不再发需要动工具的请求，做完的后台结果就一直在登记簿里等着。真实系统用常驻的消息队列解决这件事，每轮必消费。
 
-Agent 没干等，npm install 跑后台的时候，它去读了配置文件。
+> 真实 Claude Code：没有线程。它跑在 Node.js 单线程事件循环上，"后台"就是不 await，命令输出重定向到文件由进程独立跑；后台任务有七种类型（本地命令、本地/远程 Agent、工作流、监控等）各有生命周期；后台 bash 还配了停滞看门狗，输出 45 秒无增长就检查是不是卡在 `(y/n)` 这类交互式提问上。
 
 ---
 
@@ -183,13 +123,11 @@ Agent 没干等，npm install 跑后台的时候，它去读了配置文件。
 
 | 组件 | 之前 (s12) | 之后 (s13) |
 |------|-----------|-----------|
-| 执行模型 | 全部同步 | 慢操作后台线程 + 通知注入 |
-| bash schema | `command` | `command` + `run_in_background` |
-| 新函数 | — | `should_run_background`, `is_slow_operation`, `start_background_task`, `collect_background_results` |
-| 新类型 | — | `background_tasks: dict`, `background_results: dict`, `background_lock: Lock` |
-| 通知格式 | — | `<task_notification>`（不复用 tool_use_id） |
-| 循环行为 | 工具串行执行 | 慢操作异步，快操作同步，通知每轮收集 |
-| 工具 | 8 (s12) | 8（不变，执行策略变了） |
+| 慢命令 | 阻塞主循环（且 120s 超时杀掉） | 后台线程执行，主循环继续 |
+| bash 参数 | `command` | +`run_in_background`（模型显式请求） |
+| 新函数 | — | `is_slow_operation`, `should_run_background`, `start_background_task`, `collect_background_results` |
+| 结果回传 | 同轮 `tool_result` | 凭条占位 + `<task_notification>` 文本注入 |
+| 线程安全 | 不涉及 | `threading.Lock` 保护登记簿 |
 
 ---
 
@@ -200,62 +138,16 @@ cd learn-claude-code
 python s13_background_tasks/code.py
 ```
 
-试试这些 prompt：
-
-1. `Run pip list in the background and find all Python files in this directory`
-2. `Run npm install (use run_in_background) and while waiting, read package.json`
-3. `Create a task to setup the project, then run pip list in the background`
-
-观察重点：慢操作有没有被送到后台？`bg_id` 是否返回？后台通知有没有以 `<task_notification>` 格式注入？
+1. **完整时间线一次看完**：`Run this command: echo running tests`。"test" 关键词触发启发式，一条瞬时命令也被丢进后台。因为它完成得足够快，同一轮里你能看到全套输出：`[background] dispatched`、`[background done]`、`[inject] 1 background notification(s)`。顺便，这就是关键词误判的现场；
+2. **真正的并行**：`In the background, run 'sleep 15 && echo finished'. While waiting, write a short poem about waiting to wait.md`。sleep 不在关键词表里，模型会自己传 `run_in_background`。观察派发之后 Agent 立刻去写诗，没有卡住；
+3. **通知的时机**：接着实验 2，等十几秒后输入 `Read wait.md`。这个请求带工具轮，`<task_notification>` 会搭这一轮的车进入对话，模型的回答里会提到后台命令完成了。如果你只发一句不需要工具的闲聊，通知就还在登记簿里等，亲眼验证"只在工具轮后注入"这条边界。
 
 ---
 
 ## 接下来
 
-Agent 不再因为长命令卡住了。但如果想定时做某件事呢？比如"每天早上 9 点跑测试"、"每 5 分钟检查一次服务器状态"。
+Agent 不再被长命令卡住了。但所有工作仍然由"你说一句"启动。想让它每天早上九点跑一遍测试、每五分钟看一眼服务状态呢？总不能雇个人定时来敲回车。
 
 s14 Cron Scheduler → 给 Agent 装一个闹钟。
 
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-> 以下基于 Claude Code 源码 `query.ts`（211, 1054-1060, 1411-1482 行）、`services/toolUseSummary/toolUseSummaryGenerator.ts`（L15 prompt 文本）、`LocalShellTask.tsx`（L24-25 常量, L59-98 看门狗逻辑）、`messageQueueManager.ts`（通知队列）、`utils/task/framework.ts`（L267 `enqueueTaskNotification`）的完整分析。
-
-### 一、pendingToolUseSummary：Haiku 后台生成
-
-Claude Code 在每批工具执行完后，启动一个 Haiku side-query 生成工具使用摘要。发起代码在 `query.ts:1411-1482`，prompt 文本定义在 `services/toolUseSummary/toolUseSummaryGenerator.ts:15`（变量名 `TOOL_USE_SUMMARY_SYSTEM_PROMPT`）。提示是 "Write a short summary label... think git-commit-subject, not sentence"，过去时态，约 30 字符。
-
-Haiku 摘要（~1s）在主模型流式生成（5-30s）期间完成。下一轮开始前，把摘要 yield 出去。SDK 消费这些摘要做移动端进度展示。
-
-### 二、线程模型：没有真正的线程
-
-Claude Code 运行在 Node.js/Bun 单线程事件循环中。"后台"只是 "不 await"。`ShellCommand.background(taskId)` 把 stdout/stderr 重定向到文件，让进程独立运行。
-
-### 三、七种后台任务类型
-
-Claude Code 定义了 7 种后台任务（`Task.ts:7-13`）：`local_bash`、`local_agent`、`remote_agent`、`in_process_teammate`、`local_workflow`、`monitor_mcp`、`dream`。每种有自己的注册、生命周期和通知机制。
-
-### 四、通知注入：命令队列
-
-后台任务完成后通过 `enqueueTaskNotification`（`utils/task/framework.ts:267`）或 `enqueuePendingNotification`（`messageQueueManager.ts`）入队到共享命令队列。通知格式是结构化的 XML：
-
-```xml
-<task_notification>
-  <status>completed</status>
-  <summary>Background command "npm test" completed (exit code 0)</summary>
-</task_notification>
-```
-
-优先级分 `next` > `later`（`messageQueueManager.ts`）。后台任务默认 `later`（不阻塞用户输入）。消费点在 `query.ts:1566-1593`。
-
-### 五、停滞看门狗
-
-后台 bash 任务有一个看门狗（`LocalShellTask.tsx` L24-25 常量, L59-98 逻辑），定期检查输出是否停滞，45 秒无增长后检测交互式提示（`(y/n)` 等），防止后台任务卡在无人响应的交互式对话框。
-
-### 六、并发限制
-
-前台工具调用：`CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`（默认 10 个并发安全工具）。后台 bash 任务：没有硬性限制，它们是独立的子进程。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
