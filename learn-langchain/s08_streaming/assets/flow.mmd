@@ -1,0 +1,8 @@
+flowchart LR
+  A[user message] --> B[agent.stream]
+  B --> C[model update]
+  C --> D{contains tool_calls?}
+  D -- yes in this example --> E[tools update]
+  E --> F[next model update]
+  D -- no --> G[final text]
+  F --> G

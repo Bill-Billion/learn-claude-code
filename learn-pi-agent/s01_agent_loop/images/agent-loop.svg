@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="300" viewBox="0 0 920 300" role="img" aria-labelledby="title desc">
+  <title id="title">s01 agent loop</title>
+  <desc id="desc">A minimal Pi agent core flow from user input to messages, provider, assistant message, and stop reason.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4b5563"/>
+    </marker>
+    <style>
+      .box { fill: #f8fafc; stroke: #334155; stroke-width: 2; rx: 10; }
+      .core { fill: #eef2ff; stroke: #3730a3; stroke-width: 2; rx: 10; }
+      .provider { fill: #ecfeff; stroke: #0e7490; stroke-width: 2; rx: 10; }
+      .text { fill: #111827; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 18px; font-weight: 650; }
+      .small { fill: #475569; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; }
+      .line { stroke: #4b5563; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect x="24" y="92" width="150" height="86" class="box"/>
+  <text x="99" y="128" text-anchor="middle" class="text">User Input</text>
+  <text x="99" y="154" text-anchor="middle" class="small">createUserMessage()</text>
+
+  <rect x="232" y="76" width="176" height="118" class="core"/>
+  <text x="320" y="118" text-anchor="middle" class="text">Agent State</text>
+  <text x="320" y="145" text-anchor="middle" class="small">messages.push(user)</text>
+  <text x="320" y="166" text-anchor="middle" class="small">messages.push(assistant)</text>
+
+  <rect x="466" y="92" width="168" height="86" class="provider"/>
+  <text x="550" y="128" text-anchor="middle" class="text">Provider</text>
+  <text x="550" y="154" text-anchor="middle" class="small">complete(messages)</text>
+
+  <rect x="692" y="76" width="196" height="118" class="box"/>
+  <text x="790" y="116" text-anchor="middle" class="text">Assistant Message</text>
+  <text x="790" y="145" text-anchor="middle" class="small">content</text>
+  <text x="790" y="166" text-anchor="middle" class="small">stopReason</text>
+
+  <path d="M 174 135 L 224 135" class="line"/>
+  <path d="M 408 135 L 458 135" class="line"/>
+  <path d="M 634 135 L 684 135" class="line"/>
+  <path d="M 790 194 C 790 252 318 252 318 202" class="line"/>
+
+  <text x="554" y="244" text-anchor="middle" class="small">assistant returns to state; toolUse is saved but not executed in s01</text>
+</svg>

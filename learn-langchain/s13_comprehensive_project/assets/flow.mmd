@@ -1,0 +1,9 @@
+flowchart LR
+  A["user + thread_id"] --> B["agent state and loop"]
+  H["InMemorySaver checkpointer"] <--> B
+  T[TodoListMiddleware] -->|tool + todos state + prompt hooks| B
+  B --> C{"model chooses search?"}
+  C -- yes --> D[search_course_notes tool]
+  D --> E[retriever]
+  E --> B
+  C -- no --> G["final answer"]

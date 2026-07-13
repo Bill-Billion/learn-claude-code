@@ -1,0 +1,6 @@
+flowchart LR
+  A[variables] --> B[ChatPromptTemplate]
+  B --> C[ChatPromptValue]
+  C --> D[to_messages]
+  D --> E[model.invoke]
+

@@ -1,0 +1,8 @@
+flowchart LR
+  A[user message] --> B[create_agent]
+  B --> C{tool call?}
+  C -- yes --> D[count_words]
+  D --> E[ToolMessage]
+  E --> B
+  C -- no --> F[final AIMessage]
+

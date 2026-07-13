@@ -1,0 +1,7 @@
+flowchart LR
+  A[model name] --> B[init_chat_model]
+  B --> C[model]
+  D[query string] --> E[model.invoke]
+  C --> E
+  E --> F[AIMessage]
+  F --> G[content text]

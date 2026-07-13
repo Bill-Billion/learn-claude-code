@@ -1,0 +1,14 @@
+flowchart LR
+  subgraph IDX["indexing"]
+    A["markdown files"] --> B[Document]
+    B --> C[RecursiveCharacterTextSplitter]
+    C --> D[Embeddings]
+    D --> E[InMemoryVectorStore]
+  end
+  subgraph QRY["query"]
+    F[question] --> G["同一个 Embeddings"]
+    G --> H["query vector"]
+  end
+  E --> I["top-k similarity，无阈值"]
+  H --> I
+  I --> J["Retriever 返回 Documents"]

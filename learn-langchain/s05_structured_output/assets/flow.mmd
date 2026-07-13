@@ -1,0 +1,7 @@
+flowchart LR
+  A[chat model] --> C[with_structured_output]
+  B[Pydantic schema] --> C
+  C --> D[structured Runnable]
+  E[text] --> F[invoke]
+  D --> F
+  F --> G[BookNote object]

@@ -1,0 +1,10 @@
+flowchart LR
+  A[create_agent] --> B[TodoListMiddleware]
+  B --> C["注入 write_todos 工具"]
+  B --> D["扩展 todos state"]
+  B --> E["模型调用前追加 system prompt"]
+  B --> F["after_model 约束并行更新"]
+  C --> G["agent lifecycle"]
+  D --> G
+  E --> G
+  F --> G

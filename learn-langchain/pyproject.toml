@@ -1,0 +1,70 @@
+[project]
+name = "learn-langchain"
+version = "0.1.0"
+description = "A beginner-friendly, source-aligned LangChain course in Chinese."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "langchain>=1.3,<2.0",
+  "langchain-core>=1.4,<2.0",
+  "langchain-openai>=1.3,<2.0",
+  "langchain-text-splitters>=1.1,<2.0",
+  "langgraph>=1.2,<2.0",
+  "numpy>=1.26",
+  "pydantic>=2.8",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.10",
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = [
+  "s01_first_model",
+  "s02_messages",
+  "s03_system_prompt",
+  "s04_prompt_template",
+  "s05_structured_output",
+  "s06_first_tool",
+  "s07_first_agent",
+  "s08_streaming",
+  "s09_short_term_memory",
+  "s10_todo_middleware",
+  "s11_retrieval_basics",
+  "s12_minimal_rag",
+  "s13_comprehensive_project",
+  "tests",
+]
+markers = [
+  "integration: tests that call a real model provider",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [
+  ".venv-homebrew312-broken",
+  "**/starter.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = true
+explicit_package_bases = true
+exclude = [
+  '^\.venv(?:/|$)',
+  '^\.venv-[^/]*/',
+  '(^|/)starter\.py$',
+  '(^|/)tests/',
+]

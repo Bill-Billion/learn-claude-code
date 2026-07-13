@@ -1,0 +1,8 @@
+flowchart LR
+  A[question] --> B[retriever]
+  B --> C[context snippets]
+  C --> D[ChatPromptTemplate]
+  A --> D
+  D --> E[model.invoke]
+  E --> F[answer]
+

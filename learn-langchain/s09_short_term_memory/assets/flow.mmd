@@ -1,0 +1,6 @@
+flowchart LR
+  A[first turn + thread_id] --> B[agent]
+  B --> C[shared InMemorySaver]
+  C --> D[saved graph state]
+  E[second turn + same thread_id] --> B
+  C -->|restore matching state| B

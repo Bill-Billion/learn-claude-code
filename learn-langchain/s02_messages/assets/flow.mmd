@@ -1,0 +1,6 @@
+flowchart LR
+  A[HumanMessage] --> C[messages list]
+  B[AIMessage] --> C
+  C --> D[model.invoke]
+  D --> E[next AIMessage]
+
