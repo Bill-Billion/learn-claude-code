@@ -10,125 +10,89 @@ s01 → ... → s16 → s17 → `s18` → [s19](../s19_mcp_plugin/) → s20
 
 ---
 
-## 问题
+s06 有句话当时听着像免责声明："对话上下文隔离了，文件系统没有隔离。"到 s17，它成了会真实爆炸的雷。
 
-s17 中，Alice 和 Bob 都在同一个目录下工作。Alice 的任务是"重构认证模块"，Bob 的任务是"重构 UI 登录页"。
+Alice 和 Bob 各自认领了任务，都在同一个目录里干活。Alice 的任务要改 `config.py`，Bob 的任务也要。后写的覆盖先写的；更阴的版本是两人各自读了旧文件、各自改完写回，合出来一个谁都没想要的杂交体。出了问题也没法回滚，`git diff` 里两个人的改动搅在一起，分不清哪行是谁的。
 
-Alice `write_file("config.py", ...)`。Bob 也 `write_file("config.py", ...)`。两个人改同一个文件，互相覆盖。而且无法干净地回滚，分不清哪些改动是谁的。
-
-s15-s17 解决了"谁干什么"（任务系统）和"怎么通信"（消息总线），但没解决"在哪干"。
-
----
-
-## 解决方案
+s15 到 s17 回答了"谁干什么"（任务板）和"怎么说话"（信箱），一直没回答"在哪干"。
 
 ![Worktree Overview](images/worktree-overview.svg)
 
-Git worktree 让你在同一仓库中创建多个独立的工作目录，每个有自己的分支。Alice 在 `.worktrees/auth-refactor/` 下工作，Bob 在 `.worktrees/ui-login/` 下工作，文件操作完全独立。
+---
 
-沿用 S17 的教学版 MessageBus、协议和自治认领机制。本章新增：
+## 加锁，为什么不是答案
 
-| 能力 | 作用 |
-|------|------|
-| create_worktree | 为任务创建独立目录 + 独立分支 |
-| bind_task_to_worktree | 把任务和工作目录绑定（不改状态） |
-| remove_worktree / keep_worktree | 完成后清理或保留 |
-| validate_worktree_name | 拒绝路径穿越和非法字符 |
+第一反应是加锁。锁整个仓库？并行退化成串行，s15 组队的意义清零。按文件加锁？先要回答"这个任务会碰哪些文件"，可任务开工前连模型自己都不知道答案；就算知道，两个任务交叉持锁就是死锁的标准配方。
+
+换个思路，这个问题 git 二十年前就解决了：人手一个工作副本，各改各的，最后合并。`git worktree` 是比 clone 轻得多的版本——同一个仓库，长出多个工作目录，各挂一条分支，共享同一份 `.git` 历史。
+
+一句话立住本课的设计：**隔离不靠锁，靠副本。**
 
 ---
 
-## 工作原理
-
-### 创建：任务-Worktree 绑定
+## 开工位：名字先过安检
 
 ```python
+VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+
 def create_worktree(name: str, task_id: str = "") -> str:
-    validate_worktree_name(name)       # 只允许 [A-Za-z0-9._-]{1,64}
-    path = WORKTREES_DIR / name
+    err = validate_worktree_name(name)      # 名字不合法，当场拒绝
+    if err:
+        return f"Error: {err}"
+    path = WORKTREES_DIR / name             # .worktrees/<name>
     ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
     if not ok:
         return f"Git error: {result}"
     if task_id:
         bind_task_to_worktree(task_id, name)
-    log_event("create", name, task_id)
-    return f"Worktree '{name}' created at {path}"
-
-def bind_task_to_worktree(task_id: str, worktree_name: str):
-    task = load_task(task_id)
-    task.worktree = worktree_name       # 只写 worktree 字段
-    save_task(task)                     # 状态保持 pending，等队友 claim
+    log_event("create", name, task_id)      # 审计日志：只记成功的事
 ```
 
-绑定规则：一个任务绑定一个 worktree。绑定不改任务状态，任务仍是 `pending`，队友自动认领时才推进到 `in_progress`。这样 Lead 可以提前创建任务和 worktree，队友 idle 时自然认领带 worktree 的任务。
+名字校验是老朋友第三次登场：s02 的 `safe_path` 拦文件路径，s07 的注册表拦技能名，这里的正则拦工位名。`../../etc` 这种名字一旦拼进路径，worktree 就开到工作区外面去了。凡是模型给的字符串要拼进路径，就必须先过安检，这条规矩到哪一课都不变。
 
-### 队友工具的 cwd 切换
+`log_event` 的位置也有讲究：写在 `run_git` 成功之后。反过来先记日志再执行，失败的操作会留下一条"成功"的审计记录，日志从证据变成谎言。
 
-教学版给每个队友维护一个 `wt_ctx` 字典，记录当前 worktree 路径。队友认领带 worktree 的任务时，`wt_ctx` 自动设置为 worktree 路径；队友的 `bash`、`read_file`、`write_file` 在 worktree 目录下执行：
+---
+
+## 绑定：工位是任务的属性，不是认领
 
 ```python
-# 队友线程内部
-wt_ctx = {"path": None}
-
-def _run_claim_task(task_id):
-    result = claim_task(task_id, owner=name)
-    if "Claimed" in result:
-        task = load_task(task_id)
-        if task.worktree:
-            wt_ctx["path"] = str(WORKTREES_DIR / task.worktree)
-    return result
-
-def _run_bash(command):
-    return run_bash(command, cwd=wt_ctx["path"])  # 在 worktree 下执行
+def bind_task_to_worktree(task_id: str, worktree_name: str):
+    task = load_task(task_id)
+    task.worktree = worktree_name    # 只写这一个字段
+    save_task(task)                  # 状态保持 pending
 ```
 
-这是教学简化。真实 Claude Code 的 EnterWorktree 用 `process.chdir()` 切换整个进程目录，AgentTool isolation 用 `cwdOverride` 包住子 agent 执行。
+注意它刻意不做的事：不改状态、不设 owner。绑定只回答"这个任务该在哪间工位干"，不回答"谁来干"。这样 s17 的自治机制原封不动：任务仍然挂在板上等人认领，谁抢到谁去那间工位。两个机制正交，各管各的字段。
 
-### 收尾：Keep 还是 Remove
+队友这边的变化只有一处：认领到绑定了工位的任务，它的 `bash`/`read_file`/`write_file` 全部切到工位目录里执行。Alice 在 `.worktrees/auth/` 里改 `config.py`，Bob 在 `.worktrees/ui/` 里改 `config.py`，改的是两个物理文件，谁也踩不着谁。
 
-任务完成后，两个选择：
+---
+
+## 收工位：先数一数，再动手删
+
+工位用完要拆，拆之前必须回答一个问题：里面还有没有没带走的东西？
 
 ```python
 def remove_worktree(name: str, discard_changes: bool = False) -> str:
-    # 安全检查：有改动时默认拒绝
+    ...
     if not discard_changes:
-        files, commits = _count_worktree_changes(path)
+        files, commits = _count_worktree_changes(path)   # 数未提交文件、未推送提交
         if files > 0 or commits > 0:
-            return "有未提交改动，使用 discard_changes=true 强制删除，或 keep_worktree 保留"
-    ok, _ = run_git(["worktree", "remove", str(path), "--force"])
-    if not ok:
-        return "删除失败"
+            return (f"Worktree '{name}' has {files} uncommitted file(s) "
+                    f"and {commits} unpushed commit(s). "
+                    "Use discard_changes=true to force removal, "
+                    "or keep_worktree to preserve for review.")
+    ok1, _ = run_git(["worktree", "remove", str(path), "--force"])
     run_git(["branch", "-D", f"wt/{name}"])
     log_event("remove", name)
-
-def keep_worktree(name: str) -> str:
-    log_event("keep", name)
-    return f"Worktree '{name}' kept for review (branch: wt/{name})"
 ```
 
-Keep = 留着分支，等人工 review 后合并到主分支。Remove = 有改动时默认拒绝，需要 `discard_changes=true` 确认。不自动 complete task。任务完成由队友的 `complete_task` 显式触发。
+默认拒绝删除有变更的工位，这是 s08"先存盘再摘要"、s09"先拿到新清单再删旧文件"的同一根神经，第三次出现：**销毁之前，先确认没有孤儿数据。** 想象反面：队友刚提交完还没合并，Lead 随手一句"清理工位"，`branch -D` 下去，几小时的工作蒸发，日志里只有一行体面的 remove。
 
-### 事件流：可审计
+真想删有两条显式出路：`discard_changes=true` 表示"我知道我在丢什么"，`keep_worktree` 表示"留着分支，人来审"。危险动作可以做，但必须是说出口的决定，不能是默认行为。
 
-每次生命周期操作写入日志，方便排查：
-
-```python
-def log_event(event_type: str, worktree_name: str, task_id: str = ""):
-    event = {"type": event_type, "worktree": worktree_name,
-             "task_id": task_id, "ts": time.time()}
-    # append to .worktrees/events.jsonl
-```
-
-事件类型：`create`（创建）、`remove`（删除）、`keep`（保留）。教学版只记录事件用于人工排查；完整恢复还需要 index 或 `git worktree list` 扫描。
-
-### run_git：返回成功/失败
-
-```python
-def run_git(args: list[str]) -> tuple[bool, str]:
-    r = subprocess.run(["git"] + args, cwd=WORKDIR, ...)
-    return r.returncode == 0, output
-```
-
-`create_worktree` 和 `remove_worktree` 只在 git 命令成功后才写事件日志，保证日志反映真实状态。
+> 真实 Claude Code：worktree 有两条路径——`EnterWorktree` 把当前会话整个切进去（进程级 chdir），AgentTool 的 `isolation: "worktree"` 只包住某个子 Agent、不动全局目录，无改动的临时工位自动清理。它没有任务-工位绑定字段，任务系统和 worktree 是两套独立系统，靠模型理解上下文来关联；教学版的 `worktree` 字段是刻意的教学简化。
 
 ---
 
@@ -136,14 +100,11 @@ def run_git(args: list[str]) -> tuple[bool, str]:
 
 | 组件 | 之前 (s17) | 之后 (s18) |
 |------|-----------|-----------|
-| 工作目录 | 所有 Agent 共享 WORKDIR | 每个任务可绑定独立 git worktree |
-| Task 数据 | id/subject/status/owner/blockedBy | + worktree 字段 |
-| 队友工具 cwd | 始终 WORKDIR | 认领带 worktree 的任务时自动切换 |
-| 新函数 | — | create_worktree, bind_task_to_worktree, remove_worktree, keep_worktree, validate_worktree_name |
-| worktree 安全 | 无 | name 校验 + 有改动时拒绝删除 |
-| 事件日志 | 无 | events.jsonl 生命周期审计 |
-| Lead 工具 | 14 (s17) | + create_worktree, remove_worktree, keep_worktree (17) |
-| 队友工具 | 8 (s17) | 8（bash/read/write 在 worktree cwd 执行） |
+| 工作目录 | 全员共用 WORKDIR | 每任务可绑定独立 worktree |
+| Task 字段 | id/subject/.../blockedBy | +`worktree` |
+| 新函数 | — | `create_worktree`, `bind_task_to_worktree`, `remove_worktree`, `keep_worktree`, `validate_worktree_name` |
+| 审计 | 无 | `.worktrees/events.jsonl` 生命周期日志 |
+| 队友执行 | 都在主目录 | 绑定任务时 cwd 切到工位 |
 
 ---
 
@@ -154,55 +115,16 @@ cd learn-claude-code
 python s18_worktree_isolation/code.py
 ```
 
-试试这个 prompt：
-
-`Create two tasks, then create worktrees for each (bind with task_id). Spawn alice and bob. Watch them auto-claim and work in isolated directories.`
-
-观察重点：两个 worktree 的 `git status` 输出是否显示不同的分支？队友认领带 worktree 的任务后，bash 命令是否在 worktree 目录下执行？`remove_worktree` 对有改动的 worktree 是否拒绝？`.tasks/` 中的任务在绑定后状态是否仍为 `pending`？
+1. **隔离的正面现场**：`Create two tasks: 'write auth notes to notes.md' and 'write UI notes to notes.md'. Create worktrees wt-auth and wt-ui, bind one task to each. Spawn alice and bob to work autonomously.`。两个任务写的是同名文件 `notes.md`，最后却各自完好：`cat .worktrees/wt-auth/notes.md` 和 `cat .worktrees/wt-ui/notes.md`，内容不同，互不覆盖。这就是"靠副本隔离"的直接证据；
+2. **安检**：`Create a worktree named ../../escape`。名字过不了正则，一句报错弹回来，工作区外面干干净净；
+3. **拆工位的闸门**：等实验 1 的队友干完，`Remove worktree wt-auth`。它有未合并的提交，删除被拒，报错里写清了有几个文件几个提交、以及两条显式出路。这一拒绝就是本课最值钱的一行代码。
 
 ---
 
 ## 接下来
 
-Agent 团队能在隔离的工作空间中自组织了。但 Agent 的能力受限于我们给它写的工具：bash、read、write、task...
+团队能并行、能隔离、能收工了。回头看 Agent 的工具箱：bash、文件、任务、团队，全是我们亲手写的。可用户手里还有自己的系统：公司内部的 Jira、自建的部署平台，总不能每接一家就往 `code.py` 里焊一套工具。
 
-如果用户已经有了自己的工具怎么办？比如一个公司内部的 Jira API、一个自建的部署系统？
+s19 MCP Plugin → 插件协议。外部工具按标准接入，Agent 不用知道它们是谁写的。
 
-s19 MCP Plugin → 给 Agent 装一个插件系统。外部工具通过标准协议接入，Agent 不需要知道它们是谁写的。
-
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-Claude Code 的 worktree 系统有两条路径：**EnterWorktree**（当前会话切入）和 **AgentTool isolation**（子 agent 隔离）。
-
-### EnterWorktree：当前会话切换
-
-`EnterWorktreeTool.ts:92-97` 创建 worktree 后立即 `process.chdir(worktreePath)`、`setCwd()`、`setOriginalCwd()`、`saveWorktreeState()`。当前会话的工作目录直接切换到 worktree，不是 prompt 提醒，而是进程级目录变更。
-
-`ExitWorktreeTool.ts:261-320` 的 keep/remove 都会 `restoreSessionToOriginalCwd()` 恢复原目录。Remove 时检查未提交改动（`ExitWorktreeTool.ts:190-220`），没有 `discard_changes: true` 就拒绝删除。
-
-### AgentTool isolation：子 agent 隔离
-
-`AgentTool.tsx:590-641` 在 `isolation: "worktree"` 时调用 `createAgentWorktree()` 创建 worktree，用 `cwdOverridePath` 包住子 agent 执行。子 agent 的所有操作自动在 worktree 目录下进行。`AgentTool/prompt.ts:272` 告诉模型：这是临时 worktree，无改动自动清理，有改动返回路径和分支。
-
-`worktree.ts:902-951` 的 `createAgentWorktree()` 不修改全局 session cwd，只给子 agent 用。`worktree.ts:961-1020` 的 `removeAgentWorktree()` 从主 repo root 删除。
-
-### name 校验
-
-`worktree.ts:76-84` 校验 slug：拒绝 `.`/`..`，允许 `[a-zA-Z0-9._-]`。`worktree.ts:48` 定义 `VALID_WORKTREE_SLUG_SEGMENT`。教学版的 `validate_worktree_name` 用同样的规则。
-
-### 路径和分支命名
-
-真实路径是 `.claude/worktrees/`，分支名 `worktree-{slug}`（`worktree.ts:204-227`，斜杠用 `+` 替代）。教学版用 `.worktrees/` 和 `wt/{name}` 简化。
-
-创建时用 `git worktree add -B`（`worktree.ts:326-328`），优先基于 `origin/<defaultBranch>` 而非当前 HEAD。
-
-### 状态管理
-
-Claude Code 没有 task-worktree 绑定。Worktree 状态通过 `PersistedWorktreeSession`（`worktree.ts:756-768`）管理，字段包括 `originalCwd`、`worktreePath`、`worktreeName`、`worktreeBranch`、`originalBranch`、`originalHeadCommit`、`sessionId` 等——没有 taskId。`saveWorktreeState()`（`sessionStorage.ts:2883-2920`）以 `type: 'worktree-state'` 写入 session transcript。
-
-教学版用 task 的 `worktree` 字段做绑定，是教学简化。Claude Code 把 worktree 和 task 作为两个独立系统，通过 Agent 理解上下文来关联。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v2, en@v0, ja@v0 -->
