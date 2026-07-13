@@ -1,0 +1,37 @@
+name: LangChain Course
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: learn-langchain
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.12"
+          enable-cache: true
+          cache-dependency-glob: learn-langchain/uv.lock
+      - name: Sync locked environment
+        run: uv sync --locked --extra dev
+      - name: Validate lesson structure
+        run: uv run python scripts/check_lessons.py
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy shared scripts tests s*/code.py s*/starter.py
+      - name: Test
+        run: uv run pytest -q

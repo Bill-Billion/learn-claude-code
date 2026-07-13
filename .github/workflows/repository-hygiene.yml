@@ -1,0 +1,143 @@
+name: Repository Hygiene
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  public-tree:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Enforce publish tree and size budget
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import PurePosixPath
+          import re
+          import subprocess
+
+          max_total = 4_718_592
+          max_file = 1_048_576
+          paths = subprocess.check_output(["git", "ls-files", "-z"]).decode().split("\0")
+          paths = [path for path in paths if path]
+
+          banned_parts = {
+              ".agents",
+              ".claude",
+              ".codex",
+              ".mypy_cache",
+              ".next",
+              ".pytest_cache",
+              ".references",
+              ".ruff_cache",
+              ".serena",
+              ".superpowers",
+              ".mailboxes",
+              ".memory",
+              ".runtime",
+              ".task_outputs",
+              ".tasks",
+              ".team",
+              ".teams",
+              ".transcripts",
+              ".venv",
+              ".worktrees",
+              "__pycache__",
+              "node_modules",
+          }
+          banned_names = {
+              ".DS_Store",
+              "AGENTS.md",
+              "CLAUDE.md",
+              ".scheduled_tasks.json",
+              "cf-build-log.json",
+              "deep-research-report.md",
+              "设计规范.md",
+          }
+          banned_prefixes = (
+              "docs/superpowers/",
+              "learn-pi-agent/reference/pi/",
+              "learn-pi-agent/reference/claw0/",
+              "learn-claude-code/web/src/data/generated/",
+              "learn-claude-code/web/public/course-assets/",
+          )
+
+          violations = []
+          total = 0
+          largest = (0, "")
+          for path in paths:
+              parts = PurePosixPath(path).parts
+              name = parts[-1]
+              size = os.lstat(path).st_size
+              total += size
+              largest = max(largest, (size, path))
+
+              if any(part in banned_parts for part in parts):
+                  violations.append(f"banned directory: {path}")
+              if name in banned_names or name.endswith(".bak") or name.startswith("draft-"):
+                  violations.append(f"banned file: {path}")
+              if any(path.startswith(prefix) or f"/{prefix}" in path for prefix in banned_prefixes):
+                  violations.append(f"banned path: {path}")
+              if size > max_file:
+                  violations.append(f"file exceeds 1 MiB: {path} ({size} bytes)")
+
+              if path.endswith((".md", ".py", ".ts", ".tsx", ".json", ".toml", ".yml", ".yaml")):
+                  data = open(path, "rb").read()
+                  if b"/Users/" + b"yanghaoran" in data:
+                      violations.append(f"local absolute path: {path}")
+                  if b"learn-langchain-" + b"beginner" in data:
+                      violations.append(f"old repository name: {path}")
+
+                  if path.startswith("learn-pi-agent/") and path.endswith(".md"):
+                      text = data.decode("utf-8")
+                      if "reference/" + "pi" in text or "reference/" + "claw0" in text:
+                          violations.append(f"local Pi source reference: {path}")
+                      if "badlogic/" + "pi-mono" in text:
+                          violations.append(f"obsolete Pi upstream: {path}")
+
+                      pinned_url = re.compile(
+                          r"https://github\.com/(?:"
+                          r"earendil-works/pi/(?:blob|tree)/"
+                          r"2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210|"
+                          r"shareAI-lab/claw0/(?:blob|tree)/"
+                          r"0090e863bd90aaebc79d244223cc2acc7c284eaf"
+                          r")/[^\s)`]*"
+                      )
+                      in_fence = False
+                      for line_number, line in enumerate(text.splitlines(), 1):
+                          if line.lstrip().startswith("```"):
+                              in_fence = not in_fence
+                              continue
+                          for match in pinned_url.finditer(line):
+                              if in_fence or line[max(0, match.start() - 2):match.start()] != "](":
+                                  violations.append(
+                                      f"non-clickable pinned source link: {path}:{line_number}"
+                                  )
+
+              if path == "learn-pi-agent/package-lock.json":
+                  data = open(path, "rb").read()
+                  if b"registry." + b"npmmirror.com" in data:
+                      violations.append("noncanonical npm registry: " + path)
+
+          stage = subprocess.check_output(["git", "ls-files", "--stage", "-z"])
+          for record in stage.split(b"\0"):
+              if record.startswith(b"160000 "):
+                  violations.append("gitlink: " + record.decode(errors="replace"))
+
+          if total > max_total:
+              violations.append(f"tracked tree exceeds 4.5 MiB: {total} bytes")
+
+          print(f"Tracked files: {len(paths)}")
+          print(f"Tracked bytes: {total}")
+          print(f"Largest file: {largest[1]} ({largest[0]} bytes)")
+          if violations:
+              print("\n".join(f"ERROR: {item}" for item in violations))
+              raise SystemExit(1)
+          PY
