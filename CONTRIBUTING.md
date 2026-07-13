@@ -46,7 +46,7 @@ cd learn-langchain
 uv sync --locked --extra dev
 uv run python scripts/check_lessons.py
 uv run ruff check .
-uv run mypy shared scripts tests s*/code.py s*/starter.py
+uv run mypy .
 uv run pytest -q
 ```
 

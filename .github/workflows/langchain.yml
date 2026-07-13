@@ -32,6 +32,6 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Type check
-        run: uv run mypy shared scripts tests s*/code.py s*/starter.py
+        run: uv run mypy .
       - name: Test
         run: uv run pytest -q
