@@ -1,61 +1,99 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 280" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 370" font-family="system-ui, -apple-system, sans-serif">
   <defs>
-    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#1e3a5f"/><stop offset="100%" stop-color="#2563eb"/>
-    </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
     </marker>
   </defs>
 
-  <rect width="720" height="280" fill="#fafbfc" rx="8"/>
-  <rect x="0" y="0" width="720" height="38" fill="url(#header)" rx="8"/>
-  <rect x="0" y="30" width="720" height="8" fill="url(#header)"/>
-  <text x="360" y="25" fill="#fff" font-size="14" font-weight="700" text-anchor="middle">Permission Pipeline — 三道闸门</text>
+  <rect width="800" height="370" fill="#ffffff" rx="8"/>
 
-  <!-- Tool call enters -->
-  <rect x="40" y="62" width="120" height="36" rx="6" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="100" y="84" fill="#1e40af" font-size="12" font-weight="600" text-anchor="middle">工具调用进入</text>
+  <!-- Title -->
+  <text x="400" y="30" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Permission Pipeline</text>
+  <text x="400" y="48" fill="#888888" font-size="12" text-anchor="middle">Three-gate check before tool execution</text>
 
-  <line x1="160" y1="80" x2="210" y2="80" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ========== FLOW ROW (y center = 88) ========== -->
 
-  <!-- Gate 1: Deny list -->
-  <rect x="214" y="56" width="145" height="48" rx="6" fill="#fee2e2" stroke="#dc2626" stroke-width="2"/>
-  <text x="286" y="76" fill="#991b1b" font-size="11" font-weight="700" text-anchor="middle">闸门 1: 拒绝列表</text>
-  <text x="286" y="94" fill="#991b1b" font-size="9" text-anchor="middle">rm -rf /, sudo, shutdown</text>
+  <!-- Tool Call -->
+  <rect x="24" y="66" width="110" height="44" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="79" y="93" fill="#1a1a1a" font-size="13" font-weight="600" text-anchor="middle">Tool Call</text>
 
-  <line x1="359" y1="80" x2="409" y2="80" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="134" y1="88" x2="188" y2="88" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
 
-  <!-- Gate 2: Rule check -->
-  <rect x="413" y="56" width="145" height="48" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
-  <text x="485" y="76" fill="#92400e" font-size="11" font-weight="700" text-anchor="middle">闸门 2: 规则匹配</text>
-  <text x="485" y="94" fill="#92400e" font-size="9" text-anchor="middle">写工作区外？读敏感路径？</text>
-  <text x="485" y="116" fill="#166534" font-size="8" font-weight="600" text-anchor="middle">未命中 → allow</text>
+  <!-- Gate 1: Deny List -->
+  <rect x="194" y="62" width="160" height="52" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="274" y="82" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">Gate 1: Deny List</text>
+  <text x="274" y="100" fill="#888888" font-size="10" font-family="monospace" text-anchor="middle">rm -rf / sudo shutdown</text>
 
-  <line x1="558" y1="80" x2="608" y2="80" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
-  <text x="583" y="72" fill="#92400e" font-size="8" font-weight="600" text-anchor="middle">命中</text>
+  <line x1="354" y1="88" x2="403" y2="88" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <text x="381" y="80" fill="#22c55e" font-size="10" font-weight="600" text-anchor="middle">pass</text>
 
-  <!-- Gate 3: User approval -->
-  <rect x="612" y="56" width="90" height="48" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
-  <text x="657" y="76" fill="#92400e" font-size="11" font-weight="700" text-anchor="middle">闸门 3</text>
-  <text x="657" y="94" fill="#92400e" font-size="9" text-anchor="middle">用户审批</text>
-  <text x="657" y="116" fill="#64748b" font-size="8" font-weight="600" text-anchor="middle">允许 / 拒绝</text>
+  <!-- Gate 2: Rule Match -->
+  <rect x="409" y="62" width="180" height="52" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="499" y="82" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">Gate 2: Rule Match</text>
+  <text x="499" y="100" fill="#888888" font-size="10" text-anchor="middle">Write outside ws? Destructive?</text>
 
-  <!-- Results area -->
-  <rect x="40" y="130" width="662" height="130" rx="6" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
-  <text x="60" y="152" fill="#1e3a5f" font-size="12" font-weight="600">三种决策</text>
+  <line x1="589" y1="88" x2="638" y2="88" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <text x="611" y="80" fill="#22c55e" font-size="10" font-weight="600" text-anchor="middle">match</text>
 
-  <rect x="60" y="166" width="200" height="42" rx="4" fill="#fee2e2" stroke="#fca5a5" stroke-width="0.5"/>
-  <text x="160" y="184" fill="#991b1b" font-size="11" font-weight="600" text-anchor="middle">阻止 (deny)</text>
-  <text x="160" y="200" fill="#991b1b" font-size="9" text-anchor="middle">闸门 1 命中，或用户拒绝</text>
+  <!-- Gate 3: User Approval -->
+  <rect x="644" y="62" width="132" height="52" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="710" y="82" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">Gate 3</text>
+  <text x="710" y="100" fill="#888888" font-size="11" text-anchor="middle">User Approval</text>
 
-  <rect x="280" y="166" width="200" height="42" rx="4" fill="#fef3c7" stroke="#fbbf24" stroke-width="0.5"/>
-  <text x="380" y="184" fill="#92400e" font-size="11" font-weight="600" text-anchor="middle">询问 (ask)</text>
-  <text x="380" y="200" fill="#92400e" font-size="9" text-anchor="middle">闸门 2 命中，进入闸门 3</text>
+  <!-- ========== EXIT ARROWS + OUTCOME PILLS ========== -->
 
-  <rect x="500" y="166" width="182" height="42" rx="4" fill="#dcfce7" stroke="#86efac" stroke-width="0.5"/>
-  <text x="591" y="184" fill="#166534" font-size="11" font-weight="600" text-anchor="middle">允许 (allow)</text>
-  <text x="591" y="200" fill="#166534" font-size="9" text-anchor="middle">规则未命中，或用户允许</text>
+  <!-- Gate 1 "hit" → Deny -->
+  <line x1="274" y1="114" x2="274" y2="154" stroke="#888888" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+  <text x="290" y="140" fill="#888888" font-size="10" font-weight="600">hit</text>
+  <rect x="234" y="158" width="80" height="26" rx="13" fill="#ffffff" stroke="#888888" stroke-width="1.5"/>
+  <text x="274" y="175" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">Deny</text>
 
-  <text x="371" y="248" fill="#64748b" font-size="10" text-anchor="middle">规则优先：闸门 1 硬拒绝 → 闸门 2 规则匹配 → 命中则用户审批，未命中默认允许</text>
+  <!-- Gate 2 "no match" → Allow -->
+  <line x1="499" y1="114" x2="499" y2="154" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="523" y="140" fill="#22c55e" font-size="10" font-weight="600">no match</text>
+  <rect x="459" y="158" width="80" height="26" rx="13" fill="#ffffff" stroke="#888888" stroke-width="1.5"/>
+  <text x="499" y="175" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle">Allow</text>
+
+  <!-- Gate 3 "deny" → Deny -->
+  <line x1="678" y1="114" x2="678" y2="154" stroke="#888888" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+  <text x="670" y="140" fill="#888888" font-size="10" font-weight="600" text-anchor="end">deny</text>
+  <rect x="648" y="158" width="60" height="26" rx="13" fill="#ffffff" stroke="#888888" stroke-width="1.5"/>
+  <text x="678" y="175" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">Deny</text>
+
+  <!-- Gate 3 "allow" → Allow -->
+  <line x1="744" y1="114" x2="744" y2="154" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  <text x="752" y="140" fill="#22c55e" font-size="10" font-weight="600">allow</text>
+  <rect x="714" y="158" width="60" height="26" rx="13" fill="#ffffff" stroke="#888888" stroke-width="1.5"/>
+  <text x="744" y="175" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle">Allow</text>
+
+  <!-- ========== THREE DECISIONS SECTION ========== -->
+  <rect x="24" y="198" width="752" height="140" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="48" y="218" fill="#1a1a1a" font-size="14" font-weight="700">Three Decisions</text>
+
+  <!-- Deny -->
+  <rect x="48" y="228" width="220" height="44" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="158" y="248" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">Deny</text>
+  <text x="158" y="264" fill="#888888" font-size="10" text-anchor="middle">Gate 1 hit, or user denied</text>
+  <rect x="48" y="278" width="220" height="22" rx="4" fill="#2d2d2d"/>
+  <text x="58" y="293" fill="#22c55e" font-size="10" font-family="monospace">Blocked: on deny list</text>
+
+  <!-- Ask -->
+  <rect x="288" y="228" width="220" height="44" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="398" y="248" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">Ask</text>
+  <text x="398" y="264" fill="#888888" font-size="10" text-anchor="middle">Gate 2 matched, enter Gate 3</text>
+  <rect x="288" y="278" width="220" height="22" rx="4" fill="#2d2d2d"/>
+  <text x="298" y="293" fill="#22c55e" font-size="10" font-family="monospace">Allow? [y/N] _</text>
+
+  <!-- Allow -->
+  <rect x="528" y="228" width="228" height="44" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="642" y="248" fill="#22c55e" font-size="13" font-weight="700" text-anchor="middle">Allow</text>
+  <text x="642" y="264" fill="#888888" font-size="10" text-anchor="middle">No rule hit, or user approved</text>
+  <rect x="528" y="278" width="228" height="22" rx="4" fill="#2d2d2d"/>
+  <text x="538" y="293" fill="#22c55e" font-size="10" font-family="monospace">Executing tool...</text>
+
+  <!-- Summary -->
+  <text x="400" y="358" fill="#888888" font-size="11" text-anchor="middle">Priority: hard deny &#x2192; rule match &#x2192; if matched, ask user; if unmatched, allow</text>
 </svg>

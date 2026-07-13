@@ -340,7 +340,7 @@ MAILBOX_DIR.mkdir(exist_ok=True)
 class MessageBus:
     """File-based message bus. Each agent has a .jsonl inbox.
     Read is destructive: read_text + unlink (consumes messages).
-    Teaching version: no file locking; real CC uses proper-lockfile."""
+    Teaching version: no file locking; real Claude Code uses proper-lockfile."""
 
     def send(self, from_agent: str, to_agent: str, content: str,
              msg_type: str = "message", metadata: dict = None):
@@ -541,7 +541,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             messages.append({"role": "assistant", "content": response.content})
             if response.stop_reason != "tool_use":
                 # Idle: wait for inbox messages instead of exiting
-                # Real CC sends idle_notification to Lead here
+                # Real Claude Code sends idle_notification to Lead here
                 while not shutdown_requested:
                     time.sleep(1)
                     inbox = BUS.read_inbox(name)

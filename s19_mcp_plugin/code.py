@@ -714,7 +714,7 @@ def _mock_server_deploy():
     client.register(
         tool_defs=[
             {"name": "trigger",
-             "description": "Trigger a deployment. (destructive — requires approval in real CC)",
+             "description": "Trigger a deployment. (destructive — requires approval in real Claude Code)",
              "inputSchema": {"type": "object",
                              "properties": {"service": {"type": "string"}},
                              "required": ["service"]}},

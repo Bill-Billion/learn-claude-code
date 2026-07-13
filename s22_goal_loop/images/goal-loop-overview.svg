@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
+    </marker>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="540" rx="8" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="480" y="30" text-anchor="middle" fill="#1a1a1a" font-size="19" font-weight="700">Goal Loop — the host-owned turn-completion gate</text>
+  <text x="480" y="50" text-anchor="middle" fill="#888888" font-size="12">after every turn an evaluator judges trusted evidence and blocks the stop until the goal is met</text>
+
+  <!-- ===== Main loop container ===== -->
+  <rect x="20" y="66" width="920" height="156" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="40" y="86" fill="#1a1a1a" font-size="13" font-weight="700">Main loop — the turn boundary</text>
+
+  <!-- loop-back over the top: continuation -> messages[] -->
+  <path d="M 910 350 L 910 104 L 101 104 L 101 130" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
+  <text x="500" y="99" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">continuation -&gt; transcript[]  (next turn)</text>
+  <circle cx="101" cy="130" r="3" fill="#22c55e"/>
+
+  <!-- transcript[] -->
+  <rect x="40" y="130" width="122" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="101" y="152" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700" font-family="monospace">transcript[]</text>
+  <text x="101" y="169" text-anchor="middle" fill="#888888" font-size="9">messages + origins</text>
+  <line x1="162" y1="156" x2="180" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- turn (LLM) -->
+  <rect x="182" y="130" width="108" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="236" y="152" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">turn (LLM)</text>
+  <text x="236" y="169" text-anchor="middle" fill="#888888" font-size="9">may emit tool_use</text>
+  <line x1="290" y1="156" x2="308" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- no tool_use -->
+  <rect x="310" y="130" width="118" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="369" y="152" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">no tool_use</text>
+  <text x="369" y="169" text-anchor="middle" fill="#888888" font-size="9">(wants to stop)</text>
+  <line x1="428" y1="156" x2="446" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+
+  <!-- goal gate (emphasis: thicker border) -->
+  <rect x="448" y="124" width="170" height="64" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="2.4"/>
+  <text x="533" y="146" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">goal gate</text>
+  <text x="533" y="163" text-anchor="middle" fill="#888888" font-size="9.5" font-family="monospace">evaluate_after_turn()</text>
+  <text x="533" y="177" text-anchor="middle" fill="#888888" font-size="8.5">after every turn</text>
+
+  <!-- gate -> return (stop): gray -->
+  <line x1="618" y1="156" x2="664" y2="156" stroke="#888888" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <text x="641" y="148" text-anchor="middle" fill="#888888" font-size="8.5">completed</text>
+  <text x="641" y="178" text-anchor="middle" fill="#888888" font-size="8.5">/ blocked</text>
+
+  <!-- return -->
+  <rect x="666" y="130" width="120" height="52" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="726" y="152" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">return</text>
+  <text x="726" y="169" text-anchor="middle" fill="#888888" font-size="9">turn ends</text>
+
+  <!-- ===== gate consults: evaluator -> evidence ===== -->
+  <!-- gate -> evaluator (judge) -->
+  <line x1="500" y1="188" x2="500" y2="248" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="510" y="222" fill="#22c55e" font-size="9" font-weight="600">judge</text>
+
+  <rect x="416" y="250" width="168" height="50" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="500" y="272" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">evaluator</text>
+  <text x="500" y="289" text-anchor="middle" fill="#888888" font-size="9">separate small / fast model</text>
+
+  <!-- evaluator -> evidence (reads) -->
+  <line x1="500" y1="300" x2="500" y2="338" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="510" y="324" fill="#22c55e" font-size="9" font-weight="600">reads</text>
+
+  <!-- evidence trust boundary container -->
+  <rect x="40" y="340" width="606" height="156" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="60" y="361" fill="#1a1a1a" font-size="12" font-weight="700">evidence window</text>
+  <text x="188" y="361" fill="#888888" font-size="10" font-family="monospace">= transcript[start_index:]  ·  trust boundary</text>
+
+  <!-- trusted -->
+  <rect x="62" y="376" width="270" height="104" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="197" y="399" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">counts as evidence</text>
+  <text x="197" y="424" text-anchor="middle" fill="#1a1a1a" font-size="11" font-family="monospace">task-notification</text>
+  <text x="197" y="446" text-anchor="middle" fill="#1a1a1a" font-size="11" font-family="monospace">monitor-line</text>
+  <text x="197" y="468" text-anchor="middle" fill="#888888" font-size="8.5">trusted async origins</text>
+
+  <!-- untrusted -->
+  <rect x="354" y="376" width="270" height="104" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="489" y="399" text-anchor="middle" fill="#888888" font-size="11" font-weight="700">filtered out</text>
+  <text x="489" y="421" text-anchor="middle" fill="#888888" font-size="10">/goal command text</text>
+  <text x="489" y="439" text-anchor="middle" fill="#888888" font-size="10">continuation reminder</text>
+  <text x="489" y="457" text-anchor="middle" fill="#888888" font-size="10">plain user / assistant</text>
+  <text x="489" y="475" text-anchor="middle" fill="#888888" font-size="8.5">model can't self-satisfy</text>
+
+  <!-- ===== continuing -> CommandQueue -> loop back ===== -->
+  <!-- gate -> CommandQueue (continuing) -->
+  <path d="M 600 188 L 600 230 L 786 230 L 786 322" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="700" y="223" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="600">continuing</text>
+
+  <!-- CommandQueue (mutable: dashed black) -->
+  <rect x="696" y="324" width="180" height="56" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="786" y="347" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">CommandQueue</text>
+  <text x="786" y="364" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">continuation (active-goal)</text>
+
+  <!-- CommandQueue -> loop back (up the right edge, joins the over-top path) -->
+  <line x1="876" y1="350" x2="908" y2="350" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3"/>
+
+  <!-- ===== Bottom note ===== -->
+  <text x="480" y="520" text-anchor="middle" fill="#888888" font-size="10">The model proposes stop; the goal gate decides against trusted evidence only, not the model's own say-so.</text>
+</svg>

@@ -1,100 +1,106 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 460" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 580" font-family="system-ui, -apple-system, sans-serif">
   <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#555"/>
-    </marker>
-    <marker id="arrow-blue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
-    </marker>
     <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16a34a"/>
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
     </marker>
-    <marker id="arrow-red" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
     </marker>
-    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#1e3a5f"/>
-      <stop offset="100%" stop-color="#2563eb"/>
-    </linearGradient>
   </defs>
 
-  <!-- 背景 -->
-  <rect width="800" height="460" fill="#fafbfc" rx="8"/>
+  <!-- Background -->
+  <rect width="900" height="580" fill="#ffffff" rx="8"/>
 
-  <!-- 标题 -->
-  <rect x="0" y="0" width="800" height="48" fill="url(#header)" rx="8"/>
-  <rect x="0" y="40" width="800" height="8" fill="url(#header)"/>
-  <text x="400" y="31" fill="#fff" font-size="16" font-weight="700" text-anchor="middle">Hooks — 扩展逻辑挂在外面，循环本身一字不改</text>
+  <!-- Title -->
+  <text x="450" y="34" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Hooks — Extension Logic Outside the Loop</text>
+  <text x="450" y="54" fill="#888888" font-size="12" text-anchor="middle">PreToolUse / PostToolUse inject checks without modifying agent_loop</text>
+  <line x1="40" y1="68" x2="860" y2="68" stroke="#d0d0d0" stroke-width="1"/>
 
-  <!-- ===== 主流程线（y=140 水平） ===== -->
+  <!-- ===== ROW 1: messages[] → LLM ===== -->
 
-  <!-- ① messages[] -->
-  <rect x="40" y="112" width="110" height="56" rx="8" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="95" y="138" fill="#1e3a5f" font-size="12" font-weight="600" text-anchor="middle">messages[]</text>
-  <text x="95" y="156" fill="#64748b" font-size="9" text-anchor="middle">(s01 保留)</text>
+  <!-- 1. messages[] box -->
+  <rect x="40" y="100" width="140" height="60" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="110" y="126" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle" font-family="monospace">messages[]</text>
+  <text x="110" y="146" fill="#888888" font-size="11" text-anchor="middle">conversation history</text>
 
-  <!-- → LLM -->
-  <line x1="150" y1="140" x2="198" y2="140" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow-blue)"/>
+  <!-- Arrow: messages → LLM -->
+  <line x1="180" y1="130" x2="226" y2="130" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
 
-  <!-- ② LLM -->
-  <rect x="200" y="108" width="120" height="64" rx="8" fill="#fff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="260" y="134" fill="#1e3a5f" font-size="14" font-weight="700" text-anchor="middle">LLM</text>
-  <text x="260" y="154" fill="#64748b" font-size="10" text-anchor="middle">stop_reason=tool_use?</text>
+  <!-- 2. LLM box -->
+  <rect x="230" y="100" width="140" height="60" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="300" y="126" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">LLM</text>
+  <text x="300" y="146" fill="#888888" font-size="11" text-anchor="middle" font-family="monospace">stop_reason?</text>
 
-  <!-- LLM 否 → 返回 -->
-  <line x1="260" y1="172" x2="260" y2="200" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="275" y="192" fill="#16a34a" font-size="10" font-weight="600">否</text>
-  <rect x="205" y="202" width="110" height="28" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
-  <text x="260" y="220" fill="#166534" font-size="11" font-weight="600" text-anchor="middle">返回结果</text>
+  <!-- LLM decision: end_turn → Return Result (downward) -->
+  <line x1="300" y1="160" x2="300" y2="206" stroke="#888888" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <text x="316" y="188" fill="#888888" font-size="10" font-weight="600">end_turn</text>
+  <rect x="240" y="210" width="120" height="32" rx="16" fill="#ffffff" stroke="#888888" stroke-width="1.5"/>
+  <text x="300" y="231" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">Return Result</text>
 
-  <!-- LLM 是 → PreToolUse -->
-  <line x1="320" y1="140" x2="378" y2="140" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
-  <text x="345" y="132" fill="#d97706" font-size="10" font-weight="600">是</text>
+  <!-- LLM decision: tool_use → PreToolUse (rightward) -->
+  <line x1="370" y1="130" x2="426" y2="130" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="388" y="120" fill="#22c55e" font-size="10" font-weight="600" text-anchor="middle">tool_use</text>
 
-  <!-- ③ PreToolUse hook（s04 新增） -->
-  <rect x="380" y="96" width="160" height="88" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="2" stroke-dasharray="6,3"/>
-  <text x="460" y="116" fill="#166534" font-size="11" font-weight="700" text-anchor="middle">trigger_hooks()</text>
-  <text x="460" y="132" fill="#166534" font-size="9" font-weight="600" text-anchor="middle">PreToolUse</text>
-  <rect x="396" y="140" width="128" height="18" rx="3" fill="#dcfce7" stroke="#16a34a" stroke-width="0.8"/>
-  <text x="460" y="153" fill="#166534" font-size="8" text-anchor="middle">permission_hook · log_hook</text>
-  <text x="460" y="176" fill="#64748b" font-size="8" text-anchor="middle">教学版：非 None → 阻止</text>
+  <!-- ===== 3. PreToolUse hook (dashed green border) ===== -->
+  <rect x="430" y="88" width="186" height="106" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="523" y="112" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">PreToolUse</text>
+  <text x="523" y="130" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle" font-family="monospace">trigger_hooks()</text>
+  <!-- Sub-container for hook names -->
+  <rect x="444" y="140" width="158" height="22" rx="4" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="523" y="155" fill="#888888" font-size="10" text-anchor="middle" font-family="monospace">permission · log</text>
+  <text x="523" y="182" fill="#888888" font-size="10" text-anchor="middle">non-None = block exec</text>
 
-  <!-- PreToolUse 阻止 → 向下引出 -->
-  <line x1="460" y1="184" x2="460" y2="218" stroke="#dc2626" stroke-width="2" marker-end="url(#arrow-red)"/>
-  <rect x="405" y="220" width="110" height="24" rx="12" fill="#fef2f2" stroke="#dc2626" stroke-width="1.5"/>
-  <text x="460" y="236" fill="#991b1b" font-size="10" font-weight="600" text-anchor="middle">写入 tool_result</text>
+  <!-- PreToolUse: blocked → tool_result (downward) -->
+  <line x1="523" y1="194" x2="523" y2="226" stroke="#888888" stroke-width="2" marker-end="url(#arrow-gray)"/>
+  <rect x="457" y="230" width="132" height="30" rx="15" fill="#ffffff" stroke="#888888" stroke-width="1.5"/>
+  <text x="523" y="250" fill="#1a1a1a" font-size="11" font-weight="600" text-anchor="middle">blocked → result</text>
 
-  <!-- PreToolUse 通过 → TOOL_HANDLERS -->
-  <line x1="540" y1="140" x2="588" y2="140" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
-  <text x="558" y="132" fill="#16a34a" font-size="9" font-weight="600">通过</text>
+  <!-- PreToolUse: pass → TOOL_HANDLERS (rightward) -->
+  <line x1="616" y1="136" x2="672" y2="136" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="640" y="128" fill="#22c55e" font-size="10" font-weight="600">pass</text>
 
-  <!-- ④ TOOL_HANDLERS (s02 保留) -->
-  <rect x="590" y="108" width="100" height="64" rx="8" fill="#f0f4ff" stroke="#2563eb" stroke-width="1.5"/>
-  <text x="640" y="134" fill="#1e3a5f" font-size="10" font-weight="600" text-anchor="middle">TOOL_</text>
-  <text x="640" y="148" fill="#1e3a5f" font-size="10" font-weight="600" text-anchor="middle">HANDLERS</text>
-  <text x="640" y="164" fill="#64748b" font-size="8" text-anchor="middle">bash/read/...</text>
+  <!-- ===== 4. TOOL_HANDLERS box ===== -->
+  <rect x="676" y="106" width="140" height="64" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="746" y="130" fill="#1a1a1a" font-size="12" font-weight="700" text-anchor="middle" font-family="monospace">TOOL_HANDLERS</text>
+  <text x="746" y="150" fill="#888888" font-size="10" text-anchor="middle">bash / read / write</text>
 
-  <!-- TOOL_HANDLERS → PostToolUse (向下) -->
-  <line x1="640" y1="172" x2="640" y2="268" stroke="#16a34a" stroke-width="2"/>
-  <text x="648" y="224" fill="#16a34a" font-size="9" font-weight="600">执行后</text>
+  <!-- TOOL_HANDLERS → PostToolUse (downward) -->
+  <line x1="746" y1="170" x2="746" y2="286" stroke="#22c55e" stroke-width="2"/>
+  <circle cx="746" cy="286" r="3" fill="#22c55e"/>
+  <text x="760" y="232" fill="#22c55e" font-size="10" font-weight="600">after exec</text>
 
-  <!-- ⑤ PostToolUse hook（s04 新增） -->
-  <rect x="560" y="270" width="160" height="56" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="2" stroke-dasharray="6,3"/>
-  <text x="640" y="290" fill="#166534" font-size="11" font-weight="700" text-anchor="middle">trigger_hooks()</text>
-  <text x="640" y="306" fill="#166534" font-size="9" font-weight="600" text-anchor="middle">PostToolUse</text>
-  <rect x="576" y="310" width="128" height="12" rx="3" fill="#dcfce7" stroke="#16a34a" stroke-width="0.8"/>
-  <text x="640" y="320" fill="#166534" font-size="7" text-anchor="middle">large_output_hook</text>
+  <!-- ===== 5. PostToolUse hook (dashed green border) ===== -->
+  <rect x="656" y="290" width="180" height="64" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="746" y="314" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">PostToolUse</text>
+  <text x="746" y="332" fill="#22c55e" font-size="11" font-weight="600" text-anchor="middle" font-family="monospace">trigger_hooks()</text>
+  <rect x="670" y="338" width="152" height="14" rx="3" fill="#fafafa" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="746" y="349" fill="#888888" font-size="9" text-anchor="middle" font-family="monospace">large_output_hook</text>
 
-  <!-- ===== 回环：结果回到 messages ===== -->
-  <path d="M 720 298 L 760 298 L 760 350 L 95 350 L 95 168" fill="none" stroke="#555" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6,3"/>
-  <text x="400" y="370" fill="#64748b" font-size="10" text-anchor="middle">结果追加到 messages[]，循环继续</text>
+  <!-- ===== Loop-back: PostToolUse → messages[] ===== -->
+  <path d="M 836 322 L 860 322 L 860 400 L 110 400 L 110 160"
+        fill="none" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrow-green)" stroke-dasharray="6,3"/>
+  <circle cx="860" cy="322" r="3" fill="#22c55e"/>
+  <circle cx="860" cy="400" r="3" fill="#22c55e"/>
+  <circle cx="110" cy="400" r="3" fill="#22c55e"/>
+  <text x="470" y="420" fill="#888888" font-size="11" text-anchor="middle">result appended to messages[], loop continues</text>
 
-  <!-- ===== 底部对比 ===== -->
-  <rect x="60" y="396" width="680" height="48" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="100" y="416" fill="#94a3b8" font-size="10" font-weight="600">s03:</text>
-  <text x="130" y="416" fill="#64748b" font-size="10" font-family="monospace">if not check_permission(block): ...</text>
-  <text x="400" y="416" fill="#94a3b8" font-size="10">← 每加一个检查就要改循环</text>
-  <text x="100" y="436" fill="#16a34a" font-size="10" font-weight="600">s04:</text>
-  <text x="130" y="436" fill="#16a34a" font-size="10" font-family="monospace">blocked = trigger_hooks("PreToolUse", block)</text>
-  <text x="520" y="436" fill="#16a34a" font-size="10">← 加检查 = register_hook()，循环不改</text>
+  <!-- ===== Bottom: Before vs After terminal mockup ===== -->
+  <rect x="40" y="450" width="820" height="112" rx="4" fill="#2d2d2d"/>
+
+  <!-- Terminal title bar dots -->
+  <circle cx="60" cy="468" r="4" fill="#d0d0d0"/>
+  <circle cx="74" cy="468" r="4" fill="#d0d0d0"/>
+  <circle cx="88" cy="468" r="4" fill="#d0d0d0"/>
+  <text x="450" y="472" fill="#888888" font-size="11" text-anchor="middle">Before vs After</text>
+
+  <!-- Before: hardcoded -->
+  <text x="60" y="500" fill="#888888" font-size="12" font-weight="600" font-family="monospace">Before:</text>
+  <text x="150" y="500" fill="#888888" font-size="12" font-family="monospace">if not check_permission(block): ...</text>
+  <text x="560" y="500" fill="#888888" font-size="11" font-family="monospace"># each check = modify loop</text>
+
+  <!-- After: hooks -->
+  <text x="60" y="534" fill="#22c55e" font-size="12" font-weight="600" font-family="monospace">After:</text>
+  <text x="150" y="534" fill="#22c55e" font-size="12" font-family="monospace">blocked = trigger_hooks("PreToolUse", block)</text>
+  <text x="560" y="534" fill="#22c55e" font-size="11" font-family="monospace"># add check = register_hook()</text>
+
 </svg>

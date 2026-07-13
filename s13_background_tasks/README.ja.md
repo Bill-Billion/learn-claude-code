@@ -1,51 +1,32 @@
-# s13: Background Tasks — 遅い操作はバックグラウンドへ
+# s13: Background Tasks — 遅い処理をバックグラウンドへ
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s11 → s12 → `s13` → [s14](../s14_cron_scheduler/) → s15 → ... → s20
 
-> *"遅い操作はバックグラウンドへ、agent は処理を継続"* — バックグラウンドスレッドでコマンドを実行、完了時に通知を注入。
+> *「遅い処理はバックグラウンドに送り、Agent は作業を続ける」* — バックグラウンドスレッドでコマンドを実行し、完了後に通知を注入します。
 >
-> **Harness 層**: バックグラウンド — 非同期実行、メインループをブロックしない。
+> **Harness 層**: バックグラウンド — main loop を止めない非同期実行。
 
 ---
 
-## 課題
+s01 から現在まで、`run_bash` にはまだ問題を起こしていなかった 1 行、`timeout=120` が隠れていました。コマンドが 2 分を超えると強制終了します。全テストに 10 分かかるなら、これまでのどの章でも最後までたどり着けません。
 
-洗濯機を使ったことがあるか？衣類を入れ、スタートを押し、他のことをする——料理、メッセージ返信、論文読み。30 分後に洗濯機が「ピッピッ」と知らせる：完了。30 分間立って待つ人はいない。
+タイムアウトを延ばしても、問題の姿が変わるだけです。`subprocess.run` はブロッキングなので、コマンドに 10 分かかれば Agent もその場で 10 分待ちます。モデルを呼べず、ほかの仕事もできません。ターミナルは動かず、実行中なのか死んだのかも分かりません。
 
-Agent の bash ツールも同じ。`pip install torch` は 10 分、`npm run build` は 3 分かかる。これらのコマンドが実行中、Agent は bash の戻りを待ち、その時間を他のタスクの処理に使えない。
+自分ならそんな働き方はしないはずです。洗濯物を洗濯機に入れたら、ドラムを眺めて待たず、料理をして完了音が鳴ったら戻ります。この章では Agent に同じ流れを与えます。遅いコマンドを送り出し、別の作業へ移り、終わったら結果を受け取ります。
 
-ファイル読み込みはミリ秒、待たない。`git status` は 1 秒以内に戻る、待たない。しかし `npm install` は？分単位。Agent は 10 分間何もせず待ち、LLM 呼び出しはトークン課金、アイドル時間は無駄。
-
----
-
-## ソリューション
-
-![Background Tasks Overview](images/background-tasks-overview.ja.svg)
-
-教学版は S12 の簡易タスクシステムとプロンプト組み立てを踏襲。バックグラウンドタスクに集中するため、完全なエラーリカバリ、メモリ、スキルシステムは省略。唯一の変更：遅い操作をバックグラウンドスレッドに投げ、Agent はループを継続、バックグラウンド完了時に通知を注入。
-
-同期 vs バックグラウンド：
-
-| | 同期 (s12) | バックグラウンド (s13) |
-|---|---|---|
-| 遅い操作 | Agent が待機 | バックグラウンドスレッドで実行 |
-| Agent アイドル | はい | いいえ、処理を継続 |
-| 結果 | 即時返却 | 次ターンで通知を注入 |
-| 判断基準 | — | `run_in_background` パラメータ（モデル明示的リクエスト）、ヒューリスティックフォールバック |
+![Background Tasks Overview](images/background-tasks-overview.svg)
 
 ---
 
-## 仕組み
+## 何をバックグラウンドへ送るか: モデルが決め、ヒューリスティックで補う
 
-### should_run_background: 明示的リクエスト優先、ヒューリスティックフォールバック
-
-モデルは bash ツールの `run_in_background` パラメータで明示的にバックグラウンド実行をリクエストする。モデルが指定しない場合、教学版はキーワードヒューリスティックにフォールバック：
+最初の問題は判定です。どのコマンドをバックグラウンドへ送るべきでしょうか。
 
 ```python
 def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
-    """Fallback heuristic: commands likely to take > 30s."""
+    """フォールバック用ヒューリスティック: このキーワードを含むコマンドは 30 秒を超える可能性が高い。"""
     if tool_name != "bash":
         return False
     cmd = tool_input.get("command", "").lower()
@@ -55,141 +36,98 @@ def is_slow_operation(tool_name: str, tool_input: dict) -> bool:
     return any(kw in cmd for kw in slow_keywords)
 
 def should_run_background(tool_name: str, tool_input: dict) -> bool:
-    """Model explicit request takes priority; fallback to heuristic."""
-    if tool_input.get("run_in_background"):
+    if tool_input.get("run_in_background"):   # モデルが明示したら、そのままバックグラウンドへ
         return True
-    return is_slow_operation(tool_name, tool_input)
+    return is_slow_operation(tool_name, tool_input)   # 指定がなければヒューリスティックを見る
 ```
 
-CC の bash ツールスキーマには `run_in_background: boolean` パラメータがある（`BashTool.tsx:241`）。モデルがどのコマンドをバックグラウンドにするかを決定、キーワード推測ではない。教学版はヒューリスティックをフォールバックとして残すが、主パスはモデルの明示的リクエスト。
+どのコマンドが遅いかは、キーワード表よりモデルのほうが正確に判断できます。そのため `bash` ツールに `run_in_background` 引数を追加し、モデルからの明示的な要求を優先します。ヒューリスティックはあくまで予備です。モデルが引数を忘れても、`npm install` がループ全体を止めないようにします。
 
-### start_background_task: バックグラウンド実行とライフサイクル
+この予備策の欠点も正直に見ておきましょう。キーワード一致には必ず誤判定があり、`echo running tests` にも「test」が含まれるため、バックグラウンドへ送られます。またコードの形にも注目してください。明示的な `True` はヒューリスティックに勝ちますが、明示的な `False` では止められません。教材版ではモデルの指定が一方向にしか効かない簡略化を採用しており、実験で実際に遭遇します。
 
-ツール呼び出しをワーカー関数にラップし、daemon スレッドにディスパッチ。各バックグラウンドタスクは一意 ID を持ち、`background_tasks` 辞書で状態を追跡：
+---
+
+## ディスパッチ: スレッドと台帳
 
 ```python
-_bg_counter = 0
 background_tasks: dict[str, dict] = {}   # bg_id → {tool_use_id, command, status}
-background_results: dict[str, str] = {}   # bg_id → output
+background_results: dict[str, str] = {}  # bg_id → 出力
 background_lock = threading.Lock()
 
 def start_background_task(block) -> str:
-    """Run tool in a daemon thread. Returns background task ID."""
     global _bg_counter
     _bg_counter += 1
     bg_id = f"bg_{_bg_counter:04d}"
 
     def worker():
-        result = execute_tool(block)
+        result = execute_tool(block)          # 子スレッド内で実際に実行
         with background_lock:
             background_tasks[bg_id]["status"] = "completed"
             background_results[bg_id] = result
 
     with background_lock:
-        background_tasks[bg_id] = {
-            "tool_use_id": block.id,
-            "command": block.input.get("command", ""),
-            "status": "running",
-        }
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
+        background_tasks[bg_id] = {"tool_use_id": block.id,
+                                   "command": ..., "status": "running"}
+    threading.Thread(target=worker, daemon=True).start()
     return bg_id
 ```
 
-`[Running in background...]` ではなく `bg_id` を返す。`daemon=True` で Agent プロセス終了時にスレッドも終了。教学版はメモリ内辞書で追跡。実際の CC は `LocalShellTaskState` を持ち、出力をファイルにリダイレクト、タスク停止や継続出力読み取りを含む完全なライフサイクルを備える。
+`background_lock` は飾りではありません。worker が `status` を書いている間に、main thread が 2 つの辞書を走査したり項目を取り出したりする可能性があります。ロックがなければデータ競合です。軽ければ通知が 1 件消え、重ければ辞書の構造が壊れます。規則は単純で、この 2 つの辞書に触れるときは、どちらのスレッドも必ずロックを持ちます。
 
-### collect_background_results: 通知収集
-
-バックグラウンドタスク完了時、結果を収集して `<task_notification>` メッセージとしてフォーマット：
-
-```python
-def collect_background_results() -> list[str]:
-    """Collect completed results as task_notification messages."""
-    with background_lock:
-        ready_ids = [bid for bid, task in background_tasks.items()
-                     if task["status"] == "completed"]
-    notifications = []
-    for bg_id in ready_ids:
-        with background_lock:
-            task = background_tasks.pop(bg_id)
-            output = background_results.pop(bg_id, "")
-        notifications.append(
-            f"<task_notification>\n"
-            f"  <task_id>{bg_id}</task_id>\n"
-            f"  <status>completed</status>\n"
-            f"  <command>{task['command']}</command>\n"
-            f"  <summary>{output[:200]}</summary>\n"
-            f"</task_notification>")
-    return notifications
-```
-
-通知は元の `tool_use_id` を再利用しない。元のツール呼び出しはプレースホルダー `tool_result` で応答済み。バックグラウンド完了は独立したイベントで、`task_notification` 形式で注入する。これは Messages API のツールペアリングに従う：1 つの `tool_use` に対して正確に 1 つの `tool_result`。
-
-### ループ統合
-
-agent_loop でツール実行は 2 つのパスに分かれる。通知と結果は 1 つの user メッセージに統合：
-
-```python
-results = []
-for block in response.content:
-    if block.type != "tool_use":
-        continue
-    if should_run_background(block.name, block.input):
-        bg_id = start_background_task(block)
-        results.append({"type": "tool_result",
-            "tool_use_id": block.id,
-            "content": f"[Background task {bg_id} started] "
-                       f"Result will be available when complete."})
-    else:
-        output = execute_tool(block)
-        results.append({"type": "tool_result",
-            "tool_use_id": block.id, "content": output})
-
-# 通知とツール結果を 1 つの user メッセージに統合
-user_content = []
-bg_notifications = collect_background_results()
-if bg_notifications:
-    for notif in bg_notifications:
-        user_content.append({"type": "text", "text": notif})
-user_content.extend(results)
-messages.append({"role": "user", "content": user_content})
-```
-
-遅い操作は `bg_id` 付きプレースホルダー tool_result を返し、LLM はコマンドがまだ実行中だと知り、先に他のことをできる。バックグラウンド完了時、通知は独立した text block として現在のターンの tool_result と一緒に 1 つの user メッセージを構成する。
-
-教学版は agent loop が継続実行中にバックグラウンド結果をポーリングする。実際の CC は通知キュー（`messageQueueManager.ts`）でバックグラウンド完了イベントを後続ターンに配信、ツールループを待つ必要はない。
-
-### 組み合わせて実行
-
-```
-Turn 1:
-  LLM → bash "npm install" (run_in_background=true)
-  → start_background_task → bg_0001
-  → tool_result: "[Background task bg_0001 started]..."
-  → LLM: "OK, I'll check later. Let me also read the config."
-
-Turn 2:
-  LLM → read_file "package.json" (fast, sync)
-  → tool_result: file content
-  → collect: bg_0001 done! inject <task_notification>
-  → LLM sees: config file + install notification in one message
-```
-
-Agent は待たなかった。npm install がバックグラウンドで実行中に、設定ファイルを読んだ。
+`daemon=True` も知っておくべき境界です。main process が終了するとバックグラウンドスレッドも道連れになり、未完了の結果は失われます。教材版はこの制約を受け入れますが、本番システムではバックグラウンドタスクを別プロセスとディスクに置きます。
 
 ---
 
-## s12 からの変更
+## 引換券: ペアリング規則は待ってくれない
+
+ディスパッチで「ブロックしない」は解決しますが、すぐに s01 の規則へぶつかります。すべての `tool_use` には、次の user メッセージで対応する `tool_result` が必要です。しかし本当の結果はまだスレッド内で実行中です。このターンでは何を API に返せばよいのでしょうか。
+
+引換券を返します。
+
+```python
+if should_run_background(block.name, block.input):
+    bg_id = start_background_task(block)
+    results.append({"type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": f"[Background task {bg_id} started] "
+                               f"Command: ... Result will be available when complete."})
+```
+
+ペアリング規則は同じターンで満たされ、モデルは引換番号も受け取ります。「Result will be available when complete」を見れば、その場で待たず別の作業へ進むべきだと分かります。
+
+---
+
+## 結果の回収: 通知はテキスト経路を使い、ツール結果を装わない
+
+バックグラウンド処理が終わったら、結果をどう会話へ戻すのでしょうか。よくある間違いは、最初の `tool_use_id` を再利用し、もう 1 件の `tool_result` を注入することです。これはできません。その ID は引換券のターンですでにペアになっており、API は各 ID について 1 回しか対応付けを認めません。再利用するとエラーになります。
+
+そこで通知は、s01 で説明した別の経路を使います。`user` メッセージは「外部世界の声」です。バックグラウンド結果は世界で起きた新しい出来事なので、モデルが認識しやすい構造化 XML の通常テキストブロックとして注入します。
+
+```python
+notifications.append(
+    f"<task_notification>\n"
+    f"  <task_id>{bg_id}</task_id>\n"
+    f"  <status>completed</status>\n"
+    f"  <command>{task['command']}</command>\n"
+    f"  <summary>{summary}</summary>\n"
+    f"</task_notification>")
+```
+
+注入するのは各ツールラウンドの後です。そのラウンドの `tool_result` と、たまっていたバックグラウンド通知を同じ user メッセージへ詰めて返します。ここに教材版の境界があります。**通知はツールラウンドの後にしか注入されません。** モデルがすでに仕事を終え、ツールを必要とする新しい要求も送らなければ、完了した結果は台帳に残って待ち続けます。実システムは常駐メッセージキューを毎ターン消費して、この問題を解決します。
+
+> 実際の Claude Code はスレッドを使いません。Node.js のシングルスレッドイベントループ上で動き、「バックグラウンド」とは await しないことです。コマンド出力をファイルへリダイレクトし、プロセスを独立して走らせます。バックグラウンドタスクにはローカルコマンド、ローカルおよびリモート Agent、ワークフロー、監視など 7 種類があり、それぞれ固有のライフサイクルを持ちます。バックグラウンド bash には停止監視もあり、出力が 45 秒増えないと、`(y/n)` のような対話プロンプトで止まっていないか確認します。
+
+---
+
+## s12 からの変更点
 
 | コンポーネント | 変更前 (s12) | 変更後 (s13) |
-|--------------|------------|------------|
-| 実行モデル | すべて同期 | 遅い操作はバックグラウンドスレッド + 通知注入 |
-| bash スキーマ | `command` | `command` + `run_in_background` |
-| 新規関数 | — | `should_run_background`, `is_slow_operation`, `start_background_task`, `collect_background_results` |
-| 新規型 | — | `background_tasks: dict`, `background_results: dict`, `background_lock: Lock` |
-| 通知形式 | — | `<task_notification>`（tool_use_id を再利用しない） |
-| ループ動作 | ツール直列実行 | 遅い操作は非同期、速い操作は同期、通知は毎ターン収集 |
-| ツール | 8 (s12) | 8（変更なし、実行戦略が変更） |
+|------|-----------|-----------|
+| 遅いコマンド | main loop をブロック（120 秒で強制終了） | バックグラウンドスレッドで実行し、main loop は継続 |
+| bash 引数 | `command` | +`run_in_background`（モデルが明示） |
+| 新しい関数 | — | `is_slow_operation`, `should_run_background`, `start_background_task`, `collect_background_results` |
+| 結果の返却 | 同じラウンドの `tool_result` | 引換券 + `<task_notification>` テキスト注入 |
+| スレッド安全性 | 対象外 | `threading.Lock` で台帳を保護 |
 
 ---
 
@@ -200,62 +138,16 @@ cd learn-claude-code
 python s13_background_tasks/code.py
 ```
 
-以下のプロンプトを試してください：
-
-1. `Run pip list in the background and find all Python files in this directory`
-2. `Run npm install (use run_in_background) and while waiting, read package.json`
-3. `Create a task to setup the project, then run pip list in the background`
-
-観察ポイント：遅い操作はバックグラウンドにディスパッチされているか？`bg_id` は返されているか？バックグラウンド通知は `<task_notification>` 形式で注入されているか？
+1. **完全なタイムラインを一度に見る**: `Run this command: echo running tests`。「test」キーワードでヒューリスティックが発動し、瞬時に終わるコマンドまでバックグラウンドへ送られます。完了が十分速いため、同じラウンドで `[background] dispatched`、`[background done]`、`[inject] 1 background notification(s)` という一連の出力が見えます。キーワード誤判定の実例でもあります。
+2. **本当の並行処理**: `In the background, run 'sleep 15 && echo finished'. While waiting, write a short poem about waiting to wait.md`。「sleep」はキーワード表にないため、モデル自身が `run_in_background` を渡します。ディスパッチ後、止まらずすぐ詩を書き始める様子を観察してください。
+3. **通知のタイミング**: 実験 2 の後、15 秒ほど待って `Read wait.md` と入力します。この要求にはツールラウンドがあるため、`<task_notification>` が同乗して会話へ入り、モデルはバックグラウンドコマンドの完了に触れます。ツール不要の雑談だけを送れば、通知は台帳に残ります。「ツールラウンドの後だけ注入」という境界を自分で確かめられます。
 
 ---
 
-## 次の章
+## 次へ
 
-バックグラウンドタスクは「遅い操作がブロックしない」を解決した。しかし、定期的に何かをしたい場合は？例えば「毎朝 9 時にテストを実行」「5 分ごとにサーバーステータスを確認」。
+長いコマンドに Agent を足止めされなくなりました。しかし、すべての作業はまだ「あなたが一言指示する」ことで始まります。毎朝 9 時にテストを走らせたり、5 分ごとにサービスを確認したりするにはどうすればよいでしょう。時刻どおりに Enter を押す係を雇うのでは意味がありません。
 
-s14 Cron Scheduler → Agent にアラームクロックを付ける。
+s14 Cron Scheduler → Agent に目覚まし時計を持たせます。
 
-<details>
-<summary>CC ソースコード深掘り</summary>
-
-> 以下は CC ソースコード `query.ts`（211, 1054-1060, 1411-1482 行）、`services/toolUseSummary/toolUseSummaryGenerator.ts`（L15 プロンプトテキスト）、`LocalShellTask.tsx`（L24-25 定数, L59-98 ウォッチドッグロジック）、`messageQueueManager.ts`（通知キュー）、`utils/task/framework.ts`（L267 `enqueueTaskNotification`）の完全分析に基づく。
-
-### 一、pendingToolUseSummary：Haiku バックグラウンド生成
-
-CC は各ツール実行バッチの後、Haiku サイドクエリを開始してツール使用サマリを生成。開始コードは `query.ts:1411-1482`、プロンプトテキストは `services/toolUseSummary/toolUseSummaryGenerator.ts:15`（変数 `TOOL_USE_SUMMARY_SYSTEM_PROMPT`）。プロンプトは "Write a short summary label... think git-commit-subject, not sentence"、過去形、約 30 文字。
-
-Haiku サマリ（~1s）はメインモデルのストリーミング出力（5-30s）中に完了。次のターン開始前にサマリを yield。SDK コンシューマーはこれらのサマリをモバイル進捗表示に使用。
-
-### 二、スレッドモデル：本当のスレッドはない
-
-CC は Node.js/Bun のシングルスレッドイベントループで動作。「バックグラウンド」は単に「await しない」こと。`ShellCommand.background(taskId)` は stdout/stderr をファイルにリダイレクトし、プロセスを独立実行。
-
-### 三、7 種のバックグラウンドタスク型
-
-CC は 7 種のバックグラウンドタスク型を定義（`Task.ts:7-13`）：`local_bash`、`local_agent`、`remote_agent`、`in_process_teammate`、`local_workflow`、`monitor_mcp`、`dream`。それぞれ独自の登録、ライフサイクル、通知メカニズムを持つ。
-
-### 四、通知注入：コマンドキュー
-
-バックグラウンドタスク完了時、`enqueueTaskNotification`（`utils/task/framework.ts:267`）または `enqueuePendingNotification`（`messageQueueManager.ts`）で共有コマンドキューにエンキュー。通知形式は構造化 XML：
-
-```xml
-<task_notification>
-  <status>completed</status>
-  <summary>Background command "npm test" completed (exit code 0)</summary>
-</task_notification>
-```
-
-優先度は `next` > `later`（`messageQueueManager.ts`）。バックグラウンドタスクはデフォルト `later`（ユーザー入力をブロックしない）。消費点は `query.ts:1566-1593`。
-
-### 五、停滞ウォッチドッグ
-
-バックグラウンド bash タスクにはウォッチドッグがある（`LocalShellTask.tsx` L24-25 定数, L59-98 ロジック）。出力の停滞を定期チェックし、45 秒間増加がない場合にインタラクティブプロンプト（`(y/n)` 等）を検出、バックグラウンドタスクが無応答のインタラクティブダイアログでスタックするのを防ぐ。
-
-### 六、同時実行制限
-
-フォアグラウンドツール呼び出し：`CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`（デフォルト 10 同時実行安全ツール）。バックグラウンド bash タスク：ハードリミットなし、独立したサブプロセス。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

@@ -2,29 +2,29 @@
 """
 s08_context_compact.py - Context Compact
 
-Four-layer compaction pipeline inserted before LLM calls:
+Four-step compaction pipeline inserted before LLM calls, in execution order:
 
-    L1: snip_compact      — trim middle messages when count > 50
-    L2: micro_compact     — replace old tool_results with placeholders
-    L3: tool_result_budget — persist large results to disk
-    L4: compact_history   — LLM full summary (1 API call)
+    Step 1: tool_result_budget — persist large results to disk
+    Step 2: snip_compact       — trim middle messages when count > 50
+    Step 3: micro_compact      — replace old tool_results with placeholders
+    Step 4: compact_history    — LLM full summary (1 API call)
 
     Emergency: reactive_compact — when API still returns prompt_too_long
 
     ┌─────────────────────────────────────────────────────────────┐
     │  messages[]                                                 │
     │    ↓                                                        │
-    │  L3 budget ─→ L1 snip ─→ L2 micro ─→ [token > threshold?]  │
-    │                                      ├─ No  → LLM          │
-    │                                      └─ Yes → L4 summary   │
-    │                                              ↓              │
-    │                                          LLM call           │
-    │                                    [prompt_too_long?]        │
-    │                                      └─ Yes → reactive      │
+    │  1 budget ─→ 2 snip ─→ 3 micro ─→ [token > threshold?]     │
+    │                                   ├─ No  → LLM             │
+    │                                   └─ Yes → 4 summary       │
+    │                                            ↓                │
+    │                                        LLM call             │
+    │                                  [prompt_too_long?]          │
+    │                                    └─ Yes → reactive        │
     └─────────────────────────────────────────────────────────────┘
 
 Core principle: cheap first, expensive last.
-Execution order matches CC source: budget → snip → micro → auto.
+Execution order matches Claude Code source: budget → snip → micro → auto.
 
 Builds on s07 (skill loading). Usage:
 
@@ -259,7 +259,7 @@ def spawn_subagent(description: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════
-#  NEW in s08: Four-Layer Compaction Pipeline
+#  NEW in s08: Four-Step Compaction Pipeline
 # ═══════════════════════════════════════════════════════════
 
 CONTEXT_LIMIT = 50000
@@ -291,25 +291,34 @@ def _is_tool_result_message(msg):
                for block in content)
 
 
-# L1: snipCompact — trim middle messages
+# Step 2: snip_compact — trim middle messages
+def safe_head(messages, keep_head):
+    # extend the cut so a trailing tool_use keeps its tool_result(s)
+    end = keep_head
+    if end > 0 and _message_has_tool_use(messages[end - 1]):
+        while end < len(messages) and _is_tool_result_message(messages[end]):
+            end += 1
+    return messages[:end]
+
+def safe_tail(messages, keep_tail):
+    # move the cut back so the tail never starts with an orphaned tool_result
+    start = max(0, len(messages) - keep_tail)
+    if (start > 0 and start < len(messages)
+            and _is_tool_result_message(messages[start])
+            and _message_has_tool_use(messages[start - 1])):
+        start -= 1
+    return messages[start:]
+
 def snip_compact(messages, max_messages=50):
     if len(messages) <= max_messages: return messages
-    keep_head, keep_tail = 3, max_messages - 3
-    head_end, tail_start = keep_head, len(messages) - keep_tail
-    if head_end > 0 and _message_has_tool_use(messages[head_end - 1]):
-        while head_end < len(messages) and _is_tool_result_message(messages[head_end]):
-            head_end += 1
-    if (tail_start > 0 and tail_start < len(messages)
-            and _is_tool_result_message(messages[tail_start])
-            and _message_has_tool_use(messages[tail_start - 1])):
-        tail_start -= 1
-    if head_end >= tail_start:
-        return messages
-    snipped = tail_start - head_end
-    return messages[:head_end] + [{"role": "user", "content": f"[snipped {snipped} messages]"}] + messages[tail_start:]
+    head = safe_head(messages, 3)
+    tail = safe_tail(messages, max_messages - 3)
+    snipped = len(messages) - len(head) - len(tail)
+    if snipped <= 0: return messages
+    return head + [{"role": "user", "content": f"[snipped {snipped} messages]"}] + tail
 
 
-# L2: microCompact — old result placeholders
+# Step 3: micro_compact — old result placeholders
 def collect_tool_results(messages):
     blocks = []
     for mi, msg in enumerate(messages):
@@ -328,7 +337,7 @@ def micro_compact(messages):
     return messages
 
 
-# L3: toolResultBudget — persist large results to disk
+# Step 1: tool_result_budget — persist large results to disk
 def persist_large_output(tool_use_id, output):
     if len(output) <= PERSIST_THRESHOLD: return output
     TOOL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -353,7 +362,7 @@ def tool_result_budget(messages, max_bytes=200_000):
     return messages
 
 
-# L4: autoCompact — LLM full summary
+# Step 4: compact_history — LLM full summary
 def write_transcript(messages):
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
@@ -379,16 +388,12 @@ def compact_history(messages):
     return [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
 
 
-# Emergency: reactiveCompact — on API error
+# Emergency: reactive_compact — on API error
 def reactive_compact(messages):
     transcript = write_transcript(messages)
-    tail_start = max(0, len(messages) - 5)
-    if (tail_start > 0 and tail_start < len(messages)
-            and _is_tool_result_message(messages[tail_start])
-            and _message_has_tool_use(messages[tail_start - 1])):
-        tail_start -= 1
-    summary = summarize_history(messages[:tail_start])
-    return [{"role": "user", "content": f"[Reactive compact]\n\n{summary}"}, *messages[tail_start:]]
+    tail = safe_tail(messages, 5)
+    summary = summarize_history(messages[:len(messages) - len(tail)])
+    return [{"role": "user", "content": f"[Reactive compact]\n\n{summary}"}, *tail]
 
 
 # ═══════════════════════════════════════════════════════════
@@ -455,10 +460,10 @@ def agent_loop(messages: list):
     reactive_retries = 0
     while True:
         # s08 change: three preprocessors (0 API calls, cheap first)
-        # Order matches CC source: budget → snip → micro
-        messages[:] = tool_result_budget(messages)    # L3: persist large results first
-        messages[:] = snip_compact(messages)          # L1: trim middle
-        messages[:] = micro_compact(messages)         # L2: old result placeholders
+        # Order matches Claude Code source: budget → snip → micro
+        messages[:] = tool_result_budget(messages)    # Step 1: persist large results first
+        messages[:] = snip_compact(messages)          # Step 2: trim middle
+        messages[:] = micro_compact(messages)         # Step 3: old result placeholders
 
         # s08 change: tokens still over threshold → LLM summary (1 API call)
         if estimate_size(messages) > CONTEXT_LIMIT:

@@ -1,157 +1,103 @@
-# s19: MCP Tools — 外部ツール、標準プロトコル
+# s19: MCP Tools — 外部ツールを標準プロトコルで接続する
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s17 → s18 → `s19` → [s20](../s20_comprehensive/)
 
-> *"外部ツール、標準プロトコル"* — 発見、組み立て、呼び出し。Agent はツールを誰が書いたか知る必要がない。
+> *「外部ツールを標準プロトコルで接続する」* — 発見、組み立て、呼び出し。Agent は実装者を知る必要がありません。
 >
-> **Harness 層**: プラグイン — 外部能力を標準プロトコルで接続。
+> **Harness 層**: プラグイン — 外部能力を標準プロトコルで接続します。
 
 ---
 
-## 課題
+toolbox を棚卸しすると、bash、ファイル、タスク、チーム、worktree はすべて私たちが `code.py` へ直接書きました。そこへユーザーから「Agent に社内 Jira と独自 deployment platform を調べさせたい」という要求が来ます。
 
-s01 から s18 まで、Agent の全ツールは手書き — bash、read、write、task、worktree。入力検証、実行ロジック、エラーハンドリング、全て一行ずつ書いた。
+従来の方法なら、s02 の合言葉「1 つ定義し、1 行登録する」がまだ使えそうです。しかし今回は何かがおかしい。Jira のツールをあなたが書き、deployment platform のツールもあなたが書き、次の会社で別のシステムが来たらまた書いてリリースします。ツール作者と Harness 作者が永遠に結び付きますが、世界中のシステムをすべて実装することはできません。
 
-今、統合したい外部サービスが 3 つある：社内の Jira API（issue 検索、ticket 作成）、独自のデプロイシステム（deploy トリガー、ログ閲覧）、チームの Notion ナレッジベース（ドキュメント検索、ページ作成）。各サービスのためにツールコードを書き直したくない。
+問題は結合の向きです。Harness が個別のツールをすべて知っています。解くには、知ることを 2 つだけにします。ツールをどう発見し、どう呼び出すかです。USB と同じです。機器は各社が作っても、port は 1 つの標準に従います。Agent の世界で、その標準を MCP（Model Context Protocol）と呼びます。
 
-標準プロトコルが必要 — 外部サービスがこのプロトコルを実装していれば、サービスが何の言語で書かれていても、Agent は直接そのツールを呼び出せる。
-
----
-
-## ソリューション
-
-![MCP Architecture](images/mcp-architecture.ja.svg)
-
-MCP（Model Context Protocol）は、Agent が外部ツールを発見・呼び出しする方法を定義。核心概念：
-
-| 概念 | 目的 |
-|------|------|
-| MCPClient | Agent 側のクライアント — server に接続、ツールを発見、ツールを呼び出し |
-| MCP Server | 外部サービス側 — `tools/list` + `tools/call` を実装 |
-| assemble_tool_pool | 組み込みツールと MCP ツールを一つのツールプールに組み立てる |
-| mcp\_\_server\_\_tool 命名 | 異なる server 間のツール名衝突を防止 |
-
-s18 の教学版 worktree 隔離、自動認領、空き時ポーリング、プロトコルシステムを踏襲。本章の追加：`connect_mcp` ツール — 外部サービスに接続、ツールを発見、ツールプールに追加。
-
-教学版は mock handler で外部 server をシミュレート。実際の版はサブプロセスを起動し、stdin/stdout で JSON-RPC リクエストを送信。mock の利点は外部サービスなしで完全なフローを実行できること；代償は実際のネットワーク通信やプロセス管理が見えないこと。
+![MCP Architecture](images/mcp-architecture.svg)
 
 ---
 
-## 仕組み
+## 発見: Compile 時に書かず、runtime に尋ねる
 
-### MCPClient：発見 + 呼び出し
-
-```python
-class MCPClient:
-    def __init__(self, name: str):
-        self.name = name
-        self.tools: list[dict] = []
-        self._handlers: dict[str, callable] = {}
-
-    def register(self, tool_defs, handlers):
-        """Simulates tools/list discovery."""
-        self.tools = tool_defs
-        self._handlers = handlers
-
-    def call_tool(self, tool_name: str, args: dict) -> str:
-        """Simulates tools/call."""
-        handler = self._handlers.get(tool_name)
-        if not handler:
-            return f"MCP error: unknown tool '{tool_name}'"
-        return handler(**args)
-```
-
-教学版は Python 関数で server のツール実装をシミュレート。実際の版は stdio JSON-RPC でサブプロセスと通信。
-
-### connect_mcp：接続 + 発見
+MCP server を接続する最初の手順は、ツール登録ではありません。「何を持っているか」と尋ねます。
 
 ```python
 def connect_mcp(name: str) -> str:
-    if name in mcp_clients:
-        return f"MCP server '{name}' already connected"
-    factory = MOCK_SERVERS.get(name)
-    if not factory:
-        return f"Unknown server '{name}'. Available: ..."
-    mcp_client = factory()
+    mcp_client = MOCK_SERVERS[name]()          # 接続を確立
     mcp_clients[name] = mcp_client
-    return f"Connected to '{name}'. Discovered: ..."
+    tool_names = [t["name"] for t in mcp_client.tools]   # ツールは発見される
+    return (f"Connected to MCP server '{name}'. "
+            f"Discovered {len(mcp_client.tools)} tools: {', '.join(tool_names)}")
 ```
 
-接続後、server が提供するツールが即座に利用可能。
+server が自分のツール一覧を報告します。各ツールは名前、説明、parameter schema を持ち、s02 で手書きした `TOOLS` とまったく同じ形です。Harness は Jira がどの interface を持つか事前に知る必要がなく、接続した瞬間に学びます。これが「発見」です。
 
-### normalize_mcp_name：名前の正規化
+教材版の server は process 内 mock で、`docs` 文書サービスと `deploy` 配備サービスがあります。実際の MCP は JSON-RPC protocol を使い、stdio または HTTP で別 process と通信します。ただし「接続、発見、呼び出し、結果返却」という形は同じです。教材版は形を残して transport を省いています。
+
+---
+
+## 命名: Prefix が namespace になる
+
+発見したツールをそのまま pool へ入れず、先に改名します。
 
 ```python
-_DISALLOWED_CHARS = re.compile(r'[^a-zA-Z0-9_-]')
-
 def normalize_mcp_name(name: str) -> str:
-    return _DISALLOWED_CHARS.sub('_', name)
+    return _DISALLOWED_CHARS.sub('_', name)    # [a-zA-Z0-9_-] 以外をすべて underscore へ
+
+prefixed = f"mcp__{safe_server}__{safe_tool}"  # mcp__docs__search
 ```
 
-`[a-zA-Z0-9_-]` 以外の全文字を `_` に置換。server 名やツール名の特殊文字による名前衝突やインジェクション問題を防止。
+prefix が衝突を防ぎます。`docs` と `deploy` の両 server に `status` というツールがあっても、`mcp__{server}__` を付ければ別物になり、built-in の `bash` とも衝突しません。normalize は検査の考え方が 4 度目に登場したものです。s02 は path、s07 は skill 名、s18 は worktree 名を守りました。server が報告する名前も外部入力であり、奇妙な文字を含むと API が request 全体を拒否します。
 
-### assemble_tool_pool：ツールプールの組み立て
+---
+
+## 組み立て: Built-in と外部ツールを同じ pool へ入れる
 
 ```python
 def assemble_tool_pool() -> tuple[list[dict], dict]:
     tools = list(BUILTIN_TOOLS)
     handlers = dict(BUILTIN_HANDLERS)
     for server_name, mcp_client in mcp_clients.items():
-        safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
-            safe_tool = normalize_mcp_name(tool_def["name"])
-            prefixed = f"mcp__{safe_server}__{safe_tool}"
-            tools.append(...)
+            prefixed = f"mcp__{normalize_mcp_name(server_name)}__{normalize_mcp_name(tool_def['name'])}"
+            tools.append({"name": prefixed,
+                          "description": tool_def.get("description", ""),
+                          "input_schema": tool_def.get("inputSchema", {})})
             handlers[prefixed] = (
-                lambda *, c=mcp_client, t=tool_def["name"], **kw:
-                    c.call_tool(t, kw))
+                lambda *, c=mcp_client, t=tool_def["name"], **kw: c.call_tool(t, kw))
     return tools, handlers
 ```
 
-プレフィックス `mcp__{server}__{tool}` で異なる server 間のツール名衝突を防止。名前は `normalize_mcp_name` で正規化。
+組み立て後の pool は、モデルから見ると「built-in」と「外部」に分かれていません。`mcp__docs__search` と `read_file` は、どちらも名前と schema で同じ形です。s02 の dispatch 機構がそのまま動きます。最初に table-driven dispatch を選んだ複利です。
 
-MCP ツールの description に `(readOnly)` または `(destructive)` アノテーションを付与 — 教学版はテキストアノテーション、実際の CC は tool annotations 構造体で権限システムが判断。
+handler の lambda には、名前を挙げる価値のある古い Python の罠があります。直感的な `lambda **kw: mcp_client.call_tool(tool_def["name"], kw)` では loop variable を closure が参照します。loop 終了後、すべての handler が**最後の**ツールを指し、`search` を呼ぶと `get_version` が実行されます。default argument の `c=mcp_client, t=tool_def["name"]` は定義時点の値を固定し、handler ごとに別々の binding を与えます。この罠は late binding と呼ばれ、loop 内で closure を作るたびに確認が必要です。
 
-### キャッシュなし：ツールプールが変われば、プロンプトも変わる
-
-s10-s18 の agent_loop は prompt cache で再シリアライズを回避。s19 はキャッシュを削除：
-
-```python
-def agent_loop(messages, context):
-    tools, handlers = assemble_tool_pool()     # 毎回再構築
-    system = assemble_system_prompt(context)    # 毎回再生成
-    ...
-    if any(b.name == "connect_mcp" ...):
-        tools, handlers = assemble_tool_pool()  # 接続後に再構築
-        system = assemble_system_prompt(context)
-```
-
-理由：`connect_mcp` 後にツールプールが変化 — `mcp__docs__search` などの新ツールが追加される。キャッシュ内のツールリストは古く、使い続けるとモデルが新ツールを呼び出せない。教学版はキャッシュを単に削除、代償はシリアライズ時間の若干の増加。
-
-### MCP ツールは Lead のみ利用可能
-
-教学版では、`connect_mcp` は Lead ツール、`assemble_tool_pool` も Lead の agent_loop のみにサービスを提供。チームメイトは引き続き固定の 8 ツールサブセット（bash、read_file、write_file、send_message、submit_plan、list_tasks、claim_task、complete_task）を使用。
-
-これは教学簡略化。実際の CC では、MCP ツールはメイン agent とサブ agent の両方で利用可能 — サブ agent は親の MCP 設定を継承。
+組み立ては 1 回だけではありません。`agent_loop` は各 tool round の後に pool を組み直します。モデルが今のラウンドで `connect_mcp` を呼べば、次のラウンドには新ツールがあります。代償も明確にしましょう。tool list が変わると request の `tools` parameter が変わり、s08 の選択項目で触れた prompt cache prefix は無効になります。s10 の比較で、実システムの唯一の volatile segment が `mcp_instructions` だと説明しましたが、理由はここにあります。MCP は tool pool で唯一 runtime に変化する部分です。
 
 ---
 
-## s18 からの変更
+## Annotation: 外部ツールによる自己申告
+
+mock server のツール説明を見ると、`search` は `(readOnly)`、`deploy.trigger` は `(destructive)` と記されています。これは permission system への interface です。built-in ツールが読み書きのどちらかは実装者である私たちが分かりますが、外部ツールは server の申告に頼ります。
+
+さらに正直に言えば、annotation は server の主張であり、server は嘘をつけます。悪意ある server がデータベース削除ツールを readOnly と記しても、教材版は信じます。そのため実システムは annotation を保守的な方向にだけ使います。readOnly は「確認を減らす」材料にはなっても、destructive は必ず承認を求め、自己申告で危険なツールが s03 の gate を通過することはありません。trust boundary は相手の善意ではなく protocol に引きます。
+
+> 実際の Claude Code は stdio、HTTP、SSE など 6 種類の transport、OAuth 認証、server からの push notification、複数 source の設定 merge をサポートします。MCP ツールの readOnly/destructive annotation は実際に permission pipeline へ入り、destructive は既定でユーザー承認が必要です。教材版 mock は発見、命名、組み立て、annotation という 4 つの要点を保っています。
+
+---
+
+## s18 からの変更点
 
 | コンポーネント | 変更前 (s18) | 変更後 (s19) |
-|--------------|------------|------------|
-| ツールソース | 全て手書き builtin | 手書き + MCP 外部ツール動的発見 |
-| ツールプール | 固定 BUILTIN_TOOLS | assemble_tool_pool が動的に mcp\_\_ プレフィックスツールを組み立てる |
-| 名前の安全性 | なし | normalize_mcp_name 正規化 |
-| 新規タイプ | — | MCPClient クラス（tools/list + tools/call をシミュレート） |
-| 名前空間 | — | mcp\_\_server\_\_tool 衝突防止 |
-| ツール説明 | アノテーションなし | (readOnly)/(destructive) アノテーション |
-| プロンプトキャッシュ | あり（s10 から） | 削除 — ツールプールが動的、キャッシュが陳腐化 |
-| Lead ツール | 17 (s18) | 18 (+connect_mcp) |
-| チームメイトツール | 8 (s18) | 8（変更なし、MCP ツールは Lead のみ） |
-| 拡張方法 | ツール追加のコードを書く | 標準プロトコル、任意言語で server を実装 |
+|------|-----------|-----------|
+| ツール source | すべて built-in、compile 時に確定 | built-in + MCP 発見、runtime に変化 |
+| 新しい型 | — | `MCPClient`（発見 + 呼び出し） |
+| 新しい関数 | — | `connect_mcp`, `assemble_tool_pool`, `normalize_mcp_name` |
+| 命名 | prefix なし | MCP ツールに `mcp__{server}__{tool}` prefix |
+| tool pool | static `TOOLS` | 各 tool round 後に再組み立て |
 
 ---
 
@@ -162,121 +108,17 @@ cd learn-claude-code
 python s19_mcp_plugin/code.py
 ```
 
-以下のプロンプトを試してください：
-
-1. `Connect to the docs MCP server and search for something`
-2. `Connect to the deploy server and trigger a deployment`
-3. `Connect both servers — what tools are now available?`
-
-観察ポイント：MCP server 接続後、ツール名に `mcp__docs__` や `mcp__deploy__` プレフィックスが付いているか？両方の server のツールが同時に利用可能か？MCP ツールの description に (readOnly)/(destructive) アノテーションが付いているか？
+1. **発見の瞬間**: `Connect to the docs MCP server, then list what tools you have now.` 接続ログ `[mcp] connected: docs → ['search', 'get_version']` の後、モデル自身が `mcp__docs__search` などの新しい名前を挙げられます。pool に入った証拠です。
+2. **同じ pool から呼ぶ**: `Search the docs for "authentication" and also read README.md`。1 ラウンドで外部ツールと built-in ツールを混ぜて呼んでも、モデルには違いがありません。
+3. **存在しない server へ接続**: `Connect to the jira MCP server`。`Unknown server 'jira'. Available: docs, deploy` が返り、エラーに利用可能な一覧があるため、モデルは自分で修正できます。
+4. **Annotation の感触**: `Connect to deploy and check the status of service 'web'`、続いて `Trigger a deployment of 'web'` を試します。教材版は permission gate を接続していないため両方実行できますが、説明には `(readOnly)` と `(destructive)` がすでにあります。s03 を思い出してください。外部ツールへ 3 つの gate を適用する判断材料が、この annotation です。
 
 ---
 
-## 次の章
+## 次へ
 
-Agent は標準プロトコルで外部ツールに接続できるようになりました。しかし前 19 章は各章で 1 つの仕組みだけを追加しています。実際の Agent は 19 個の demo に分かれて動くわけではありません。
+MCP がつながり、toolbox の最後の piece がそろいました。19 章を振り返ると、各章は 1 つの仕組みだけを追加した独立 demo です。しかし実際の Agent は 19 個の demo ではなく、1 つの process です。compaction、memory、permission、team、scheduling が同じ loop の周囲で同時に動きます。
 
-tools、permissions、hooks、todo、task graph、memory、compact、background work、cron、teams、worktree、MCP は、別々の例ではなく同じ loop に接続されるべきです。
+s20 Comprehensive Agent → 最初の 19 章を 1 つの完全な Harness へ統合します。仕組みは多数、loop は 1 つです。
 
-s20 Comprehensive Agent → 前 19 章の仕組みを 1 つの完全な harness に統合。仕組みは多く、loop は 1 つ。
-
-<details>
-<summary>CC ソースコード深掘り</summary>
-
-> 以下は CC ソースコード `services/mcp/client.ts`、`auth.ts`、`config.ts`、`channelNotification.ts` の分析に基づく。
-
-### 一、6 種の Transport タイプ
-
-教学版は stdio mock のみ。CC は 6 種のトランスポートをサポート（`types.ts:23-25`）：
-
-| Transport | 通信方式 |
-|-----------|---------|
-| `stdio` | サブプロセス stdin/stdout（クロスプラットフォームデフォルト） |
-| `sse` | HTTP Server-Sent Events |
-| `http` | Streamable HTTP（POST/SSE 双方向） |
-| `ws` | WebSocket |
-| `sse-ide` | IDE 内蔵 SSE トランスポート |
-| `sdk` | プロセス内 SDK トランスポート |
-
-接続時、ローカル（stdio）とリモート（http/sse/ws）サーバーをバッチで並行処理：ローカルは 3 つずつ、リモートは 20 つずつ。
-
-### 二、ツールプール組み立てアルゴリズム
-
-`assembleToolPool()`（`tools.ts:345-364`）：
-
-```typescript
-// 重複排除時に組み込みツールを優先（name が同じ場合、組み込みが先）
-return uniqBy(
-  [...builtInTools.sort(byName), ...filteredMcpTools.sort(byName)],
-  'name',
-)
-```
-
-組み込みツールと MCP ツールは別々にソート、混ぜてソートしない。理由は CC の `claude_code_system_cache_policy` が最後の組み込みツールの後の特定位置にグローバルキャッシュブレークポイントを置く設計のため — ソートを混ぜるとこの設計が壊れる。
-
-### 三、命名規則：`mcp__server__tool`
-
-`buildMcpToolName()`（`mcpStringUtils.ts:50-52`）：
-
-```
-mcp__<normalizedServerName>__<normalizedToolName>
-```
-
-`[a-zA-Z0-9_-]` 以外の全文字を `_` に置換（`normalization.ts:17-23`）。教学版の `normalize_mcp_name` も同じルールを使用。
-
-### 四、権限チェック
-
-CC は MCP ツールに対して独立した権限システムを持つ。`checkPermissions()` は MCP ツールに対して組み込みツールとは異なるロジックを適用 — MCP ツールは独自の権限要件（readOnly、destructive 等）を宣言でき、CC は宣言に基づいてユーザー確認が必要かを判断。教学版は description 内のテキストアノテーション `(readOnly)` / `(destructive)` のみで、権限インターセプトは行わない。
-
-### 五、設定ソースと優先度
-
-MCP サーバー設定は複数のソースから。CC の優先度は低い順に：
-
-```
-claude.ai コネクタ < プラグイン < ユーザー settings.json < 承認済みプロジェクト .mcp.json < ローカル settings.local.json
-```
-
-`claude.ai` コネクタは個別に取得、コンテンツ署名で重複排除し、最低優先度で統合（`config.ts:1267-1289`）。企業 `managed-mcp.json` が存在する場合、他の全設定を完全に除外。
-
-教学版は server 名を直接 `MOCK_SERVERS` 辞書に渡し、設定マージは行わない。
-
-### 六、Channel 通知：サーバーからの逆方向メッセージ
-
-教学版は Agent → MCP Server の一方向呼び出しのみ。CC は逆方向通知もサポート（`channelNotification.ts`）：
-
-1. Server が `capabilities.experimental['claude/channel']` を宣言
-2. Server が MCP 通知 `notifications/claude/channel` で Agent にメッセージを送信
-3. メッセージは `<channel source="serverName">...</channel>` XML タグでラップ
-4. Agent は SleepTool で起床（1 秒以内）
-
-Server は権限リクエストも可能：`notifications/claude/channel/permission_request` → Agent が `notifications/claude/channel/permission` で応答。ユーザーは 5 文字の短い ID で確認/拒否。
-
-### 七、OAuth 認証フロー
-
-CC の MCP 認証（`auth.ts`）は完全な OAuth 2.0 + PKCE フローをサポート：
-- 公開クライアント + PKCE で OAuth メタデータを発見（RFC 8414 / RFC 9728）
-- ローカルコールバックサーバーが認可コードを受信
-- トークンは `getSecureStorage()` で永続化（macOS Keychain / Linux 暗号化ファイル / Windows 資格情報マネージャー）
-- 有効期限 5 分前に自動リフレッシュ
-- クロスアプリケーションアクセス（XAA）：ブラウザが id_token を取得 → RFC 8693 + RFC 7523 交換 → 繰り返しブラウザポップアップ不要
-
-### 八、接続ライフサイクルのエラーハンドリング
-
-CC は MCP 接続にきめ細かいエラー分類とリトライを行う（`client.ts:1266-1402`）：
-- 終局エラー（ECONNRESET、ETIMEDOUT、EPIPE 等）：連続 3 回 → クローズ + 再接続
-- ツール呼び出し 401：トークン期限切れ → `McpAuthError` スロー → 再認証トリガー
-- ツール呼び出しタイムアウト：`Promise.race` タイムアウト（設定可能、デフォルト約 28 時間）
-- Stdio 切断：SIGINT → SIGTERM → SIGKILL の順でプロセスを kill
-
-### 教学版の簡略化
-
-- 6 種のトランスポート → 1 種（mock stdio）：概念量を管理可能に
-- Channel 逆方向通知 → 省略：教学版 Agent は常にイニシエータ
-- OAuth フロー → 省略：教学版は server が認証不要と仮定
-- 多層設定優先度 → 省略：教学版は直接 server 名を渡す
-- 複雑なエラー分類 → 省略：教学版は try/except でフォールバック
-- MCP ツールは Lead のみ → サブ agent 継承を省略：コード構造を簡略化
-
-</details>
-
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

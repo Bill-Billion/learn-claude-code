@@ -1,277 +1,172 @@
-# s11: Error Recovery — 错误不是结束，是重试的开始
+# s11: Error Recovery — An Error Is the Start of a Retry, Not the End
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s09 → s10 → `s11` → [s12](../s12_task_system/) → s13 → ... → s20
-> *"错误不是终点, 是重试的起点"* — 升级 token、压缩上下文、切换模型。
+> *"Errors are not the end; they are the start of recovery"* — raise token limits, compact context, and switch models.
 >
-> **Harness 层**: 韧性 — 主循环遇到错误时分类并恢复。
+> **Harness layer**: Resilience — classify and recover from errors inside the main loop.
 
 ---
 
-## 问题
-
-Agent 跑着跑着报错了：
+The first ten lessons share one assumption: every API call succeeds. One line breaks it:
 
 ```
 Error: 529 overloaded
 ```
 
-Agent 崩溃了。它没有重试，没有换模型，没有减少上下文——直接崩溃。
-
-生产环境中 API 错误是常态。三种最常见的故障模式：**输出被截断**（模型话说一半 token 用完了）、**上下文超限**（压缩后还是太长）、**临时故障**（429 限流 / 529 过载）。一个不处理错误的 Agent 就像一个一碰就熄火的车。
-
----
-
-## 解决方案
+The Agent crashes immediately. No retry, no fallback, and twenty minutes of work disappears. In production, 429 rate limits, 529 overloads, and network instability are not unusual events. They happen every day.
 
 ![Error Recovery Overview](images/error-recovery-overview.svg)
 
-s10 的循环、prompt 组装全部保留。唯一的变动：LLM 调用包裹在 try/except 里，根据错误类型走不同的恢复路径。恢复后 `continue` 回到循环开头重新调用 LLM。
+---
 
-三种最常见的恢复模式（教学版只处理 429/529；真实系统还覆盖连接错误、超时、云厂商认证缓存等。CC 实际有 13+ reason code，其余见 Deep dive）：
+## Why One Universal Retry Loop Fails
 
-| 模式 | 触发 | 恢复动作 |
-|------|------|---------|
-| 输出截断 | `max_tokens` | 升级 8K→64K / 续写提示 |
-| 上下文超限 | `prompt_too_long` | reactive compact → 重试 |
-| 临时故障 | 429 / 529 | 指数退避 + 抖动，连续 529 可切换备用模型 |
+The first reaction is to wrap the call in `try/except` and repeat on failure:
+
+```python
+while True:
+    try:
+        response = client.messages.create(...)
+        break
+    except Exception:
+        time.sleep(1)   # Surely another try will work?
+```
+
+Three failures appear immediately. Retrying `prompt_too_long` ten thousand times changes nothing because the request itself is too large; time cannot cure it. A fixed retry interval makes 429 worse: every client fails in the same second and returns in the same second, hitting the server again before it recovers. Most dangerously, this loop hides real bugs. A `TypeError` in your code retries forever, so the error that needs fixing is never surfaced.
+
+The principle is: **the recovery action must match the nature of the error.** The teaching version separates four categories: truncated answers, oversized requests, transient failures, and unrecoverable errors.
 
 ---
 
-## 工作原理
+## Path 1: Truncated Output — Add Space, Then Continue
 
-### 路径 1: 输出被截断
-
-模型话说一半，`max_tokens` 用完了。默认 8000 token 不够它输出完整回答。
-
-第一次发生时，直接把 `max_tokens` 从 8K 升级到 64K（8 倍空间），重试同一请求——此时不追加截断输出到 messages，保持原始请求不变。如果 64K 还是不够，才保存截断输出并注入续写提示让模型接着刚才的话继续说，最多 3 次：
+When the model runs out of output tokens mid-answer, `stop_reason` is `"max_tokens"`. Recovery has two levels:
 
 ```python
 if response.stop_reason == "max_tokens":
-    # First escalation: don't append truncated output, retry same request
+    # Level 1: raise the limit to 64K and resend. Do not append the truncated output.
     if not state.has_escalated:
-        max_tokens = ESCALATED_MAX_TOKENS
+        max_tokens = ESCALATED_MAX_TOKENS      # 8000 -> 64000
         state.has_escalated = True
-        continue  # messages unchanged, same request with more tokens
-    # 64K still truncated: save output + continuation prompt
+        continue
+    # Level 2: if 64K is still insufficient, save the fragment and ask to continue, at most 3 times
     messages.append({"role": "assistant", "content": response.content})
     if state.recovery_count < MAX_RECOVERY_RETRIES:
-        messages.append({"role": "user", "content":
-            "Output token limit hit. Resume directly — "
-            "no apology, no recap. Pick up mid-thought."})
+        messages.append({"role": "user", "content": CONTINUATION_PROMPT})
         state.recovery_count += 1
         continue
-    return  # still truncated after 3 continuations
-# Normal: append after max_tokens check
+    return
+# Append only normally completed responses here
 messages.append({"role": "assistant", "content": response.content})
 ```
 
-升级只有一次机会，续写最多 3 次。超过就退出——继续续写也不会有实质产出。
+Level 1 has an easy-to-reverse detail: the truncated output **does not enter** `messages` during escalation. Increase the space from 8K to 64K and resend the same clean request; most answers now finish in one pass. Saving the fragment before retrying would leave a partial draft in history next to the complete replacement.
 
-### 路径 2: 上下文超限
+Level 2 begins stitching. Save the partial answer, append a continuation instruction — "continue directly; do not apologize or repeat" — and let the model resume at the cut. Stop after three continuations. More than that means the task itself needs decomposition.
 
-LLM 说"你的上下文太长了"（`prompt_too_long`）。s08 的四层压缩全跑过了，还是超。
+Check order matters too: test `max_tokens` **before** appending the response. Reverse those operations and level 1 can no longer avoid saving the fragment.
 
-触发 reactive compact——比 auto compact 更激进。教学版只保留最后 5 条消息模拟压缩效果；真实实现会调用 LLM 生成 compact 摘要再重试。压缩后重试。但如果压缩过一次还是超限，只能退出——再压缩也不会变小：
+---
+
+## Path 2: Oversized Request — Slim It Once, and Only Once
+
+An API `prompt_too_long` error means context exceeds a hard limit. The treatment is compaction, not waiting:
 
 ```python
-except PromptTooLongError:
-    if not state.has_attempted_reactive_compact:
-        messages[:] = reactive_compact(messages)
-        state.has_attempted_reactive_compact = True
-        continue
-    return  # 压缩过了还是超限，只能退出
+except Exception as e:
+    if is_prompt_too_long_error(e):
+        if not state.has_attempted_reactive_compact:
+            messages[:] = reactive_compact(messages)   # Keep only the last five plus a note
+            state.has_attempted_reactive_compact = True
+            continue
+        # Still too large after one pass: exit. Repeating will not make it smaller.
+        ...
+        return
 ```
 
-### 路径 3: 临时故障
+One teaching simplification: this `reactive_compact` only trims the head and keeps the last five messages. It does not call a model for a summary. s08 already explained LLM-based emergency summaries; this lesson focuses on the recovery framework.
 
-网络抖动、429 限流、529 过载——这些不是 bug，是分布式系统的常态。
+The reason for one attempt is the same as s08. If the request is still too large after trimming, a single remaining message is probably enormous. Repeated compaction only creates an endless "compact, fail, compact again" loop.
 
-429 和 529 统一走指数退避 + 抖动：第一次等 0.5 秒，第二次等 1 秒，第三次等 2 秒，最多 10 次。加随机抖动让并发请求不在同一时刻重试。连续 3 次 529 过载 → 切换到备用模型（若配置了 `FALLBACK_MODEL_ID` 环境变量）：
+---
+
+## Path 3: Transient Failure — Back Off Correctly
+
+429 and 529 are the errors that really deserve retries, but every retry needs two ingredients: exponential backoff and jitter.
 
 ```python
 def retry_delay(attempt, retry_after=None):
-    if retry_after:
+    if retry_after:                                   # Honor the server's requested delay
         return retry_after
-    base = min(500 * (2 ** attempt), 32000) / 1000
-    return base + random.uniform(0, base * 0.25)
-
-def with_retry(fn, state, max_retries=10):
-    for attempt in range(max_retries):
-        try:
-            return fn()
-        except (RateLimitError, OverloadedError):
-            delay = retry_delay(attempt)
-            time.sleep(delay)
-            if is_overloaded:
-                state.consecutive_529 += 1
-                if state.consecutive_529 >= 3 and FALLBACK_MODEL:
-                    state.current_model = FALLBACK_MODEL
-    raise MaxRetriesExceeded()
+    base = min(BASE_DELAY_MS * (2 ** attempt), 32000) / 1000   # 0.5s, 1s, 2s ... cap at 32s
+    jitter = random.uniform(0, base * 0.25)           # Add 0-25% random jitter
+    return base + jitter
 ```
 
-退避公式：`min(500 × 2^attempt, 32000) + random(0~25%)`。如果服务器返回 `Retry-After` header，优先用那个值。
+Exponential growth is courtesy to the server: it is already overloaded, so each retry waits longer. Jitter is courtesy to every other client: if thousands fail at the same millisecond and retry on exact intervals, the next surge is as large as the last. Random offsets spread the peak out.
 
-### 合起来跑
+529 has another escalation. Three consecutive overload responses suggest that the current model will not recover soon, so switch to a fallback when `FALLBACK_MODEL_ID` is configured. Without one, continue backing off:
 
 ```python
-def agent_loop(messages, context):
-    system = get_system_prompt(context)
-    state = RecoveryState()
-    max_tokens = 8000
-
-    while True:
-        try:
-            response = with_retry(
-                lambda: client.messages.create(
-                    model=state.current_model, system=system,
-                    messages=messages, tools=TOOLS,
-                    max_tokens=max_tokens),
-                state)
-        except Exception as e:
-            if is_prompt_too_long_error(e):
-                if not state.has_attempted_reactive_compact:
-                    messages[:] = reactive_compact(messages)
-                    state.has_attempted_reactive_compact = True
-                    continue
-                return
-            log_error(e)
-            return
-
-        # max_tokens check BEFORE appending to messages
-        if response.stop_reason == "max_tokens":
-            if not state.has_escalated:
-                max_tokens = 64000
-                state.has_escalated = True
-                continue  # retry same request, messages unchanged
-            # save truncated output + continuation prompt
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": CONTINUATION_PROMPT})
-            continue
-        # Normal completion
-        messages.append({"role": "assistant", "content": response.content})
-
-        if response.stop_reason != "tool_use":
-            return
-        # ... tool execution ...
+if state.consecutive_529 >= MAX_CONSECUTIVE_529:
+    if FALLBACK_MODEL:
+        state.current_model = FALLBACK_MODEL
+        state.consecutive_529 = 0
 ```
 
-外层 try/except 捕获 API 异常（prompt_too_long 等），`with_retry` 处理瞬态错误（429/529），`stop_reason` 检查处理截断。三种恢复机制各管各的错误类型。
+Any successful call resets the counter, so occasional 529s do not accumulate. The entire retry process stops at ten attempts and raises `Max retries exceeded`; it never waits forever.
 
 ---
 
-## 相对 s10 的变更
+## Everything Else: Record It and Exit
 
-| 组件 | 之前 (s10) | 之后 (s11) |
-|------|-----------|-----------|
-| 错误处理 | 无（一碰就崩溃） | 三种恢复模式 + 指数退避 |
-| 新常量 | — | ESCALATED_MAX_TOKENS=64000, MAX_RETRIES=10, BASE_DELAY_MS=500, FALLBACK_MODEL |
-| 新函数 | — | with_retry, retry_delay, reactive_compact, is_prompt_too_long_error, RecoveryState |
-| 工具 | bash, read_file, write_file (3) | bash, read_file, write_file (3) — 不变 |
-| 循环 | 裸调用 LLM | try/except 包裹 + continue 重试 |
+Errors outside those three categories — authentication, invalid arguments, real code bugs — have one correct treatment: do not attempt recovery.
+
+```python
+messages.append({"role": "assistant", "content": [
+    {"type": "text", "text": f"[Error] {name}: {str(e)[:200]}"}]})
+return
+```
+
+Before exiting, record the error in the conversation. A silent crash is the worst behavior: the user returns to find the Agent gone with no explanation. An error in `messages` is visible to the user and remains available to the model on the next turn.
+
+Three mechanisms own separate layers: inner `with_retry` absorbs transient failures; the outer `except` handles context overflow and unrecoverable errors; the `stop_reason` check handles truncation. Once categories are clear, every path is short enough to inspect at a glance.
+
+> Real Claude Code evaluates more than a dozen reasons and transitions after each call, with specific paths for streaming aborts, image errors, hook blocks, token-budget continuation, and more. Switching to a fallback clears pending messages and tells the user it changed models because of high load. Continuation also detects diminishing returns: if three consecutive continuations add fewer than 500 tokens, it stops rather than continuing uselessly.
 
 ---
 
-## 试一下
+## Changes from s10
+
+| Component | Before (s10) | After (s11) |
+|-----------|--------------|-------------|
+| Error handling | None; any error crashes | Four-category recovery + exponential backoff |
+| New constants | — | `ESCALATED_MAX_TOKENS=64000`, `MAX_RETRIES=10`, `BASE_DELAY_MS=500`, `MAX_CONSECUTIVE_529=3` |
+| New functions | — | `with_retry`, `retry_delay`, `reactive_compact`, `is_prompt_too_long_error`, `RecoveryState` |
+| Tools | bash, read_file, write_file (3) | Unchanged |
+| Loop | Bare LLM call | `try/except` plus retrying `continue` paths |
+
+---
+
+## Try It
 
 ```sh
 cd learn-claude-code
 python s11_error_recovery/code.py
 ```
 
-试试这些 prompt：
-
-1. 让 Agent 生成一段很长的代码，观察截断后是否自动续写（看 `[max_tokens] escalating` 日志）
-2. 连续读取大量文件撑大上下文，观察 reactive compact
-3. 如果遇到 429/529，观察指数退避的日志输出
+1. **Truncation path (probabilistic, but often reproducible):** `Write a single Python file implementing a complete tic-tac-toe game with an AI opponent, full docstrings and type hints, at least 500 lines`. If output exceeds 8K tokens, you will see `[max_tokens] escalating 8000 -> 64000`.
+2. **Unrecoverable path (deterministic):** set `MODEL_ID` in `.env` to a nonexistent name such as `claude-nonexistent`, then ask anything. Observe the `[unrecoverable]` log and the `[Error] NotFoundError: ...` message left in the conversation. Restore the model name afterward.
+3. **Transient path (cannot be forced):** if a real 429 or 529 occurs, logs look like `[429 rate limit] retry 1/10, wait 0.5s`, with intervals doubling on later attempts. Recognizing the labels lets you see that production code is recovering rather than hanging.
 
 ---
 
-## 接下来
+## What's Next
 
-Agent 现在能在错误中自动恢复了。但它处理的任务仍然是"一次性"的——你给它一个任务，它做完，结束。
+The Agent is resilient now, but its tasks are still one-off: receive work, finish, exit. An in-memory TODO list from s05 cannot express dependencies, survive process restarts, or coordinate several workers claiming the same pool of tasks.
 
-能不能让 Agent 管理一个**任务列表**——有依赖关系、持久化到磁盘、跨会话能恢复？TODO 列表不是任务系统。
+s12 Task System → Tasks form a persistent graph with state and dependencies: the foundation of multi-Agent coordination.
 
-s12 Task System → 任务是有依赖、有状态、持久化的图。这是多 Agent 协作的基础。
-
-<details>
-<summary>深入 CC 源码</summary>
-
-> 以下基于 CC 源码 `query.ts`（1729 行）、`services/api/withRetry.ts`（822 行）、`query/tokenBudget.ts`（93 行）、`utils/tokenBudget.ts`（73 行）的分析。
-
-### 一、十几种 reason/transition（不只是 3 条）
-
-教学版讲了 3 种最常见的恢复模式。CC 实际有十几种 reason/transition，每轮 LLM 调用后都会判断：
-
-| reason/transition | 教学版对应 | CC 行为 |
-|---|---|---|
-| `completed` | 正常完成 | 返回结果 |
-| `next_turn` | 正常工具调用 | 继续下一轮工具执行 |
-| `max_output_tokens_escalate` | 路径 1 | 8K→64K 升级 |
-| `max_output_tokens_recovery` | 路径 1 续写 | 续写提示（最多 3 次） |
-| `reactive_compact_retry` | 路径 2 | reactive compact → 重试 |
-| `prompt_too_long` | 路径 2 | 同上 |
-| `collapse_drain_retry` | 未展开 | context collapse 先提交暂存 |
-| `model_error` | 未展开 | 重试 |
-| `image_error` | 未展开 | `ImageSizeError` / `ImageResizeError` 专门处理 |
-| `aborted_streaming` | 未展开 | 流式中止恢复 |
-| `aborted_tools` | 未展开 | 工具中止 |
-| `stop_hook_blocking` | 未展开 | 注入 blocking error → 模型自纠 |
-| `stop_hook_prevented` | 未展开 | hooks 阻止 |
-| `hook_stopped` | 未展开 | hook 停止执行 |
-| `token_budget_continuation` | 未展开 | token 用量 < 90% 时继续 |
-| `blocking_limit` | 未展开 | 阻塞限制 |
-| `max_turns` | 未展开 | 达到最大轮次 |
-
-教学版只展开了前 5 种（最常见的），其余各有专门处理逻辑。
-
-### 二、指数退避的精确公式
-
-CC 的退避延迟（`withRetry.ts:530-548`）：
-
-```
-delay = min(500 × 2^(attempt-1), 32000) + random(0~25%)
-```
-
-| 尝试 | 基础延迟 | + 抖动 |
-|------|---------|--------|
-| 1 | 500ms | 0-125ms |
-| 2 | 1000ms | 0-250ms |
-| 4 | 4000ms | 0-1000ms |
-| 7+ | 32000ms（上限） | 0-8000ms |
-
-如果服务器返回 `Retry-After` header，优先用那个值。
-
-### 三、CONTINUATION 提示原文
-
-CC 的续写提示（`query.ts:1225-1227`）：
-
-```
-Output token limit hit. Resume directly — no apology, no recap of what
-you were doing. Pick up mid-thought if that is where the cut happened.
-Break remaining work into smaller pieces.
-```
-
-Token budget 的 nudge 提示（`tokenBudget.ts:72`）：
-
-```
-Stopped at {pct}% of token target. Keep working — do not summarize.
-```
-
-### 四、流式错误处理
-
-CC 的流式路径中，可恢复的错误（413、max_tokens、media error）在 streaming 期间**被暂扣不展示**（`query.ts:788-822`）——SDK 消费者看不到，只有恢复逻辑能看到。等 streaming 结束后才判断是否需要恢复。
-
-### 五、529 → Fallback Model 切换
-
-连续 3 次 529 过载错误后（`MAX_529_RETRIES = 3`），CC 自动切换到 fallback model（如 Opus → Sonnet）。切换时清除所有 pending 消息和 tool 结果，给用户展示 "Switched to {model} due to high demand"。
-
-### 六、Diminishing Returns 检测
-
-Token budget 的"继续"不是无限的。当连续 3 次 continuation 且 token 增量 < 500 时，系统判断"继续也没有实质性产出"，停止 continuation（`tokenBudget.ts:60-62`）。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

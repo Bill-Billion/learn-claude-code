@@ -1,78 +1,132 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 380" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 556" font-family="system-ui, -apple-system, sans-serif">
   <defs>
-    <linearGradient id="header" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#1e3a5f"/><stop offset="100%" stop-color="#7c3aed"/>
-    </linearGradient>
-    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c3aed"/>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
+    </marker>
+    <marker id="arrowGray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
     </marker>
   </defs>
 
-  <rect width="720" height="380" fill="#fafbfc" rx="8"/>
-  <rect x="0" y="0" width="720" height="38" fill="url(#header)" rx="8"/>
-  <rect x="0" y="30" width="720" height="8" fill="url(#header)"/>
-  <text x="360" y="25" fill="#fff" font-size="14" font-weight="700" text-anchor="middle">Memory System — 存储 · 加载 · 提取 · 整理</text>
+  <!-- Background -->
+  <rect width="820" height="556" fill="#ffffff" rx="8"/>
 
-  <!-- 存储 -->
-  <rect x="40" y="58" width="145" height="80" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
-  <text x="112" y="80" fill="#5b21b6" font-size="13" font-weight="700" text-anchor="middle">存储</text>
-  <line x1="55" y1="90" x2="170" y2="90" stroke="#c4b5fd" stroke-width="0.5"/>
-  <text x="55" y="108" fill="#5b21b6" font-size="10">.memory/*.md 文件</text>
-  <text x="55" y="124" fill="#5b21b6" font-size="10">MEMORY.md 索引</text>
+  <!-- Title -->
+  <text x="410" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">Memory Subsystems</text>
+  <text x="410" y="50" fill="#888888" font-size="12" text-anchor="middle">Store · Load · Extract · Consolidate</text>
 
-  <line x1="190" y1="98" x2="218" y2="98" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- ═══════════ Row 1: Four subsystems ═══════════ -->
 
-  <!-- 加载 -->
-  <rect x="222" y="58" width="200" height="80" rx="8" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
-  <text x="322" y="80" fill="#5b21b6" font-size="13" font-weight="700" text-anchor="middle">加载</text>
-  <line x1="237" y1="90" x2="407" y2="90" stroke="#c4b5fd" stroke-width="0.5"/>
-  <text x="237" y="108" fill="#5b21b6" font-size="10">索引常驻 SYSTEM</text>
-  <text x="237" y="124" fill="#5b21b6" font-size="10">LLM side-query 选文件</text>
-  <text x="237" y="134" fill="#a78bfa" font-size="9">≤ 5 条，失败降级到关键词</text>
+  <!-- Store -->
+  <rect x="20" y="72" width="175" height="104" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="107" y="94" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Store</text>
+  <line x1="32" y1="102" x2="183" y2="102" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="36" y="120" fill="#888888" font-size="11">.memory/*.md files</text>
+  <text x="36" y="136" fill="#888888" font-size="11">MEMORY.md index</text>
+  <text x="36" y="154" fill="#888888" font-size="10">YAML frontmatter metadata</text>
 
-  <line x1="425" y1="98" x2="453" y2="98" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <!-- Arrow: Store -> Load -->
+  <line x1="199" y1="124" x2="225" y2="124" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <circle cx="199" cy="124" r="3" fill="#22c55e"/>
 
-  <!-- 提取 -->
-  <rect x="457" y="58" width="130" height="80" rx="8" fill="#f3e8ff" stroke="#7c3aed" stroke-width="2"/>
-  <text x="522" y="80" fill="#5b21b6" font-size="13" font-weight="700" text-anchor="middle">提取</text>
-  <line x1="472" y1="90" x2="572" y2="90" stroke="#c4b5fd" stroke-width="0.5"/>
-  <text x="472" y="108" fill="#5b21b6" font-size="10">每轮结束后触发</text>
-  <text x="472" y="124" fill="#5b21b6" font-size="10">LLM 提取偏好/约束</text>
-  <text x="472" y="134" fill="#a78bfa" font-size="9">检查已有，避免重复</text>
+  <!-- Load -->
+  <rect x="230" y="72" width="175" height="104" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="317" y="94" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Load</text>
+  <line x1="242" y1="102" x2="393" y2="102" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="242" y="120" fill="#888888" font-size="11">Index in SYSTEM prompt</text>
+  <text x="242" y="136" fill="#888888" font-size="11">LLM side-query picks files</text>
+  <text x="242" y="154" fill="#888888" font-size="10">max 5, fallback to keywords</text>
 
-  <!-- 整理 -->
-  <rect x="600" y="58" width="100" height="80" rx="8" fill="#f5f3ff" stroke="#7c3aed" stroke-width="2"/>
-  <text x="650" y="80" fill="#5b21b6" font-size="13" font-weight="700" text-anchor="middle">整理</text>
-  <line x1="615" y1="90" x2="685" y2="90" stroke="#c4b5fd" stroke-width="0.5"/>
-  <text x="615" y="108" fill="#5b21b6" font-size="10">文件 ≥ 10 触发</text>
-  <text x="615" y="124" fill="#5b21b6" font-size="10">去重·合并·剪枝</text>
-  <text x="615" y="134" fill="#a78bfa" font-size="9">CC: 三层门控</text>
+  <!-- Arrow: Load -> Extract -->
+  <line x1="409" y1="124" x2="435" y2="124" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <circle cx="409" cy="124" r="3" fill="#22c55e"/>
 
-  <!-- Memory Files -->
-  <rect x="40" y="180" width="660" height="36" rx="6" fill="#f8fafc" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,2"/>
-  <text x="370" y="203" fill="#475569" font-size="11" text-anchor="middle">.memory/ — MEMORY.md 索引 + *.md 文件（YAML frontmatter: name / description / type）</text>
+  <!-- Extract -->
+  <rect x="440" y="72" width="170" height="104" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="525" y="94" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Extract</text>
+  <line x1="452" y1="102" x2="598" y2="102" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="452" y="120" fill="#888888" font-size="11">Triggered after each turn</text>
+  <text x="452" y="136" fill="#888888" font-size="11">LLM extracts prefs/facts</text>
+  <text x="452" y="154" fill="#888888" font-size="10">Dedup check</text>
 
-  <!-- Arrow: 存储 → Memory Files -->
-  <path d="M 112 138 L 112 180" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow)"/>
-  <text x="120" y="162" fill="#7c3aed" font-size="9">写入/读取</text>
+  <!-- Arrow: Extract -> Consolidate -->
+  <line x1="614" y1="124" x2="640" y2="124" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <circle cx="614" cy="124" r="3" fill="#22c55e"/>
 
-  <!-- Arrow: Extraction → Memory Files -->
-  <path d="M 522 138 L 522 180" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow)"/>
-  <text x="536" y="164" fill="#7c3aed" font-size="9">写入</text>
+  <!-- Consolidate -->
+  <rect x="645" y="72" width="155" height="104" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+  <text x="722" y="94" fill="#1a1a1a" font-size="14" font-weight="700" text-anchor="middle">Consolidate</text>
+  <line x1="657" y1="102" x2="788" y2="102" stroke="#d0d0d0" stroke-width="1"/>
+  <text x="657" y="120" fill="#888888" font-size="11">files >= 10 triggers</text>
+  <text x="657" y="136" fill="#888888" font-size="11">Dedup · Merge · Prune</text>
+  <text x="657" y="154" fill="#888888" font-size="10">Four-layer gating</text>
 
-  <!-- Arrow: 整理 → Memory Files -->
-  <path d="M 650 138 L 650 180" fill="none" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arrow)"/>
-  <text x="662" y="164" fill="#7c3aed" font-size="9">覆写</text>
+  <!-- ═══════════ Row 2: Memory Files (dashed) ═══════════ -->
 
-  <!-- 四类记忆 -->
-  <rect x="40" y="240" width="660" height="40" rx="6" fill="#faf5ff" stroke="#c4b5fd" stroke-width="0.5"/>
-  <text x="60" y="260" fill="#5b21b6" font-size="10" font-weight="600">四类记忆：</text>
-  <text x="140" y="260" fill="#475569" font-size="10">user（你是谁）· feedback（怎么做事）· project（正在发生什么）· reference（东西在哪找）</text>
+  <rect x="20" y="210" width="780" height="48" rx="8" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="410" y="232" fill="#1a1a1a" font-size="13" text-anchor="middle" font-family="monospace">.memory/</text>
+  <text x="410" y="248" fill="#888888" font-size="10" text-anchor="middle">MEMORY.md index + *.md files (YAML frontmatter: name / description / type)</text>
 
-  <!-- CC 源码对照 -->
-  <rect x="40" y="296" width="660" height="72" rx="6" fill="#f8fafc" stroke="#e2e8f0" stroke-width="1"/>
-  <text x="60" y="316" fill="#5b21b6" font-size="11" font-weight="600">CC 源码对照</text>
-  <text x="60" y="334" fill="#475569" font-size="10">• 记忆选择：LLM side-query（Sonnet 选），不是 embedding 向量相似度</text>
-  <text x="60" y="350" fill="#475569" font-size="10">• 提取时机：stop hook 中触发（每轮结束后），不是 autoCompact 后</text>
-  <text x="60" y="366" fill="#475569" font-size="10">• Dream 整理：三层门控（时间 ≥ 24h + 会话 ≥ 5 + 文件锁），不是简单计数</text>
+  <!-- Arrow: Store -> Memory Files (write/read) -->
+  <path d="M 107 176 L 107 210" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <circle cx="107" cy="176" r="3" fill="#22c55e"/>
+  <text x="115" y="198" fill="#22c55e" font-size="10" font-weight="600">write/read</text>
+
+  <!-- Arrow: Extract -> Memory Files (write) -->
+  <path d="M 525 176 L 525 210" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <circle cx="525" cy="176" r="3" fill="#22c55e"/>
+  <text x="533" y="198" fill="#22c55e" font-size="10" font-weight="600">write</text>
+
+  <!-- Arrow: Consolidate -> Memory Files (overwrite) -->
+  <path d="M 722 176 L 722 210" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <circle cx="722" cy="176" r="3" fill="#22c55e"/>
+  <text x="730" y="198" fill="#22c55e" font-size="10" font-weight="600">overwrite</text>
+
+  <!-- ═══════════ Row 3: Four Memory Types ═══════════ -->
+
+  <rect x="20" y="282" width="780" height="68" rx="8" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+  <text x="40" y="306" fill="#1a1a1a" font-size="13" font-weight="700">Four Memory Types</text>
+  <line x1="32" y1="314" x2="788" y2="314" stroke="#d0d0d0" stroke-width="1"/>
+
+  <!-- Type labels in a row -->
+  <text x="55" y="336" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">user</text>
+  <text x="100" y="336" fill="#888888" font-size="11">who you are</text>
+
+  <text x="250" y="336" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">feedback</text>
+  <text x="322" y="336" fill="#888888" font-size="11">how to work</text>
+
+  <text x="460" y="336" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">project</text>
+  <text x="527" y="336" fill="#888888" font-size="11">what's happening</text>
+
+  <text x="645" y="336" fill="#22c55e" font-size="12" font-weight="700" font-family="monospace">reference</text>
+  <text x="726" y="336" fill="#888888" font-size="11">where to find</text>
+
+  <!-- Separator dots -->
+  <circle cx="230" cy="333" r="2" fill="#d0d0d0"/>
+  <circle cx="443" cy="333" r="2" fill="#d0d0d0"/>
+  <circle cx="630" cy="333" r="2" fill="#d0d0d0"/>
+
+  <!-- ═══════════ Row 4: Implementation Notes (terminal style) ═══════════ -->
+
+  <rect x="20" y="376" width="780" height="164" rx="4" fill="#2d2d2d"/>
+
+  <!-- Terminal title bar -->
+  <circle cx="38" cy="392" r="5" fill="#1a1a1a" stroke="#888888" stroke-width="0.5"/>
+  <circle cx="54" cy="392" r="5" fill="#1a1a1a" stroke="#888888" stroke-width="0.5"/>
+  <circle cx="70" cy="392" r="5" fill="#1a1a1a" stroke="#888888" stroke-width="0.5"/>
+  <text x="410" y="396" fill="#888888" font-size="11" text-anchor="middle" font-family="monospace">Implementation Notes</text>
+
+  <line x1="32" y1="406" x2="788" y2="406" stroke="#888888" stroke-width="0.5" opacity="0.3"/>
+
+  <!-- Note 1: Memory Selection -->
+  <text x="40" y="426" fill="#22c55e" font-size="11" font-family="monospace">$ memory-selection</text>
+  <text x="40" y="444" fill="#d0d0d0" font-size="11" font-family="monospace">  LLM side-query (Sonnet selects), not embedding similarity</text>
+
+  <!-- Note 2: Extraction Timing -->
+  <text x="40" y="468" fill="#22c55e" font-size="11" font-family="monospace">$ extraction-timing</text>
+  <text x="40" y="486" fill="#d0d0d0" font-size="11" font-family="monospace">  Triggered in stop hook (after each turn), not after autoCompact</text>
+
+  <!-- Note 3: Dream Consolidation -->
+  <text x="40" y="510" fill="#22c55e" font-size="11" font-family="monospace">$ dream-consolidation</text>
+  <text x="40" y="528" fill="#d0d0d0" font-size="11" font-family="monospace">  Four gates: time >=24h + sessions >=5 + scan throttle + file lock</text>
 </svg>

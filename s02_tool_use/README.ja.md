@@ -1,85 +1,95 @@
-# s02: Tool Use — ツール一つ追加、一行追加だけ
+# s02: Tool Use — ツールを一つ増やすたび、追加するのは一行だけ
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → `s02` → [s03](../s03_permission/) → s04 → ... → s20
-> *"ツールを一つ追加、ハンドラを一つ追加"* — ループはそのまま。新しいツールをディスパッチマップに登録するだけ。
+> *"ツールを一つ増やすたび、handler を一つ追加する"* — ループは変えず、新しいツールを dispatch map に登録するだけ。
 >
-> **Harness レイヤー**: ツールディスパッチ — モデルが触れる範囲を拡張。
+> **Harness レイヤー**: ツールディスパッチ — ツール名で対応する処理関数を引き、呼び出す。
 
 ---
 
-## ツールは bash 一つだけ
+前章の Agent は自分で作業できるようになったが、手元には bash という一本の万能ナイフしかない。ファイルを書くときの姿はこうだ。
 
-s01 の Agent には bash 一つのツールしかない。ファイルを読むには `cat`、書くには `echo "..." > file.py`、編集するには `sed`。
-
-モデルは「このファイルを読みたい」と考えながら、`cat path/to/file` と組み立てなければならない。翻訳の層が一つ増え、トークンを無駄にし、エラーも起きやすい。
-
----
-
-## 概要：ツールディスパッチ
-
-![Tool Dispatch](images/tool-dispatch.ja.svg)
-
-s01 のループは完全に保持される（LLM 呼び出し、stop_reason 判定、メッセージ追加 — 一文字も変更なし）。唯一の変更点はツール実行の 1 行：`run_bash()` が `TOOL_HANDLERS[block.name]()` の検索ディスパッチに置き換わる。
-
-Agent にツールを追加するには、たった二つ：
-
-1. **ツールを定義**：`TOOLS` 配列に一条を追加
-2. **ハンドラを登録**：`TOOL_HANDLERS` 辞書に一つのマッピングを追加
-
----
-
-## 1 つのツールから 5 つのツールへ
-
-s01 には bash だけだった：
-
-```python
-TOOLS = [{"name": "bash", ...}]
-
-def run_bash(command): ...
+```bash
+echo 'print("hello")' > hello.py
 ```
 
-s02 では 5 つに増え、各ツールは独立して定義される：
+内容が単純なら問題ない。だが一重引用符、二重引用符、改行が混ざると、コマンドはエスケープだらけになる。モデルが一文字でも間違えれば、ディスクに書かれるのは壊れたファイルで、修正にもう一ターンかかる。
+
+この章では、五つの専用ツールを与える。重要なのはツールそのものではなく、追加の仕方だ。ループは一行も変更しない。
+
+![Tool Dispatch](images/tool-dispatch.svg)
+
+---
+
+## bash だけでは、なぜ足りないのか
+
+bash は理論上、何でもできる。問題は別のところにある。
+
+**翻訳が一段増える。** モデルの意図は「このファイルを読む」なのに、まず `cat path/to/file` へ翻訳しなければならない。翻訳するたびに失敗の機会が増え、引用符の処理はとりわけ壊れやすい。
+
+**出力量を制御できない。** `cat` には行数制限がないため、5,000 行のファイルが丸ごと会話へ流れ込む。専用の読取ツールなら `limit` 引数を持たせ、先頭 N 行だけ返せる。履歴を無制限に増やしたときの代償は s08 で詳しく扱う。
+
+**プログラムにはコマンドの意味がわからない。** コードから見れば bash の文字列はブラックボックスで、`cat` も `rm -rf` も同じ文字列にすぎない。対して `read_file` と `write_file` は名前の違うツールなので、読み書きの区別が明示される。今は小さな違いに見えるが、s03 の権限制御では決定的だ。操作が読み取りか書き込みかを知らなければ、止めるべきか判断できない。
+
+方針は明快だ。よく使う操作にはそれぞれ名前付きのツールを用意し、bash は最後の手段として残す。
+
+---
+
+## 定義を一つ、登録を一行
+
+s01 のメニューは一品だけだった。今度は五品に増やす。それぞれが `TOOLS` の一つの定義だ。
 
 ```python
 TOOLS = [
     {"name": "bash",       "description": "Run a shell command.", ...},
-    {"name": "read_file",  "description": "Read file contents.",  ...},
-    {"name": "write_file", "description": "Write content to file.", ...},
-    {"name": "edit_file",  "description": "Replace text in file once.", ...},
-    {"name": "glob",       "description": "Find files by pattern.", ...},
+    {"name": "read_file",  "description": "Read file contents.",  ...},   # limit を指定できる
+    {"name": "write_file", "description": "Write content to a file.", ...},
+    {"name": "edit_file",  "description": "Replace exact text in a file once.", ...},
+    {"name": "glob",       "description": "Find files matching a glob pattern.", ...},
 ]
 ```
 
-各ツールには専用の実装関数がある：
+各ツールの裏には普通の関数がある。まず、すべてのファイルツールが通る門を見てみよう。
+
+```python
+def safe_path(p: str) -> Path:
+    path = (WORKDIR / p).resolve()
+    if not path.is_relative_to(WORKDIR):    # 解決後もワークスペース内でなければならない
+        raise ValueError(f"Path escapes workspace: {p}")
+    return path
+```
+
+モデルが `../../etc/passwd` のような越境パスを渡すこともある。`safe_path` はまず絶対パスへ解決し、作業ディレクトリの外へ出ていないか確認する。これは本コース最初の本格的なセキュリティ境界だ。ただし守るのはファイルツールだけで、bash はここを通らない。その穴は s03 で塞ぐ。
+
+四つの新しいツールはどれも短い。
 
 ```python
 def run_read(path, limit=None):
     lines = safe_path(path).read_text().splitlines()
-    if limit:
-        lines = lines[:limit]
+    if limit and limit < len(lines):
+        lines = lines[:limit] + [f"... ({len(lines) - limit} more lines)"]
     return "\n".join(lines)
 
 def run_write(path, content):
-    safe_path(path).write_text(content)
+    file_path = safe_path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)   # 親ディレクトリがなければ作る
+    file_path.write_text(content)
     return f"Wrote {len(content)} bytes to {path}"
 
 def run_edit(path, old_text, new_text):
-    text = safe_path(path).read_text()
-    if old_text not in text:
-        return "Error: text not found"
-    safe_path(path).write_text(text.replace(old_text, new_text, 1))
+    file_path = safe_path(path)
+    text = file_path.read_text()
+    if old_text not in text:                 # 元のテキストがなければ明示的に失敗
+        return f"Error: text not found in {path}"
+    file_path.write_text(text.replace(old_text, new_text, 1))   # 最初の一致だけ置換
     return f"Edited {path}"
-
-def run_glob(pattern):
-    import glob as g
-    return "\n".join(g.glob(pattern, root_dir=WORKDIR))
 ```
 
----
+`edit_file` の二つの設計には意味がある。元のテキストは完全一致が必須で、見つからなければ失敗する。これによりモデルは、記憶だけを頼りに変更せず、先に読まざるを得ない。記憶がずれていれば、エラーがファイルの再読へ戻してくれる。置換を最初の一箇所に限定するのは、同じ文字列を含む無関係な箇所まで一度に変えないためだ。
 
-## ツールディスパッチ
+次は登録だ。ツール名から関数への対応は、一つの辞書で済む。
 
 ```python
 TOOL_HANDLERS = {
@@ -89,134 +99,67 @@ TOOL_HANDLERS = {
     "edit_file":  run_edit,
     "glob":       run_glob,
 }
-
-# ループ内で変更されたのは一行だけ — ハードコードの run_bash から検索ディスパッチへ：
-for block in response.content:
-    if block.type == "tool_use":
-        handler = TOOL_HANDLERS[block.name]    # 検索
-        output = handler(**block.input)         # 呼び出し
-        results.append(...)
 ```
 
-ツールの追加 = `TOOLS` 配列に一条 + `TOOL_HANDLERS` 辞書に一行。ループは変わらない。
+ループ内の変更も一行だけ。s01 のハードコードされた呼び出しを、s02 では表引きに変える。
+
+```python
+for block in response.content:
+    if block.type == "tool_use":
+        handler = TOOL_HANDLERS.get(block.name)                       # ツール名で表を引く
+        output = handler(**block.input) if handler else f"Unknown: {block.name}"
+        results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+```
+
+`while True`、`stop_reason` の判定、メッセージの追加はすべてそのままだ。この章の要点は一文で言える。**ループは変えず、メニューだけを増やす。** 以後の章で機能を足すときも、型は同じだ。`TOOLS` に一つ定義し、`TOOL_HANDLERS` に一行登録する。
 
 ---
 
-## 複数のツール呼び出し
+## モデルが一度に何品も注文する
 
-モデルはよく一度に複数の tool_use を返す — 「a.py と b.py を読んで、全 .py ファイルを列挙して」。
+s01 の最後に二つの問いが残った。モデルは一度に複数のツールを呼ぶのか。それらは互いに干渉しないのか。
 
-教育版は `response.content` の元の順序で一つずつ実行する。CC のやり方はより複雑：元の順序を保ったまま連続バッチに分割し、バッチ内の並列安全なツールを並行実行し、バッチ間は厳密に順次（付録を参照）。
+最初の答えは「呼ぶ」で、しかも珍しくない。「a.py と b.py を読んで」と頼むと、一つの応答に二つの `tool_use` ブロックが入ることがある。ループに特別な処理は要らない。`for block in response.content` はもともと全ブロックを走査し、順に実行して結果を集め、すべての `tool_result` を一つの `user` メッセージへ入れて返す。
 
----
+二つ目について、教学版は元の順番どおり一つずつ実行する。互いに干渉しない代わりに遅い。独立した二つの読取処理なら、本来は同時に走らせられる。
 
-## 速查
-
-| 概念 | 一言で |
-|------|--------|
-| TOOL_HANDLERS | ツール名 → ハンドラ関数の辞書。ツール追加 = マッピング一行追加 |
-| ツール定義 | モデルに「何ができるか」を伝える JSON schema |
-| 複数ツール呼び出し | モデルは一度に複数の tool_use を返す可能性がある。教育版は元の順序で一つずつ実行 |
-| ループ不変 | s01 の `while True` ループ — 一行も変更なし |
+> 実際の Claude Code は単純な逐次実行ではない。連続する「並行実行して安全な」呼び出しを一つのグループにまとめ、並列に走らせる。安全性は具体的な入力から判断するため、`ls` のような読み取り専用 bash も安全になり得る。状態を変更する呼び出しに出会うとそこでグループを切り、その呼び出しだけを直列実行する。グループ間の順序は厳密に保つ。教学版が順次実行を選ぶのは、用途には十分で、読みやすいからだ。
 
 ---
 
 ## s01 からの変更
 
 | コンポーネント | 変更前 (s01) | 変更後 (s02) |
-|--------------|-------------|-------------|
+|----------------|--------------|--------------|
 | ツール数 | 1 (bash) | 5 (+read, write, edit, glob) |
-| ツール実行 | ハードコード `run_bash()` | TOOL_HANDLERS 検索ディスパッチ |
-| パス安全性 | なし | safe_path 検証（file tools のみ） |
-| ループ | `while True` + `stop_reason` | s01 と完全に同一 |
+| ツール実行 | `run_bash()` をハードコード | `TOOL_HANDLERS` でディスパッチ |
+| パスの安全性 | なし | ファイルツールに `safe_path` 検証 |
+| ループ | `while True` + `stop_reason` | s01 と完全に同じ |
 
 ---
 
-## 試してみよう
+## 試してみる
 
 ```sh
 cd learn-claude-code
 python s02_tool_use/code.py
 ```
 
-以下のプロンプトを試してみよう：
+ターミナルの黄色い `> tool_name` 行には、完全なコマンドではなくツール名が表示される。次を試してみよう。
 
-1. `Read the file README.md and tell me what this project is about`
-2. `Create a file called test.py that prints "hello", then read it back`
-3. `Find all Python files in this directory`
-4. `Read both README.md and requirements.txt, then create a summary file`
+1. `Read the file README.md and tell me what this project is about`：`cat` ではなく `read_file` を選ぶかを見る。
+2. `Create a file called test.py that prints "hello", then read it back`：書き込みと読み取りが一ターンずつで、引用符の問題もない。
+3. `Find all Python files in this directory`：`glob` が一ターンで結果を返す。
+4. `Read both README.md and requirements.txt, then create a summary file`：一つの応答に二つの `read_file` が入るかを見る。ターミナルには `> read_file` が二行続けて出る。
 
-観察のポイント：モデルがツールを一つだけ呼び出すときと、複数同時に呼び出すときの違い。複数のツール呼び出しは正しい順序で実行されているか？
+次に越境パスを試す。`Use read_file to read ../../etc/passwd` と頼むと、`safe_path` は `Path escapes workspace` を返す。その後のモデルの動きを見よう。素直に止まればよい。bash の `cat` に切り替えて読めてしまったなら、ファイルツールと bash の保護の差を目撃したことになる。次章でこの穴を塞ぐ。
 
 ---
 
 ## 次へ
 
-Agent は 5 つの専用ツールを持つようになった。file tools は `safe_path` で保護されるが、bash は制限なし — `rm -rf /` はまだ実行できる。
+Agent は五つの専用ツールを持ち、ファイル操作は `safe_path` によってワークスペース内へ制限された。しかし bash はまだ無制限だ。古い拒否リストは数個の文字列しか止めず、`rm -rf ./src` のようなコマンドは実行できてしまう。
 
-→ s03 Permission：ツール実行前にゲートを追加 — この操作は安全か？ ユーザーの承認が必要か？
+s03 Permission → ツール実行の前に一つの門を置く。この操作は安全か。ユーザーの承認が必要か。
 
-<details>
-<summary>CC ソースコードを深掘り</summary>
-
-> 以下は CC ソースコード `Tool.ts`、`tools.ts`、`toolOrchestration.ts`、`toolExecution.ts`、`StreamingToolExecutor.ts` の検証に基づく。
-
-### 一、ツール定義方式
-
-**教育版**：`TOOLS` 配列 + `TOOL_HANDLERS` 辞書。定義と実装が分離。
-**CC**：各ツールは `buildTool()` で作成された独立オブジェクトで、schema、バリデーション、権限、実行を含む。`getAllBaseTools()` が全ツールを集約。
-
-教育版の分離方式は教学に適している — 読者は「ツール追加 = 二つの定義」と一目で分かる。
-
-### 二、並列安全性：isConcurrencySafe()
-
-![Tool Concurrency](images/concurrency-comparison.ja.svg)
-
-教育版は元の順序で一つずつ実行し、並列処理は行わない。CC は `isConcurrencySafe(input)` で並列可否を判断する — これは単なる「読み取り専用 vs 書き込み」ではなく、具体的な入力で判断する：
-
-| | isReadOnly | isConcurrencySafe |
-|---|---|---|
-| FileRead | true | true |
-| Glob | true | true |
-| Bash `ls` | true | **true** ← 重要な違い |
-| Bash `rm` | false | false |
-| TaskCreate | false | **true** ← 状態変更するが並列可能（s12 で紹介） |
-
-CC の Bash ツールの `isConcurrencySafe` は `isReadOnly` と同じ — 読み取り専用コマンドは並列可能、書き込みコマンドは不可。TaskCreate はタスクファイルを変更するが、毎回異なるファイルに書き込むため並列可能。
-
-### 三、パーティションアルゴリズム
-
-CC の `partitionToolCalls()`（`toolOrchestration.ts:91-115`）は二つのグループに分けるのではなく、ツール呼び出しを**連続ブロックごとにバッチ化**する：
-
-```
-[read A, read B, glob *.py, bash "rm x", read C]
-  → batch1(並列): [read A, read B, glob *.py]
-  → batch2(直列): [bash "rm x"]
-  → batch3(並列): [read C]
-```
-
-連続する並列安全な呼び出しを同じバッチにまとめ、真の並列実行を行う（`toolOrchestration.ts:152-176`、並列数上限あり）。非並列安全な呼び出しに遭遇すると新しいバッチを開始して直列実行。バッチ間は厳密に順次。
-
-### 四、バリデーションパイプライン
-
-CC の各ツール呼び出しは厳格な 5 段階のバリデーションを経る（`toolExecution.ts`）：
-
-1. **Zod schema バリデーション**（`614-680`、教育版は JSON Schema で代替）：パラメータの型/構造チェック
-2. **ツールレベル validateInput()**（`682-733`）：パラメータ値の検証（例：パスが作業ディレクトリ内か）
-3. **PreToolUse フック**（`800-862`、s04 で詳解）：フックはメッセージの返却、入力の変更、実行のブロックが可能
-4. **権限チェック**（`921-931`、s03 の核心）：canUseTool + checkPermissions → allow/deny/ask
-5. **tool.call() の実行**（`1207-1222`）
-
-教育版は Zod を省略（JSON Schema を使用）、validateInput を省略（安全関数を使用）、権限チェックとフック概念は保持。
-
-### 五、ストリーミングツール実行
-
-CC の `StreamingToolExecutor`（`StreamingToolExecutor.ts`）はモデルがまだ生成中にツールを起動する — モデルの完了を待たない。`read_file` はモデルが「分析します」と出力中に完了するかもしれない。教育版はこれを実装しない。s01 と同じ目標 — 概念の明確さ、極限のパフォーマンスではない。
-
-### 六、ツール結果の永続化
-
-各ツールには `maxResultSizeChars` フィールドがある。この閾値を超える結果はディスクに保存され、モデルにはプレビュー + ファイルパスが表示される。FileRead は特殊 — `Infinity` に設定され、ファイル読み出し結果の再永続化を防ぐ。具体的には、FileRead の結果が閾値を超えて永続化されると、モデルがその永続化ファイルを次に読むときにまた永続化がトリガーされ → 無限ループ（ファイル読む → 永続化 → 再読み → 再永続化 → ...）になる。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

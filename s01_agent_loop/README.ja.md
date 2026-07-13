@@ -1,50 +1,102 @@
 # s01: Agent Loop — ループ一つで十分
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 `s01` → [s02](../s02_tool_use/) → s03 → s04 → ... → s20
 > *"One loop & Bash is all you need"* — ツール一つ + ループ一つ = 一つの Agent。
 >
-> **Harness レイヤー**: ループ — モデルと現実世界をつなぐ最初の架け橋。
+> **Harness レイヤー**: ループ — モデルと現実世界をつなぐ最初の接点。
 
 ---
 
-## 課題
+チャット画面のモデルに、こんなタスクを渡してみる。「ローカルのディレクトリにどんな Python ファイルがあるか確認して、hello.py を実行してほしい」。
 
-モデルにこう頼んだとする：「ディレクトリ内のファイル一覧を取得して、XXX.py を実行して」。
+モデルはそれらしい bash コマンドを返し、そこで止まる。コマンドをターミナルにコピーして実行するのはあなたで、出力を貼り戻すのもあなた。モデルが出力を読んで次のコマンドを返したら、また実行して貼り戻す。
 
-モデルは bash コマンドを出力できるが、出力が終わると止まってしまう — 自分で実行することも、結果を見て推論を続けることもない。
+タスクを計画するのはモデルだが、実作業はすべてあなたがしている。実際の開発タスクでは、何十回もコマンドを往復するのは珍しくない。つまり何十回も人が伝言することになる。この章でやることは一つだけだ。この往復から「あなた」を外し、代わりに `while` ループを置く。それだけで Agent が生まれる。
 
-手動で実行し、出力をチャットに貼り付ければ、モデルは続きを生成できる。次のコマンドが出たら、また実行して貼り付ける。
-
-毎回の往復で、あなたが中間層になっている。これを自動化するのが、この章の目的だ。
+![Agent Loop](images/agent-loop.svg)
 
 ---
 
-## ソリューション
+## まず理解する：モデルとの一回の対話とは何か
 
-![Agent Loop](images/agent-loop.ja.svg)
+ループを書く前に、手元に何があるかを確認しよう。モデル API の呼び出しは、本質的にはリストを送り、一つの応答を受け取ることだ。
 
-一つの `while True` ループ — モデルがツールを呼べば続き、呼ばなければ停止。全体でたった 2 つのシグナル：
+```python
+messages = [{"role": "user", "content": "ディレクトリ内の Python ファイルを確認して"}]
+response = client.messages.create(model=MODEL, messages=messages, ...)
+```
 
-| シグナル | 意味 | ループの動作 |
-|----------|------|-------------|
-| `stop_reason == "tool_use"` | モデルが「ツールが必要」と挙手 | 実行 → 結果を戻す → 続行 |
-| `stop_reason != "tool_use"` | モデルが「完了」と宣言 | ループ終了 |
+`messages` の各要素には二つのフィールドがある。`role` は誰の発言か（`user` または `assistant`）を表し、`content` は内容そのものだ。
+
+必ず覚えておきたい前提がある。モデルはステートレスだ。前回の呼び出しを記憶しておらず、毎回が初対面になる。いわゆる「複数ターンの会話」とは、呼び出すたびにそれまでの履歴を丸ごと送り直すことにすぎない。モデルは全履歴を読み、その続きから話す。
+
+したがって「会話を続ける」とは、コード上では `messages` の末尾に新しい内容を追加し、リスト全体をもう一度送ることだ。
+
+この仕組みの裏側も覚えておこう。履歴は毎ターン丸ごと再送されるため、長くなる一方だ。s08 では、これが現実の問題になる。
 
 ---
 
-## 仕組み
+## モデルには手がない
 
-このプロセスをコードに変換してみよう。ステップごとに：
+モデルはクラウド上のサーバーで動き、あなたのターミナルはローカルにある。応答に `ls *.py` と書くことはできても、shell に触れることも、一行のコマンドを実行することもできない。実行できるのは、ローカルで動いている Python プログラムだけだ。
 
-**ステップ 1**：ユーザーの質問を最初のメッセージとして設定する。
+そこで API には、tool use と呼ばれる「注文」のプロトコルが用意されている。
+
+1. リクエストの `tools` 引数で、利用できるツール、その名前、役割、引数の形をモデルに伝える。
+2. モデルがツールを使いたいときは、通常のテキストではなく `tool_use` ブロックを返す。中身はツール名、引数、そして識別子 `id` だ。
+3. プログラムは `tool_use` を見て実際に処理し、出力を同じ識別子付きの `tool_result` ブロックに入れて返す。
+4. モデルは結果を読み、推論を続ける。
+
+今のメニューにあるのは `bash` 一つだけだ。
+
+```python
+TOOLS = [{
+    "name": "bash",
+    "description": "Run a shell command.",
+    "input_schema": {                       # 引数の JSON Schema
+        "type": "object",
+        "properties": {"command": {"type": "string"}},
+        "required": ["command"],
+    },
+}]
+```
+
+実行側は普通の関数だ。三つの保護には、それぞれ明確な理由がある。
+
+```python
+def run_bash(command: str) -> str:
+    # 拒否リスト：これらの文字列を含むコマンドは拒否する（s03 で本格的な権限システムに置き換える）
+    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
+    if any(d in command for d in dangerous):
+        return "Error: Dangerous command blocked"
+    try:
+        r = subprocess.run(command, shell=True, cwd=os.getcwd(),
+                           capture_output=True, text=True, timeout=120)
+        out = (r.stdout + r.stderr).strip()
+        # 50,000 文字で切る。500 KB のログ一つで後続の会話を押し出さないため
+        return out[:50000] if out else "(no output)"
+    except subprocess.TimeoutExpired:
+        # 固まったコマンドは 120 秒で諦め、ループを先へ進める
+        return "Error: Timeout (120s)"
+```
+
+役割分担はここで決まる。モデルは判断だけを担う（実行するか、何を実行するか）。プログラムは実行を担う（本当にコマンドを動かし、結果を持ち帰る）。モデルが要求しただけでは実行にならない。あなたのコードこそが手だ。以降の各章で追加する機能も、すべてこの分担に従う。
+
+---
+
+## 人手の往復をループに変える
+
+冒頭の「コマンドを実行し、結果を貼り戻す」という作業をコードに置き換える。全部で五段階だ。
+
+**ステップ 1**：ユーザーの質問を最初のメッセージにする。
 
 ```python
 messages = [{"role": "user", "content": query}]
 ```
 
-**ステップ 2**：メッセージとツール定義を一緒に LLM に送信する。
+**ステップ 2**：メッセージとツールメニューをモデルへ送る。
 
 ```python
 response = client.messages.create(
@@ -53,7 +105,9 @@ response = client.messages.create(
 )
 ```
 
-**ステップ 3**：モデルの応答を追加し、ツールを呼び出したか確認する。呼び出しなし → 終了。
+`system` はモデルの役割と仕事の進め方を伝える常設の指示だ。ここでは「Coding Agent として bash で作業し、説明より行動を優先する」と伝える。s10 では、この指示の組み立て方を詳しく扱う。
+
+**ステップ 3**：モデルの応答を履歴へ追加し、作業を続けたいのか、もう話し終えたのかを見る。判断材料は `stop_reason` だ。ツールを要求したときは `"tool_use"`、要求していなければタスクを終えたとみなし、ループを抜ける。
 
 ```python
 messages.append({"role": "assistant", "content": response.content})
@@ -61,7 +115,7 @@ if response.stop_reason != "tool_use":
     return
 ```
 
-**ステップ 4**：モデルが要求したツールを実行し、結果を収集する。
+**ステップ 4**：モデルが注文したツールをすべて実行し、識別子を対応させて結果を集める。
 
 ```python
 results = []
@@ -70,18 +124,20 @@ for block in response.content:
         output = run_bash(block.input["command"])
         results.append({
             "type": "tool_result",
-            "tool_use_id": block.id,
+            "tool_use_id": block.id,   # どの呼び出しの結果かを識別子で対応させる
             "content": output,
         })
 ```
 
-**ステップ 5**：ツールの結果を新しいメッセージとして追加し、ステップ 2 に戻る。
+**ステップ 5**：結果を新しい `user` メッセージとして追加し、ステップ 2 に戻る。
 
 ```python
 messages.append({"role": "user", "content": results})
 ```
 
-完全な関数に組み立てる：
+プログラムが作ったツール結果なのに `role` が `user` なのは、最初は不思議に見える。モデルの視点では、`assistant` は「自分が言ったこと」、`user` は「外の世界から届いた情報」だ。コマンド出力は、まさに外の世界から返ってきた反響である。
+
+一つの関数にまとめるとこうなる。
 
 ```python
 def agent_loop(messages):
@@ -107,20 +163,48 @@ def agent_loop(messages):
         messages.append({"role": "user", "content": results})
 ```
 
-30 行未満 — これが最小実行可能な agent harness のカーネルだ。これは知能そのものではなく、モデルが継続的に行動できるための最小ランタイムフレームワーク。モデルが決定し（ツールを呼ぶか、どれを呼ぶか）、harness が実行する（呼ばれたら実行し、結果を戻す）。次の 18 章はすべてこのループの上に仕組みを積み重ねていく。ループ自体は永遠に変わらない。
+具体的なタスクを一つ通し、`messages` がどう増えるかを見てみよう。タスクは `Create a file called hello.py that prints "Hello, World!"`。典型的な実行は次の形になる（毎回まったく同じとは限らない）。
+
+```text
+messages[0]  user       Create a file called hello.py ...
+messages[1]  assistant  tool_use: bash("echo 'print(...)' > hello.py")   ← 第 1 ターン
+messages[2]  user       tool_result: (no output)
+messages[3]  assistant  tool_use: bash("python hello.py")                ← 第 2 ターン
+messages[4]  user       tool_result: Hello, World!
+messages[5]  assistant  text: ファイルを作成し、検証しました。             ← tool_use なし、ループ終了
+```
+
+第 2 ターンで検証するように指示した人はいない。モデルは第 1 ターンの成功を見て、自分で次の一手を決めた。ループの価値はここにある。モデルが結果を見てから次を考えられるため、計画、実行、確認が一本につながる。ループが認識するシグナルは二つだけだ。
+
+| シグナル | 意味 | ループの動作 |
+|----------|------|--------------|
+| `stop_reason == "tool_use"` | モデルがツールを要求 | 実行し、結果を返して続行 |
+| `stop_reason != "tool_use"` | モデルがツールを要求しない | 生成終了、ループを抜ける |
+
+> 実際の Claude Code は `stop_reason` を見ない。ストリーミング応答では、`tool_use` ブロックがすでに届いていてもこのフィールドがまだ更新されていないことがあるため、本番のループは応答内容に `tool_use` があるかを直接確認する。教学版では、非ストリーミング呼び出しなら十分正確で、判断もわかりやすい `stop_reason` を使う。
 
 ---
 
-## 試してみよう
+## 陥りやすい三つの落とし穴
 
-> **教育デモの注意**: このコードはモデルが生成したシェルコマンドを実行します。プロジェクトファイルへの影響を避けるため、一時テストディレクトリで実行してください。s03 で本格的な権限システムを説明します。
+**`tool_result` は必ず `tool_use` と対にする。** 各結果には `tool_use_id` が必要で、直後の `user` メッセージに置かなければならない。欠けたり位置がずれたりすると、API は即座に 400 エラーを返す。この対応関係は s08 までついてくる。履歴を切り詰めるときも、この二つを分離してはいけない。
+
+**エラーも含め、結果をそのまま返す。** `command not found` や Python の traceback といった失敗出力を捨てず、`tool_result` に入れる。モデルが方針を修正するには、何が失敗したかを見る必要がある。
+
+**`while True` にはヒューズがない。** 教学版は意図的にターン上限を設けず、止まるかどうかを完全にモデルへ任せている。大半のタスクは終われば止まる。止まらなければ `Ctrl+C` だ。本番システムをこのまま走らせることはできない。s11 と s22 で、ターン上限や予算制御などの保護を追加する。
+
+---
+
+## 試してみる
+
+> **教学デモの注意**：このコードはモデルが生成した shell コマンドを実行する。プロジェクトファイルへの影響を避けるため、一時テストディレクトリで実行してほしい。s03 では本格的な権限システムを扱う。
 
 **準備**（初回のみ）：
 
 ```sh
 pip install -r requirements.txt
 cp .env.example .env
-# .env を編集し、ANTHROPIC_API_KEY と MODEL_ID を入力
+# .env を編集し、ANTHROPIC_API_KEY と MODEL_ID を設定
 ```
 
 **実行**：
@@ -129,79 +213,20 @@ cp .env.example .env
 python s01_agent_loop/code.py
 ```
 
-以下のプロンプトを試してみよう：
+次の三つを試そう。黄色い `$ ...` の行はループが実行したコマンドだ。各タスクに何ターンかかったか数えてみる。
 
-1. `Create a file called hello.py that prints "Hello, World!"`
-2. `List all Python files in this directory`
-3. `What is the current git branch?`
+1. `Create a file called hello.py that prints "Hello, World!"`：通常は二ターン。作成後、自発的に一度検証する。
+2. `List all Python files in this directory`：通常は一ターン。リストを受け取れば、そのまま回答できる。
+3. `What is the current git branch?`：一ターン。その後 `Now count how many commits this branch has` と続け、同じ履歴の上で作業を継続する様子を見る。
 
-観察のポイント：モデルがツールを呼び出すとき（ループ継続）、呼び出さないとき（ループ終了）の違い。
+観察するのは、モデルがいつ次のツールを呼び出してループを続け、いつ直接回答してループを終えるかだ。コードがターン数を固定しているわけではない。ループを抜けるのはモデルの判断である。
 
 ---
 
 ## 次へ
 
-現在、モデルが持っているのは bash だけだ — ファイルを読むには `cat`、書くには `echo ... >`、探すには `find`。不便でエラーも起きやすい。
+今のモデルが持つツールは bash だけだ。ファイルを読むには `cat`、書くには `echo ... >`、探すには `find` が必要で、直感的ではなく間違えやすい。
 
-→ s02 Tool Use：5 つの本格的なツールを与えたらどうなる？ モデルは複数のツールを同時に呼び出すか？ 並列実行で競合は起きないか？
+s02 Tool Use → 本格的なツールを五つ与えたらどうなるか。モデルは一度に複数のツールを呼ぶのか。並行実行するツール同士が干渉することはないのか。
 
-<details>
-<summary>CC ソースコードを深掘り</summary>
-
-> 以下は CC ソースコード `src/query.ts`（1729 行）の検証に基づく。核心的な違いは二つ：CC はループ継続の判断に `stop_reason` フィールドを頼らず、コンテンツに `tool_use` ブロックが含まれるかをチェックする（ストリーミングレスポンスでは `stop_reason` が信頼できないため）。CC には本番環境向けのより多くの終了パスとリカバリ戦略がある。
-
-**教育版の 30 行 `while True` が CC の 1729 行の核心。** 以下の各項目は、すべてその核心の上に積み重ねられた保護機構である。
-
-<details>
-<summary>一、ループ構造の違い</summary>
-
-教育版は `response.stop_reason` をチェックする。CC はこれをループ継続の唯一の根拠として使わない — ストリーミングレスポンスでは、`stop_reason` がまだ更新されていなくても、コンテンツに既に `tool_use` ブロックが含まれている可能性がある。CC は `needsFollowUp` フラグを使用する：ストリーミングメッセージの受信時（`query.ts:830-834`）に、`tool_use` ブロックが検出されると `true` に設定される。`QueryEngine.ts` は `message_delta` から実際の `stop_reason` を取得して他の処理に利用するが、query loop 自体は `needsFollowUp` に依存する。
-
-```typescript
-// query.ts:554-558
-// stop_reason === 'tool_use' is unreliable.
-// Set during streaming whenever a tool_use block arrives.
-let needsFollowUp = false
-```
-
-</details>
-
-<details>
-<summary>二、State オブジェクト 10 フィールド（教育版は messages のみ使用）</summary>
-
-| # | フィールド | 用途 | 対応章 |
-|---|-----------|------|--------|
-| 1 | `messages` | 現在のイテレーションのメッセージ配列 | s01 |
-| 2 | `toolUseContext` | ツール、シグナル、権限コンテキスト | s02 |
-| 3 | `autoCompactTracking` | 圧縮状態の追跡 | s08 |
-| 4 | `maxOutputTokensRecoveryCount` | トークンリカバリ試行回数（上限 3） | s11 |
-| 5 | `hasAttemptedReactiveCompact` | 今回のラウンドでリアクティブ圧縮を試みたか | s08 |
-| 6 | `maxOutputTokensOverride` | 8K→64K へのアップグレード上書き | s11 |
-| 7 | `pendingToolUseSummary` | バックグラウンド Haiku 生成のツール使用要約 | s08 |
-| 8 | `stopHookActive` | 停止フックがブロッキングエラーを発生させたか | s04 |
-| 9 | `turnCount` | ターン数（maxTurns チェック用） | s01 |
-| 10 | `transition` | 前回の継続理由 | s11 |
-
-> 注：`taskBudgetRemaining`（`query.ts:291`）は loop-local のローカル変数であり、State には含まれない。ソースコメントには明確に "Loop-local (not on State)" と書かれている。
-
-</details>
-
-<details>
-<summary>三、複数の終了パスと継続パス</summary>
-
-教育版には 1 つの終了パスしかない（モデルがツールを呼ばなければ終了）。本番版には複数の終了・継続パスがあり、blocking limit、prompt too long、model error、abort、hook stop、max turns、token budget continuation、reactive compact retry など多くのシナリオをカバーしている。各シナリオには対応するリカバリまたは終了戦略がある。
-
-</details>
-
-<details>
-<summary>四、ストリーミングツール実行と QueryEngine</summary>
-
-CC の `StreamingToolExecutor`（`query.ts:561`）は、モデルがまだ生成中にツールの実行を開始できる（concurrency-safe なツールは並列、それ以外は排他実行）。`QueryEngine.ts` はさらに、コスト超過や構造化出力の検証失敗などの保護を追加する。教育版はこれらを実装しない — 目標は概念の明確さであり、極限のパフォーマンスではない。
-
-</details>
-
-**一言で**: query.ts の 1729 行の核心は 30 行の `while True`。複雑なフィールドや終了パスはすべて保護機構だ。まず核心のループを理解すれば、その後のすべては自然に理解できる。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

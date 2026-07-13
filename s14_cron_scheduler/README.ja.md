@@ -1,229 +1,129 @@
-# s14: Cron Scheduler — スケジュールに従って作業を生産
+# s14: Cron Scheduler — スケジュールから仕事を生み出す
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s12 → s13 → `s14` → [s15](../s15_agent_teams/) → s16 → ... → s20
-> *"スケジュールに従って作業を生産、スケジューリングと実行を分離"* — cron スケジューリング、永続またはセッションレベル。
+> *「スケジュールから仕事を生み出し、スケジューリングと実行を分離する」* — 永続またはセッション単位の cron スケジューリング。
 >
-> **Harness 層**: スケジューリング — 独立スレッドが時刻を判定、キューがトリガーを配信。
+> **Harness 層**: スケジューリング — 独立スレッドが時刻を判定し、キュー経由でトリガーを渡します。
 
 ---
 
-## 課題
+s13 によって Agent は長い処理で止まらなくなりましたが、すべての仕事はまだあなたの一言から始まります。「毎朝 9 時にテストを実行」「30 分ごとに CI を確認」といった仕事のために、決まった時刻に Enter を押す人を雇うわけにはいきません。
 
-目覚まし時計はあなたが見ていないと鳴らないわけではない。7:00 にセットすれば、7:00 に鳴る。寝ていても、シャワーを浴びていても、料理をしていても、鳴る。
+最初はモデルへ「毎日 9 時にテストすることを覚えておいて」と頼みたくなるかもしれません。この言葉は、これまで明示してこなかった事実を露わにします。**モデルは呼び出されている間しか存在しません。** リクエストが来なければ、静止した重みの集まりです。context に「毎日 9 時」と書いてあっても、9 時になったとき、それを読みに起きるものはありません。時間感覚はモデルの中に育つ場所がなく、Harness にしか置けません。
 
-s13 で Agent は遅い操作をバックグラウンドで実行できるようになった。しかし、すべての操作は手動でトリガーされる。一言言えば、Agent が動く。「毎朝 9 時にテストを実行」「30 分ごとに CI ステータスを確認」、これらの定期的なタスクに人が毎回押す必要はないはずだ。
+Harness にはどう実装すればよいでしょう。main loop を 9 時まで `sleep` させると、Agent 全体が凍ります。答えは目覚まし時計と同じです。独立して常に起きている小さな部品が時刻表だけを見て、時間になったら声を上げます。
 
----
-
-## ソリューション
-
-![Cron Scheduler Overview](images/cron-scheduler-overview.ja.svg)
-
-教学版は S13 の簡易タスクシステム、バックグラウンド実行、プロンプト組み立てを踏襲。スケジューラに集中するため、完全なエラーリカバリ、メモリ、スキルシステムは省略。追加：独立した cron スケジューラスレッド、1 秒ごとにポーリング、時間が来たらタスクを `cron_queue` に投入し、queue processor が Agent のアイドル時に自動配信。
-
-手動 vs スケジュール：
-
-| | 手動 (s13) | スケジュール (s14) |
-|---|---|---|
-| トリガー | ユーザー入力 | スケジューラスレッド |
-| トリガー時刻 | いつでも | cron 式で指定 |
-| 人の関与 | あり | なし（スケジューラが自動キュー投入、アイドル時に自動配信） |
-| 永続性 | — | durable は再起動後も保持 |
+![Cron Scheduler Overview](images/cron-scheduler-overview.svg)
 
 ---
 
-## 仕組み
+## 登録: 不正な式は入口で止める
 
-### 4 層モデル
-
-cron スケジューリングは 4 層に分かれる：
-
-1. **Scheduler**：daemon スレッド、1 秒ごとにポーリング、時刻が来たか判定
-2. **Queue**：`cron_queue`、スケジューラが発火済みタスクを書き込み
-3. **Queue Processor**：キューが空でなく Agent がアイドルなら、一回の agent_loop を開始
-4. **Consumer**：agent_loop がキューから消費、messages に注入
-
-教学版は最小の queue processor を実装する。`agent_lock` で Agent がアイドルかを判定し、キューに入った cron 作業を自動配信する。実際の CC の `useQueueProcessor.ts` はさらに UI ブロック、キュープライオリティ、メッセージモードを扱う。
-
-### CronJob: データ構造
-
-各 cron タスクは `CronJob` オブジェクト：
+タスクは 5 フィールドの cron 式（分、時、日、月、曜日）で記述し、登録時にすぐ検証します。
 
 ```python
 @dataclass
 class CronJob:
     id: str
-    cron: str        # "0 9 * * *"（5 フィールド cron 式）
-    prompt: str      # 発火時に Agent に注入するメッセージ
-    recurring: bool  # True=定期的、False=一回限り
-    durable: bool    # True=ディスク書き込み、セッション横断
+    cron: str        # "0 9 * * *"
+    prompt: str      # トリガー時に Agent へ注入するメッセージ
+    recurring: bool  # True=繰り返し、False=一度だけ
+    durable: bool    # True=ディスクへ保存し、再起動をまたぐ
+
+def schedule_job(cron, prompt, recurring=True, durable=True):
+    err = validate_cron(cron)      # 先に検証し、不正な式はその場で拒否
+    if err:
+        return err
+    job = CronJob(id=f"cron_{random.randint(0, 999999):06d}", ...)
+    with cron_lock:
+        scheduled_jobs[job.id] = job
+    if durable:
+        save_durable_jobs()        # .scheduled_tasks.json へ保存
 ```
 
-cron 式、5 フィールド、Unix で 50 年使われている：
+なぜ登録時に検証する必要があるのでしょう。逆を想像してください。`99 99 * * *` が入り込み、scheduler が各ジョブを照合するとき初めて例外になります。scheduler thread は全体で 1 本しかないため、1 件の不正なジョブがすべての目覚ましを黙らせます。教材版は二重に守ります。登録時の検証で大半を止め、scheduler loop では各ジョブを個別の try/except で囲み、1 件が失敗してもログだけを残してスレッドは生かします。
 
-```
-分  時  日  月  曜日
- *   *   *   *   *      毎分
- 0   9   *   *   *      毎日 9:00
-*/5   *   *   *   *      5 分ごと
- 0   9   *   *  1-5     平日 9:00
-```
+---
 
-`*`、`*/N`、`N`、`N-M`、`N,M,...` をサポート。
+## 照合: 毎秒確認しても、鳴るのは 1 分に 1 回だけ
 
-### cron_matches: 5 フィールドマッチング
-
-標準 cron セマンティクス：分、時、月はすべてマッチ必須。日（DOM）と曜日（DOW）が両方制約されている場合は、いずれかのマッチで十分（OR）：
-
-```python
-def cron_matches(cron_expr: str, dt: datetime) -> bool:
-    fields = cron_expr.strip().split()
-    if len(fields) != 5:
-        return False
-    minute, hour, dom, month, dow = fields
-    dow_val = (dt.weekday() + 1) % 7  # Python Monday=0 → cron Sunday=0
-
-    m = _cron_field_matches(minute, dt.minute)
-    h = _cron_field_matches(hour, dt.hour)
-    dom_ok = _cron_field_matches(dom, dt.day)
-    month_ok = _cron_field_matches(month, dt.month)
-    dow_ok = _cron_field_matches(dow, dow_val)
-
-    if not (m and h and month_ok):
-        return False
-    # DOM and DOW: both constrained → either matching is enough (OR)
-    dom_unconstrained = dom == "*"
-    dow_unconstrained = dow == "*"
-    if dom_unconstrained and dow_unconstrained:
-        return True
-    if dom_unconstrained:
-        return dow_ok
-    if dow_unconstrained:
-        return dom_ok
-    return dom_ok or dow_ok
-```
-
-### 独立スケジューラスレッド：1 秒ポーリング
-
-スケジューラは独立した daemon スレッドで動作、agent_loop が実行中かどうかに依存しない。個々のジョブエラーはスレッド全体を殺さない：
+scheduler thread は毎秒起き、現在時刻と各ジョブの式を照合します。
 
 ```python
 def cron_scheduler_loop():
     while True:
         time.sleep(1)
         now = datetime.now()
-        minute_marker = now.strftime("%Y-%m-%d %H:%M")
+        minute_marker = now.strftime("%Y-%m-%d %H:%M")   # 日付を含むことに注目
         with cron_lock:
             for job in list(scheduled_jobs.values()):
                 try:
                     if cron_matches(job.cron, now):
                         if _last_fired.get(job.id) != minute_marker:
-                            cron_queue.append(job)
-                            _last_fired[job.id] = minute_marker
+                            cron_queue.append(job)               # トリガー: キューへ入れる
+                            _last_fired[job.id] = minute_marker  # この分にはもう鳴らさない
                         if not job.recurring:
-                            scheduled_jobs.pop(job.id, None)
-                            if job.durable:
-                                save_durable_jobs()
+                            scheduled_jobs.pop(job.id, None)     # 1 回限りのジョブは使ったら削除
                 except Exception as e:
-                    print(f"[cron error] {job.id}: {e}")
+                    print(f"[cron error] {job.id}: {e}")         # 1 件の不正ジョブでスレッドを殺さない
 ```
 
-重要な設計：
-- **agent_loop から独立**：agent_loop が動いていなくても、スケジューラはバックグラウンドで時刻をチェック
-- **日付認識 minute_marker**：`"YYYY-MM-DD HH:MM"` を使用、同じ分の重複発火を防ぎつつ翌日のスキップも防止
-- **ジョブ単位の try/except**：一つの悪いジョブがスケジューラスレッド全体をクラッシュさせない
-- **一回限りジョブ**：発火後、scheduled_jobs から自動削除
+間違えやすい 2 つの細部が `minute_marker` に隠れています。まず、毎秒ポーリングすると同じ分に 60 回一致しますが、ジョブが鳴るのは 1 回だけでよいので、「このジョブはこの分にすでに鳴った」と記録する必要があります。次に、marker には日付も必要です。`09:00` だけを記録すると、毎日 9 時のジョブは初日に鳴ったあと、翌日の 9 時にも同じ marker を見て二度と鳴りません。この種の bug は公開から 1 日たって初めて発生するため、特に調査しづらいものです。
 
-### Queue Processor + agent_loop: 配信側
+`cron_matches` は伝統的 cron の奇妙な仕様も忠実に再現します。日と曜日の両方に制約がある場合、意味は AND ではなく **OR** です。`0 9 13 * 5` は「13 日または金曜日の 9 時」を意味します。「13 日かつ金曜日の 9 時」は標準 cron では表現できません。教材版はこれを「修正」しません。癖まで含めて互換性だからです。
 
-queue processor は時刻をチェックしない。キューに作業があり、Agent がアイドルの時だけ一回の実行を開始する：
+---
+
+## 分離: Scheduler はキューへ入れるだけで、実行しない
+
+時刻になったとき scheduler thread が行うのは、ジョブを `cron_queue` に追加して時刻監視へ戻ることだけです。自分で agent turn を実行することはありません。理由は 2 つあります。agent の 1 turn が数分かかれば scheduler が止まり、その後すべてのトリガーが遅れます。また、その瞬間にユーザーが Agent と会話中かもしれません。2 つの turn が同じ履歴へ同時に書くと、メッセージが交錯し、s01 のペアリング規則が即座に壊れます。
+
+目覚まし時計は鳴るだけで、あなたをベッドから引きずり出しません。それは別の役割が担います。
 
 ```python
 def queue_processor_loop():
+    """キューに仕事があり、Agent が空いているとき、自動で 1 turn 開始する。"""
     while True:
         time.sleep(0.2)
         if not has_cron_queue():
             continue
-        if not agent_lock.acquire(blocking=False):
+        if not agent_lock.acquire(blocking=False):   # ロックを取れない = Agent は作業中。次回また試す
             continue
         try:
-            if has_cron_queue():
-                run_agent_turn_locked()
+            run_agent_turn_locked()                  # agent turn を自動で開始
         finally:
             agent_lock.release()
 ```
 
-agent_loop も時刻をチェックしない。`cron_queue` から発火済みタスクを取り出し、messages に注入するだけ：
+`agent_lock` はこの構造全体の軸です。ユーザーが Enter を押す経路と、定時トリガーの経路が同じロックを取り合うため、同時に実行できる agent turn は 1 つだけです。定時ジョブは進行中の会話へ割り込まず、あなたが話し終えた隙間を待ちます。
+
+最後の処理は `agent_loop` の冒頭にあり、発火したジョブを user メッセージとして、同じ「世界の声」の経路へ注入します。
 
 ```python
 fired = consume_cron_queue()
 for job in fired:
-    messages.append({"role": "user",
-                     "content": f"[Scheduled] {job.prompt}"})
+    messages.append({"role": "user", "content": f"[Scheduled] {job.prompt}"})
 ```
 
-生産者（スケジューラスレッド）、配信者（queue processor）、消費者（agent_loop）は `cron_queue`、`cron_lock`、`agent_lock` で分離されている。
+4 層がそれぞれ役割を持ちます。scheduler（時刻を見る）→ queue（バッファする）→ queue processor（空き時間を探す）→ consumer（注入して実行する）。各層は 1 つのことだけを行います。これが「スケジューリングと実行を分離する」の全体です。
 
-### バリデーション：不正 cron がスケジューラを殺すのを防止
+durable ジョブは `.scheduled_tasks.json` に保存され、プログラム起動時に再読込されます。ディスク上のファイルは手作業で壊される可能性があるため、読込時にも再検証し、不正なジョブはログを残してスキップします。
 
-`schedule_job` は登録前に cron 式をバリデーションし、不正な場合はエラーを返す：
-
-```python
-def schedule_job(cron, prompt, recurring=True, durable=True):
-    err = validate_cron(cron)
-    if err:
-        return err
-    # ... ジョブ登録
-```
-
-ディスクから durable ジョブを読み込む際も不正な式をスキップし、一つの悪いタスクが起動を妨げない。
-
-### Durable vs Session-only
-
-- **Durable**：タスク定義を `.scheduled_tasks.json` に書き込み。Agent 再起動後にファイルから復元。
-- **Session-only**：メモリ内のみ。Agent 終了で消失。
-
-> **重要な前提**：cron スケジューラは Agent プロセス内で実行される必要がある。プロセスが終了するとスケジューラも停止。Durable はタスク定義が再起動後も保持されることを意味するだけで、次回 Agent 起動時にスケジューラが「発火すべき」と判定して初めて発火する。「アプリケーションが閉じていても定期的に実行」が必要な場合は、システム crontab または systemd timer を使用。
-
-### 組み合わせて実行
-
-```
-1. 起動時：
-   load_durable_jobs() → .scheduled_tasks.json から永続タスクを復元
-   Thread(cron_scheduler_loop, daemon=True).start() → スケジューラスレッドがポーリング開始
-   Thread(queue_processor_loop, daemon=True).start() → processor が配信待機
-
-2. タスク登録：
-   schedule_cron(cron="*/2 * * * *", prompt="run date", durable=True)
-   → CronJob を scheduled_jobs + .scheduled_tasks.json に書き込み
-
-3. 2 分ごと：
-   スケジューラチェック → cron_matches が True → cron_queue.append(job)
-   → queue processor がアイドル状態を検知 → agent_loop consume_cron_queue
-   → "[Scheduled] run date" を注入
-   → LLM がメッセージを受信、date コマンドを実行
-
-4. プロセス終了：
-   スケジューラスレッドも停止（daemon=True）
-   .scheduled_tasks.json はディスクに残存
-   次回起動 → load_durable_jobs → タスク復元
-```
+> 実際の Claude Code では登録上限が 50 ジョブで、繰り返しジョブは 7 日後に自動失効します。トリガー時刻には jitter も加わり、繰り返しジョブは間隔の最大 10% まで遅延します。世界中の「9 時ちょうど」が同じ秒に API へ殺到する thundering herd を防ぐためです。cron が始めたリクエストは低優先度 workload として扱われ、容量が厳しいときは対話中のユーザーへ譲ります。
 
 ---
 
-## s13 からの変更
+## s13 からの変更点
 
 | コンポーネント | 変更前 (s13) | 変更後 (s14) |
-|--------------|------------|------------|
-| トリガー方式 | ユーザー手動トリガー | スケジューラスレッドが自動キュー投入 |
-| 新規型 | — | CronJob データクラス (id, cron, prompt, recurring, durable) |
-| 新規関数 | — | cron_matches, validate_cron, schedule_job, cancel_job, cron_scheduler_loop, queue_processor_loop |
-| 新規ストレージ | — | .scheduled_tasks.json (durable) + メモリ (session-only) |
-| スレッド | バックグラウンド実行スレッド | + スケジューラスレッド (daemon, 1s ポーリング) + queue processor スレッド |
-| キュー | background_results | + cron_queue（スケジューラ書き込み、queue processor 配信、agent_loop 消費） |
-| ツール | 8 (s12/s13) | + schedule_cron, list_crons, cancel_cron (11) |
+|------|-----------|-----------|
+| トリガー | ユーザー入力 | +cron 式による定時トリガー |
+| 新しいスレッド | バックグラウンド実行スレッド | +scheduler thread（1 秒ポーリング）+ queue processor thread |
+| 新しいツール | — | `schedule_cron`, `list_crons`, `cancel_cron`（合計 11） |
+| 永続化 | `.tasks/` のタスク | +`.scheduled_tasks.json` の durable ジョブ |
+| 並行制御 | `background_lock` | +`cron_lock`, `agent_lock`（ユーザー turn と定時 turn を排他） |
 
 ---
 
@@ -234,72 +134,17 @@ cd learn-claude-code
 python s14_cron_scheduler/code.py
 ```
 
-以下のプロンプトを試してください：
-
-1. `Schedule a task to print the current date every 2 minutes`
-2. `List all cron jobs`
-3. `Create a one-shot reminder in 1 minute to check the build status`
-4. `Cancel the recurring job and verify with list_crons`
-
-観察ポイント：スケジューラスレッドが独立して動いているか？cron タスクが正しい時刻に発火しているか？新しい prompt を入力しなくても `[queue processor]` が出て自動実行されるか？durable ジョブが `.scheduled_tasks.json` に書き込まれているか？
+1. **自分で動き出す様子を見る**: `Schedule a cron job that runs every minute: report the current time`。次の分ちょうどになると、何も入力していないのにターミナルが動き始めます。`[cron fire]` → `[queue processor] delivering scheduled work` → `[inject cron]` と続き、Agent が時刻を報告する 1 turn を完走します。このコースで初めて、あなたの入力なしに仕事が始まります。
+2. **不正な式は入れない**: `Schedule a cron job with expression "99 99 * * *" that says hi`。登録は `minute: Value 99 out of bounds [0-59]` で拒否され、scheduler は無傷です。
+3. **再起動をまたぐ**: `q` で終了して再起動すると、起動ログに `[cron] loaded 1 durable job(s)` が現れ、次の分にも変わらず鳴ります。確認できたら `Cancel that cron job` を実行し、`.scheduled_tasks.json` が空になったことも見てください。
+4. **会話中には割り込まない**: 分が変わる直前に、複数のツールラウンドを必要とする質問を Agent へ送ります。cron が発火しても `[queue processor]` はすぐ配信せず、現在の turn が終わるまで待ちます。それが `agent_lock` の働きです。
 
 ---
 
-## 次の章
+## 次へ
 
-一つの Agent でできることは増えた。計画、圧縮、バックグラウンド、スケジューリング。しかし、一部のタスクは一つの Agent では大きすぎる。
+Agent は仕事ができ、時刻も守れるようになりましたが、まだ 1 人で働いています。本当のプロジェクトは、フロントエンド、バックエンド、テストを並行して進める必要があります。s06 の subagent は直列に手伝い、s13 の background thread はコマンドを実行するだけです。どちらも「複数の Agent が同時に着手し、それぞれの領域を担当する」ものではありません。
 
-「バックエンド全体をリファクタリング」、認証モジュール、データベース層、API ルート、テストを全面的に刷新。一つの Agent の注意力には限界がある。これにはチームが必要だ。
+s15 Agent Teams → main Agent を lead にして、複数の teammate を立ち上げ、それぞれの仕事をファイルベースのメールボックスでつなぎます。
 
-s15 Agent Teams → 一人の Agent では足りない、チームを組もう。永続的なチームメイト + 非同期受信箱。
-
-<details>
-<summary>CC ソースコード深掘り</summary>
-
-> 以下は CC ソースコード `CronCreateTool.ts`、`cronScheduler.ts`、`cron.ts`、`cronTasks.ts`、`cronTasksLock.ts`、`useScheduledTasks.ts`（139 行）の完全分析に基づく。
-
-### 一、3 つの Cron ツール
-
-CC はモデルに 3 つの cron ツールを公開：`CronCreate`、`CronDelete`、`CronList`。すべてコンパイル時ゲート `feature('AGENT_TRIGGERS')` とランタイム GrowthBook フラグ `tengu_kairos_cron` で制御。`CLAUDE_CODE_DISABLE_CRON` 環境変数でローカル上書きも可能。
-
-### 二、ストレージ：`.claude/scheduled_tasks.json`
-
-```json
-{ "tasks": [{ "id": "abc12345", "cron": "0 9 * * *", "prompt": "...", "recurring": true, "durable": true, "createdAt": 1714567890000 }] }
-```
-
-durable タスクはディスクに書き込み。session-only タスクは `STATE.sessionCronTasks` メモリ配列に格納（プロセス再起動で消失）。`.scheduled_tasks.lock` ファイルで同じプロジェクトの複数セッション間の重複発火を防止。
-
-### 三、スケジューラ：1 秒ポーリング
-
-`cronScheduler.ts` は毎秒チェック（`CHECK_INTERVAL_MS = 1000`）。ロックを保持しているセッションがファイルタスクをトリガー。すべてのセッションが session-only タスクをトリガー。`chokidar` ファイルウォッチャーが `scheduled_tasks.json` の変更を監視。
-
-### 四、cron 式：標準 5 フィールド
-
-分 時 日 月 曜日。`*`、`*/N`、`N`、`N-M`、`N-M/S`、`N,M,...` をサポート。`L`、`W`、`?` は非サポート。すべての時間はローカルタイムゾーンで解釈。day-of-month と day-of-week が両方制約されている場合は OR セマンティクス。
-
-### 五、ジッター（サンダリングハード防止）
-
-- 定期タスク：トリガー遅延は期間の最大 10%（上限 15 分）、タスク ID ベースの決定的ハッシュ
-- 一回限りタスク：発火時刻が `:00` または `:30` の場合、最大 90 秒早く発火
-- ジッター設定は GrowthBook でリアルタイム調整可能、60 秒ごとにリフレッシュ
-
-### 六、自動期限切れ
-
-定期タスクは 7 日後に自動期限切れ（設定可能、上限 30 日）。期限切れ前に最後の一回を発火、その後自動削除。
-
-### 七、ジョブ数上限
-
-`MAX_JOBS = 50`（`CronCreateTool.ts:25`）。超過時はエラーを返す："Too many scheduled jobs (max 50). Cancel one first."
-
-### 八、トリガー注入
-
-発火後、`enqueuePendingNotification()` で `priority: 'later'` としてコマンドキューにエンキュー。`workload: WORKLOAD_CRON` タグ付き、API は容量が逼迫している時に cron 発信リクエストを低い QoS で処理。
-
-### 九、Queue Processor：自動配信
-
-実際の CC は `useQueueProcessor.ts:48-60` により、アクティブな query がなく、UI がブロックされておらず、キューが空でない場合に自動的に処理をトリガーする。`queueProcessor.ts:52-87` がキュープライオリティに従ってコマンドを `handlePromptSubmit()` にディスパッチ。教学版は `queue_processor_loop` で核心動作を保つ：キューに作業があり Agent がアイドルなら、自動的に一回の agent_loop を開始する。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

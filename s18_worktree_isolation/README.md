@@ -1,208 +1,130 @@
-# s18: Worktree Isolation — 各干各的，互不干扰
+# s18: Worktree Isolation — Work Separately without Interference
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s16 → s17 → `s18` → [s19](../s19_mcp_plugin/) → s20
 
-> *"各干各的目录, 互不干扰"* — 任务管目标, worktree 管目录, 按 ID 绑定。
+> *"Separate directories, separate work, no interference"* — Tasks manage goals; worktrees manage directories; IDs bind them together.
 >
-> **Harness 层**: 隔离 — 并行执行的目录隔离。
+> **Harness layer**: Isolation — separate directories for parallel execution.
 
 ---
 
-## 问题
+A sentence in s06 sounded like a disclaimer at the time: "the conversation context is isolated; the filesystem is not." By s17, it has become a real explosive.
 
-s17 中，Alice 和 Bob 都在同一个目录下工作。Alice 的任务是"重构认证模块"，Bob 的任务是"重构 UI 登录页"。
+Alice and Bob claim separate tasks but work in the same directory. Alice's task changes `config.py`, and Bob's does too. The later write overwrites the earlier one. A subtler version is that both read the old file, modify it independently, and write back a hybrid that neither intended. There is no clean rollback either: both sets of changes are tangled together in `git diff`, with no clear ownership for each line.
 
-Alice `write_file("config.py", ...)`。Bob 也 `write_file("config.py", ...)`。两个人改同一个文件，互相覆盖。而且无法干净地回滚——分不清哪些改动是谁的。
-
-s15-s17 解决了"谁干什么"（任务系统）和"怎么通信"（消息总线），但没解决"在哪干"。
-
----
-
-## 解决方案
+s15 through s17 answered "who does what" with the task board and "how do they communicate" with mailboxes. They never answered "where do they work?"
 
 ![Worktree Overview](images/worktree-overview.svg)
 
-Git worktree 让你在同一仓库中创建多个独立的工作目录，每个有自己的分支。Alice 在 `.worktrees/auth-refactor/` 下工作，Bob 在 `.worktrees/ui-login/` 下工作——互不干扰。
+---
 
-沿用 S17 的教学版 MessageBus、协议和自治认领机制。本章新增：
+## Why Locks Are Not the Answer
 
-| 能力 | 作用 |
-|------|------|
-| create_worktree | 为任务创建独立目录 + 独立分支 |
-| bind_task_to_worktree | 把任务和工作目录绑定（不改状态） |
-| remove_worktree / keep_worktree | 完成后清理或保留 |
-| validate_worktree_name | 拒绝路径穿越和非法字符 |
+The first instinct is to add locks. Lock the entire repository? Concurrency collapses back into serial execution, erasing the reason to form a team in s15. Lock individual files? First you must know which files a task will touch, but even the model does not know that before starting. Even if it did, two tasks acquiring overlapping locks is a textbook recipe for deadlock.
+
+Take another angle: git solved this problem twenty years ago. Give each person a working copy, let them make changes independently, and merge at the end. `git worktree` is a much lighter version of clone: one repository grows several working directories, each attached to a branch, while all share the same `.git` history.
+
+The chapter's design fits in one sentence: **isolation comes from copies, not locks.**
 
 ---
 
-## 工作原理
-
-### 创建：任务-Worktree 绑定
+## Opening a Workspace: Validate the Name First
 
 ```python
+VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
+
 def create_worktree(name: str, task_id: str = "") -> str:
-    validate_worktree_name(name)       # 只允许 [A-Za-z0-9._-]{1,64}
-    path = WORKTREES_DIR / name
+    err = validate_worktree_name(name)      # Reject invalid names immediately
+    if err:
+        return f"Error: {err}"
+    path = WORKTREES_DIR / name             # .worktrees/<name>
     ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
     if not ok:
         return f"Git error: {result}"
     if task_id:
         bind_task_to_worktree(task_id, name)
-    log_event("create", name, task_id)
-    return f"Worktree '{name}' created at {path}"
-
-def bind_task_to_worktree(task_id: str, worktree_name: str):
-    task = load_task(task_id)
-    task.worktree = worktree_name       # 只写 worktree 字段
-    save_task(task)                     # 状态保持 pending，等队友 claim
+    log_event("create", name, task_id)      # Audit log: record successful events only
 ```
 
-绑定规则：一个任务绑定一个 worktree。绑定不改任务状态——任务仍是 `pending`，队友自动认领时才推进到 `in_progress`。这样 Lead 可以提前创建任务和 worktree，队友 idle 时自然认领带 worktree 的任务。
+Name validation is an old friend making its third appearance. s02's `safe_path` guarded file paths, s07's registry guarded skill names, and this regular expression guards workspace names. If a name such as `../../etc` is concatenated into a path, the worktree is created outside the workspace. Whenever a model-provided string becomes part of a path, it must pass inspection first. That rule does not change from chapter to chapter.
 
-### 队友工具的 cwd 切换
+The position of `log_event` also matters: it comes after `run_git` succeeds. If logging happened before execution, a failed operation would leave behind a "successful" audit record, turning the log from evidence into a lie.
 
-教学版给每个队友维护一个 `wt_ctx` 字典，记录当前 worktree 路径。队友认领带 worktree 的任务时，`wt_ctx` 自动设置为 worktree 路径；队友的 `bash`、`read_file`、`write_file` 在 worktree 目录下执行：
+---
+
+## Binding: The Workspace Is a Task Property, Not a Claim
 
 ```python
-# 队友线程内部
-wt_ctx = {"path": None}
-
-def _run_claim_task(task_id):
-    result = claim_task(task_id, owner=name)
-    if "Claimed" in result:
-        task = load_task(task_id)
-        if task.worktree:
-            wt_ctx["path"] = str(WORKTREES_DIR / task.worktree)
-    return result
-
-def _run_bash(command):
-    return run_bash(command, cwd=wt_ctx["path"])  # 在 worktree 下执行
+def bind_task_to_worktree(task_id: str, worktree_name: str):
+    task = load_task(task_id)
+    task.worktree = worktree_name    # Change only this field
+    save_task(task)                  # Status remains pending
 ```
 
-这是教学简化。真实 CC 的 EnterWorktree 用 `process.chdir()` 切换整个进程目录，AgentTool isolation 用 `cwdOverride` 包住子 agent 执行。
+Notice what it deliberately does not do: it neither changes the status nor sets the owner. Binding answers only "which workspace should this task use?" It does not answer "who should do it?" The autonomous mechanism from s17 therefore stays intact. The task remains on the board until someone claims it, and whoever wins moves into that workspace. The two mechanisms are orthogonal and own separate fields.
 
-### 收尾：Keep 还是 Remove
+Only one thing changes for a teammate: after claiming a task bound to a worktree, all of its `bash`, `read_file`, and `write_file` operations run inside that directory. Alice edits `config.py` under `.worktrees/auth/`; Bob edits `config.py` under `.worktrees/ui/`. They are two physical files, so neither can step on the other.
 
-任务完成后，两个选择：
+---
+
+## Closing a Workspace: Count Before Deleting
+
+When a workspace is no longer needed, one question must be answered before dismantling it: is anything inside still waiting to be carried out?
 
 ```python
 def remove_worktree(name: str, discard_changes: bool = False) -> str:
-    # 安全检查：有改动时默认拒绝
+    ...
     if not discard_changes:
-        files, commits = _count_worktree_changes(path)
+        files, commits = _count_worktree_changes(path)   # Count uncommitted files and unpushed commits
         if files > 0 or commits > 0:
-            return "有未提交改动，使用 discard_changes=true 强制删除，或 keep_worktree 保留"
-    ok, _ = run_git(["worktree", "remove", str(path), "--force"])
-    if not ok:
-        return "删除失败"
+            return (f"Worktree '{name}' has {files} uncommitted file(s) "
+                    f"and {commits} unpushed commit(s). "
+                    "Use discard_changes=true to force removal, "
+                    "or keep_worktree to preserve for review.")
+    ok1, _ = run_git(["worktree", "remove", str(path), "--force"])
     run_git(["branch", "-D", f"wt/{name}"])
     log_event("remove", name)
-
-def keep_worktree(name: str) -> str:
-    log_event("keep", name)
-    return f"Worktree '{name}' kept for review (branch: wt/{name})"
 ```
 
-Keep = 留着分支，等人工 review 后合并到主分支。Remove = 有改动时默认拒绝，需要 `discard_changes=true` 确认。不自动 complete task——任务完成由队友的 `complete_task` 显式触发。
+By default, the harness refuses to delete a changed worktree. This is the same instinct as "persist before summarizing" in s08 and "obtain the new inventory before deleting the old file" in s09, now appearing for a third time: **before destruction, verify that no orphaned data remains.** Imagine the reverse. A teammate has committed but not merged; the lead casually says "clean up the workspace"; `branch -D` runs, and hours of work vanish while the log contains one tidy `remove` entry.
 
-### 事件流：可审计
+There are two explicit exits when deletion is truly intended. `discard_changes=true` means "I know what I am throwing away." `keep_worktree` means "preserve the branch for human review." Dangerous operations are allowed, but they must be deliberate decisions spoken aloud, never defaults.
 
-每次生命周期操作写入日志，方便排查：
-
-```python
-def log_event(event_type: str, worktree_name: str, task_id: str = ""):
-    event = {"type": event_type, "worktree": worktree_name,
-             "task_id": task_id, "ts": time.time()}
-    # append to .worktrees/events.jsonl
-```
-
-事件类型：`create`（创建）、`remove`（删除）、`keep`（保留）。教学版只记录事件用于人工排查；完整恢复还需要 index 或 `git worktree list` 扫描。
-
-### run_git：返回成功/失败
-
-```python
-def run_git(args: list[str]) -> tuple[bool, str]:
-    r = subprocess.run(["git"] + args, cwd=WORKDIR, ...)
-    return r.returncode == 0, output
-```
-
-`create_worktree` 和 `remove_worktree` 只在 git 命令成功后才写事件日志，保证日志反映真实状态。
+> The real Claude Code has two worktree paths. `EnterWorktree` moves the entire current session into a worktree with a process-level chdir. AgentTool's `isolation: "worktree"` wraps only one subagent without changing the global directory, and unchanged temporary worktrees are cleaned up automatically. It has no task-to-worktree binding field; the task and worktree systems are separate and rely on the model to associate them from context. The teaching version's `worktree` field is an intentional simplification.
 
 ---
 
-## 相对 s17 的变更
+## Changes from s17
 
-| 组件 | 之前 (s17) | 之后 (s18) |
+| Component | Before (s17) | After (s18) |
 |------|-----------|-----------|
-| 工作目录 | 所有 Agent 共享 WORKDIR | 每个任务可绑定独立 git worktree |
-| Task 数据 | id/subject/status/owner/blockedBy | + worktree 字段 |
-| 队友工具 cwd | 始终 WORKDIR | 认领带 worktree 的任务时自动切换 |
-| 新函数 | — | create_worktree, bind_task_to_worktree, remove_worktree, keep_worktree, validate_worktree_name |
-| worktree 安全 | 无 | name 校验 + 有改动时拒绝删除 |
-| 事件日志 | 无 | events.jsonl 生命周期审计 |
-| Lead 工具 | 14 (s17) | + create_worktree, remove_worktree, keep_worktree (17) |
-| 队友工具 | 8 (s17) | 8（bash/read/write 在 worktree cwd 执行） |
+| Working directory | Everyone shares WORKDIR | Each task may bind to a separate worktree |
+| Task fields | id/subject/.../blockedBy | +`worktree` |
+| New functions | — | `create_worktree`, `bind_task_to_worktree`, `remove_worktree`, `keep_worktree`, `validate_worktree_name` |
+| Audit | None | Lifecycle log in `.worktrees/events.jsonl` |
+| Teammate execution | Always in the main directory | cwd switches to the task's bound workspace |
 
 ---
 
-## 试一下
+## Try It
 
 ```sh
 cd learn-claude-code
 python s18_worktree_isolation/code.py
 ```
 
-试试这个 prompt：
-
-`Create two tasks, then create worktrees for each (bind with task_id). Spawn alice and bob. Watch them auto-claim and work in isolated directories.`
-
-观察重点：两个 worktree 的 `git status` 输出是否显示不同的分支？队友认领带 worktree 的任务后，bash 命令是否在 worktree 目录下执行？`remove_worktree` 对有改动的 worktree 是否拒绝？`.tasks/` 中的任务在绑定后状态是否仍为 `pending`？
+1. **Isolation in action**: `Create two tasks: 'write auth notes to notes.md' and 'write UI notes to notes.md'. Create worktrees wt-auth and wt-ui, bind one task to each. Spawn alice and bob to work autonomously.` Both tasks write a file named `notes.md`, yet each remains intact. Compare `cat .worktrees/wt-auth/notes.md` and `cat .worktrees/wt-ui/notes.md`: the contents differ and neither overwrites the other. That is direct evidence for isolation by copy.
+2. **Validation**: `Create a worktree named ../../escape`. The name fails the regular expression, an error comes back immediately, and nothing appears outside the workspace.
+3. **The removal gate**: after the teammates in experiment 1 finish, run `Remove worktree wt-auth`. It contains unmerged commits, so removal is refused. The error reports the number of files and commits and names both explicit exits. That refusal is the most valuable line in this chapter.
 
 ---
 
-## 接下来
+## Next
 
-Agent 团队能在隔离的工作空间中自组织了。但 Agent 的能力受限于我们给它写的工具——bash、read、write、task...
+The team can work concurrently, stay isolated, and clean up. Now look back at the agent's toolbox: bash, files, tasks, and teams are all hand-written here. But users have systems of their own, such as an internal Jira or a custom deployment platform. We cannot weld another tool set into `code.py` for every organization.
 
-如果用户已经有了自己的工具怎么办？比如一个公司内部的 Jira API、一个自建的部署系统？
+s19 MCP Plugin → A plugin protocol. External tools join through a standard interface, and the agent does not need to know who implemented them.
 
-s19 MCP Plugin → 给 Agent 装一个插件系统。外部工具通过标准协议接入，Agent 不需要知道它们是谁写的。
-
-<details>
-<summary>深入 CC 源码</summary>
-
-CC 的 worktree 系统有两条路径：**EnterWorktree**（当前会话切入）和 **AgentTool isolation**（子 agent 隔离）。
-
-### EnterWorktree：当前会话切换
-
-`EnterWorktreeTool.ts:92-97` 创建 worktree 后立即 `process.chdir(worktreePath)`、`setCwd()`、`setOriginalCwd()`、`saveWorktreeState()`。当前会话的工作目录直接切换到 worktree——不是 prompt 提醒，而是进程级目录变更。
-
-`ExitWorktreeTool.ts:261-320` 的 keep/remove 都会 `restoreSessionToOriginalCwd()` 恢复原目录。Remove 时检查未提交改动（`ExitWorktreeTool.ts:190-220`），没有 `discard_changes: true` 就拒绝删除。
-
-### AgentTool isolation：子 agent 隔离
-
-`AgentTool.tsx:590-641` 在 `isolation: "worktree"` 时调用 `createAgentWorktree()` 创建 worktree，用 `cwdOverridePath` 包住子 agent 执行。子 agent 的所有操作自动在 worktree 目录下进行。`AgentTool/prompt.ts:272` 告诉模型：这是临时 worktree，无改动自动清理，有改动返回路径和分支。
-
-`worktree.ts:902-951` 的 `createAgentWorktree()` 不修改全局 session cwd，只给子 agent 用。`worktree.ts:961-1020` 的 `removeAgentWorktree()` 从主 repo root 删除。
-
-### name 校验
-
-`worktree.ts:76-84` 校验 slug：拒绝 `.`/`..`，允许 `[a-zA-Z0-9._-]`。`worktree.ts:48` 定义 `VALID_WORKTREE_SLUG_SEGMENT`。教学版的 `validate_worktree_name` 用同样的规则。
-
-### 路径和分支命名
-
-真实路径是 `.claude/worktrees/`，分支名 `worktree-{slug}`（`worktree.ts:204-227`，斜杠用 `+` 替代）。教学版用 `.worktrees/` 和 `wt/{name}` 简化。
-
-创建时用 `git worktree add -B`（`worktree.ts:326-328`），优先基于 `origin/<defaultBranch>` 而非当前 HEAD。
-
-### 状态管理
-
-CC 没有 task-worktree 绑定。Worktree 状态通过 `PersistedWorktreeSession`（`worktree.ts:756-768`）管理，字段包括 `originalCwd`、`worktreePath`、`worktreeName`、`worktreeBranch`、`originalBranch`、`originalHeadCommit`、`sessionId` 等——没有 taskId。`saveWorktreeState()`（`sessionStorage.ts:2883-2920`）以 `type: 'worktree-state'` 写入 session transcript。
-
-教学版用 task 的 `worktree` 字段做绑定，是教学简化。CC 把 worktree 和 task 作为两个独立系统，通过 Agent 理解上下文来关联。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v0, ja@v0 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->

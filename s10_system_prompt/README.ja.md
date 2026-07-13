@@ -1,23 +1,15 @@
-# s10: System Prompt — 実行時アセンブリ、ハードコードなし
+# s10: System Prompt — ハードコードせず、実行時に組み立てる
 
-[中文](README.md) · [English](README.en.md) · [日本語](README.ja.md)
+[中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s08 → s09 → `s10` → [s11](../s11_error_recovery/) → s12 → ... → s20
-> *"prompt は組み立てるもの、固定するものではない"* — セグメント + オンデマンド結合 + キャッシュ。
+> *"prompt は組み立てるもので、書き固めるものではない。"* section + 条件付き連結 + cache。
 >
-> **Harness レイヤー**: プロンプト — 実行時組み立て、ハードコードなし。
+> **Harness レイヤー**: prompt の実行時組み立て。
 
 ---
 
-## 課題
-
-s01 から s09 まで、system prompt は常に 1 行のハードコード：
-
-```python
-SYSTEM = f"You are a coding agent at {WORKDIR}. Use tools to solve tasks."
-```
-
-s01 では十分だった。bash、read、write の 3 ツールのみ。しかし s09 では、Agent に記憶、圧縮、スキル読み込みがある。prompt が説明すべき能力が増え続ける：
+SYSTEM prompt がどう増えてきたか振り返ろう。s01 では identity が一文だけ。s05 で TodoWrite の指示、s07 で skill catalog、s09 で memory index が加わった。各章が同じ文字列へ別の断片を溶接している。
 
 ```python
 SYSTEM = (
@@ -26,44 +18,19 @@ SYSTEM = (
     "Before starting any multi-step task, use todo_write. "
     "Skills are available via list_skills and load_skill. "
     "Relevant memories are injected below when available. "
-    # ... 能力を追加するたびに 1 行増える
+    # ... 機能を増やすたびに断片を溶接
 )
 ```
 
-3 つの問題：
+三つの問題が続く。プロジェクトを変えると全体を書き直す必要があるが、溶接後はどこが共通でどこが project 固有か分けられない。新しい指示が以前の文と衝突しても、一つの文字列では見つけにくい。そして s08 で見た prompt cache は、prefix の完全一致を必要とする。巨大な一文字列に動的な字が一つでもあれば、SYSTEM 全体が毎ターン「新しい prefix」になる。
 
-1. **プロジェクトを変えるには prompt 全体を書き直す**必要がある。何を変え、何を残すべきか不明
-2. **一箇所の変更が全体に影響する**。ツール説明を追加すると、前の指示と矛盾する可能性
-3. **毎回のリクエストが全内容を送信する**。現在の会話で不要なセクションも token を無駄に消費
+三つの問題を直す第一歩は同じだ。文字列を分ける。
 
-System prompt は、実行時の現在状態に基づいて組み立てられる設定であるべき：どのツールが有効か、どのコンテキストが可視か、どの記憶が関連するか、どの内容を prompt cache に命中させるために安定させるべきか。
+![System Prompt Overview](images/system-prompt-overview.svg)
 
 ---
 
-## ソリューション
-
-![System Prompt Overview](images/system-prompt-overview.ja.svg)
-
-s10 は prompt アセンブリ機構に焦点を当てる。s08-s09 の能力を背景とするが、圧縮や記憶システムは再実装しない。核心の変更：ハードコードされた `SYSTEM` を独立セクションに分割し、実行時に実際の状態に基づいてオンデマンドで組み立て、結果をキャッシュして再組み立てを回避。
-
-4 つのセクション、2 つの読み込み戦略：
-
-| セクション | 戦略 | 内容 | 判断基準 |
-|-----------|------|------|---------|
-| identity | 常に | あなたは誰か、どう作業するか | 常に存在 |
-| tools | 常に | 利用可能ツール一覧 | `enabled_tools` |
-| workspace | 常に | 作業ディレクトリ | 常に存在 |
-| memory | オンデマンド | 関連記憶内容 | `.memory/MEMORY.md` が存在するか |
-
-重要な設計：セクションをロードするかどうかは実際の状態（ツールが存在するか、ファイルが存在するか）で決まり、メッセージ内のキーワードではない。
-
----
-
-## 仕組み
-
-### PROMPT_SECTIONS: トピック別フラグメント
-
-単一の文字列を辞書に分割、各キーがトピック：
+## section に分ける：一つの主題を一つの段落へ
 
 ```python
 PROMPT_SECTIONS = {
@@ -74,22 +41,24 @@ PROMPT_SECTIONS = {
 }
 ```
 
-各セクションは独立して管理。`tools` を変更しても `identity` に影響しない。`memory` を追加しても `workspace` はそのまま。
+section は独立して保守できる。`tools` を変えても `identity` に触れず、`memory` を足しても `workspace` を変えない。各 section が一つの主題だけを扱うので、衝突も見えるようになる。
 
-### assemble_system_prompt: オンデマンド組み立て
+分割は第一歩にすぎない。このターンにどの section を載せるか、誰が決めるのか。
 
-すべてのセクションが毎ターン必要なわけではない。記憶ファイルがなければ、memory セクションをロードしても token の無駄。context の実際の状態に基づいて組み立てる：
+---
+
+## keyword ではなく状態から組み立てる
 
 ```python
 def assemble_system_prompt(context: dict) -> str:
     sections = []
 
-    # 常にロード
+    # 常時：identity、tools、workspace は毎ターン必要
     sections.append(PROMPT_SECTIONS["identity"])
     sections.append(PROMPT_SECTIONS["tools"])
     sections.append(PROMPT_SECTIONS["workspace"])
 
-    # オンデマンド — 実際の状態に基づく、キーワードではない
+    # 条件付き：会話内の keyword ではなく、実際の状態を見る
     memories = context.get("memories", "")
     if memories:
         sections.append(f"Relevant memories:\n{memories}")
@@ -97,158 +66,82 @@ def assemble_system_prompt(context: dict) -> str:
     return "\n\n".join(sections)
 ```
 
-「常にロード」は毎ターン必要なもの：アイデンティティ、ツール、作業ディレクトリ。「オンデマンド」は特定条件下でのみ有用。
+判断材料が重要だ。memory section を載せるかは `.memory/MEMORY.md` が存在し、空でないかで決める。これはファイルシステム上の事実だ。ユーザーの発言に「覚えて」「好み」といった語があるかで判断する方法は推測にすぎず、言い方が変われば失敗する。状態による組み立ては決定的で test できる。
 
-なぜ全部ロードしないのか？token にはコストがあり（system prompt は毎ターン課金）、情報が少ないほど LLM は集中する（無関係な指示はノイズ）。
+context 自体も実際の状態から作る。
 
-### get_system_prompt: キャッシュで再組み立てを回避
+```python
+def update_context(context: dict, messages: list) -> dict:
+    memories = ""
+    if MEMORY_INDEX.exists():                       # 会話ではなくファイルシステムを見る
+        content = MEMORY_INDEX.read_text().strip()
+        if content:
+            memories = content
+    return {
+        "enabled_tools": list(TOOL_HANDLERS.keys()),  # 実際に登録されたツール
+        "workspace": str(WORKDIR),
+        "memories": memories,
+    }
+```
 
-コンテキストが変わっていない時（同じターン内で複数の LLM 呼び出し、context が同じ）、再組み立ては無駄。確定的シリアライズで変化を検出し、キャッシュヒット時は即座に返却：
+ループは各ターンのツール実行後に context を再計算する。理由は実務的だ。ツールは世界を変える。前のターンでモデルが `MEMORY.md` を書いたなら、次の prompt はそれを反映すべきだ。
+
+---
+
+## cache：同じ状態を二度組み立てない
+
+複数ターンで context が変わらないことは多く、毎回文字列を連結するのは無駄だ。serialize した context を key にする cache を足す。
 
 ```python
 def get_system_prompt(context: dict) -> str:
     global _last_context_key, _last_prompt
     key = json.dumps(context, sort_keys=True, ensure_ascii=False, default=str)
     if key == _last_context_key and _last_prompt:
-        return _last_prompt
+        return _last_prompt                     # [cache hit]
     _last_context_key = key
     _last_prompt = assemble_system_prompt(context)
-    return _last_prompt
+    return _last_prompt                         # [assembled]
 ```
 
-`hash()` ではなく `json.dumps` を使用：Python 組み込みの `hash()` にはプロセスランダム化があり（安定したキャッシュキーに不適切）、list/dict で `unhashable type` エラーになる。
+なぜ手軽な `hash()` ではなく `json.dumps(sort_keys=True)` なのか。悪い場合が二つある。Python の文字列 hash は process ごとに randomize され、同じ context でも別の実行では key が変わる。また context には list と dict があり、`hash()` は `unhashable type` を投げる。決定的な serialize が安定した選択で、`sort_keys` は辞書順による差も消す。
 
-注意：このキャッシュは「プロセス内での文字列再組み立ての回避」のみ。CC の API prompt cache とは別物。CC の prompt cache は `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` で静的/動的部分を分離し、静的部分が global cache に命中する。動的内容が変化しても静的部分は無効化されない。
+正直な境界もある。この cache が節約するのは local process 内の文字列組み立てで、s08 の API 側 prompt cache とは別物だ。ただし section 分割は API cache の準備にもなる。安定 section を前へ、変化する section を後ろへ置けるため、安定 prefix を長く保てる。
 
-### context: 実際の状態、キーワード推測ではない
-
-context は現在の実行時状態の実際の状態を反映：
-
-```python
-def update_context(context: dict, messages: list) -> dict:
-    memories = ""
-    if MEMORY_INDEX.exists():
-        content = MEMORY_INDEX.read_text().strip()
-        if content:
-            memories = content
-    return {
-        "enabled_tools": list(TOOL_HANDLERS.keys()),
-        "workspace": str(WORKDIR),
-        "memories": memories,
-    }
-```
-
-`enabled_tools` は実際に登録されたツールを一覧。`memories` は `.memory/MEMORY.md` が存在するかを確認。セクションの読み込みはこの実際の状態に基づき、メッセージ内のキーワード検索ではない。
-
-### 組み合わせて実行
-
-```python
-def agent_loop(messages: list, context: dict):
-    system = get_system_prompt(context)
-    while True:
-        response = client.messages.create(
-            model=MODEL, system=system, messages=messages,
-            tools=TOOLS, max_tokens=8000)
-        # ... ツール実行 ...
-        context = update_context(context, messages)
-        system = get_system_prompt(context)
-```
-
-各ループ反復の開始時に system prompt を取得。context が変わっていれば再組み立て、変わっていなければキャッシュを返却。
+> 実際の Claude Code は section 数が固定ではなく、feature flag、出力 style、実行 mode で増減する。静的 section は一つの global cache block にまとまり、動的 section は `SYSTEM_PROMPT_DYNAMIC_BOUNDARY` の外へ置かれる。全構成で唯一常に変化しやすい section は `mcp_instructions` で、MCP server がターン間で接続・切断するためだ。教学版の四 section と二戦略は、同じ構造の最小版である。
 
 ---
 
-## s09 からの変更点
+## s09 からの変更
 
 | コンポーネント | 変更前 (s09) | 変更後 (s10) |
-|-----------|-------------|-------------|
-| prompt | ハードコード SYSTEM 文字列 | PROMPT_SECTIONS + assemble_system_prompt |
-| キャッシュ | なし | get_system_prompt（json.dumps 検出 + キャッシュ） |
-| 新規関数 | — | assemble_system_prompt, get_system_prompt, update_context |
-| ツール | bash, read_file, write_file (3) | bash, read_file, write_file (3) — 変更なし |
-| ループ | 固定 SYSTEM を使用 | get_system_prompt(context) を使用 |
+|----------------|--------------|--------------|
+| prompt | ハードコードした SYSTEM 文字列 | `PROMPT_SECTIONS` + `assemble_system_prompt` |
+| cache | なし | `get_system_prompt`（`json.dumps` による検出 + cache） |
+| 新しい関数 | — | `assemble_system_prompt`, `get_system_prompt`, `update_context` |
+| ツール | 6 | 3、本章では bash, read_file, write_file に絞る |
+| ループ | 固定 SYSTEM | ツール後に context を再計算し、prompt を取得 |
 
 ---
 
-## 試してみよう
+## 試してみる
 
 ```sh
 cd learn-claude-code
 python s10_system_prompt/code.py
 ```
 
-観察のポイント：
+ターミナルの二つの label が本章の観察点だ。`[assembled] sections: ...` は再組み立てと section 一覧を示し、`[cache hit]` は状態が変わらず cache を再利用したことを示す。
 
-1. 出力にロードされたセクションが表示される（`[assembled] sections: ...` ラベル）
-2. 継続会話でキャッシュヒット時は `[cache hit]` と表示
-3. `.memory/MEMORY.md` を作成すると、次のターンで memory セクションが自動ロード
-
-以下のプロンプトを試してみてください：
-
-1. `Read the file README.md`（常にロードされる 3 つのセクションを観察）
-2. `Create a file called .memory/MEMORY.md with content "- [test](test.md) — test memory"`（記憶インデックスを書き込み）
-3. `Read the file code.py`（memory セクションが表示されるか観察）
+1. `Read the file README.md`：最初の組み立てにどの三 section が入るかを見る。直前に s09 を動かし `.memory/` に記憶があれば、最初から `memory` も現れる。
+2. 続けて別の質問をする。context が変わらないため、今度は `[cache hit]` になるはずだ。
+3. memory がなければ `Create a file called .memory/MEMORY.md with content "- [test](test.md) — test memory"`。書込後の次ターンで `[assembled]` が再び出て、section に `memory` が増える。モデルがファイルシステムを変え、prompt が追従した。これが状態による組み立てだ。
 
 ---
 
 ## 次へ
 
-System prompt を実行時に組み立てられるようになった。しかし Agent はエラーでまだクラッシュする。ネットワークの不安定性、API レート制限、出力の切り詰め、コンテキスト超過、これらはバグではなく日常。
+prompt は組み立てられ、必要な機能もある。しかしすべてが「API 呼び出しは必ず成功する」という仮定に立つ。現実には network failure、rate limit、出力切断、context overflow が日常的に起きる。今のコードはどれに遭っても crash する。
 
-s11 Error Recovery → 4 つのリカバリパス。token のアップグレード、コンテキスト圧縮、指数バックオフ、モデル切り替え。
+s11 Error Recovery → 四つの回復経路。token 上限を上げ、context を圧縮し、指数 backoff し、model を切り替える。
 
-<details>
-<summary>CC ソースコードの詳細</summary>
-
-> 以下は CC ソースコード `constants/prompts.ts`（914 行）、`constants/systemPromptSections.ts`（68 行）、`context.ts`（189 行）、`utils/api.ts`（718 行）、`utils/systemPrompt.ts`（123 行）、`bootstrap/state.ts` の分析に基づく。
-
-### CC の system prompt にはいくつのセクションがあるか？
-
-数は固定されておらず、feature flag、output style、KAIROS/Proactive モード、ユーザータイプ、token 予算などに影響される。大まかに 2 つのカテゴリ：
-
-**静的セクション**（常にロード）：identity、system、doing_tasks、actions、using_tools、tone_style、output_efficiency など。
-
-**動的セクション**（状態に応じてロード）：session_guidance、memory、ant_model_override、env_info_simple、language、output_style、mcp_instructions、scratchpad、frc、summarize_tool_results、numeric_length_anchors、token_budget、brief など。
-
-`mcp_instructions` は唯一の揮発性セクション（`DANGEROUS_uncachedSystemPromptSection()` で作成）。MCP server はターン間で接続・切断可能なため。
-
-### 組み立て関数
-
-```typescript
-getSystemPrompt(tools, model, additionalWorkingDirs?, mcpClients?): Promise<string[]>
-```
-
-`string[]`（各要素がセクション）を返却。`SYSTEM_PROMPT_DYNAMIC_BOUNDARY` で静的/動的部分を分離。
-
-### cache scope
-
-global cache boundary が有効な場合、静的セクションは 1 つの global cache block にマージされ、動的セクションは global cache を使用しない（`cacheScope: null`）。boundary なしまたは global cache をスキップするパスでのみ org scope にフォールバック。
-
-教学版のキャッシュは文字列の再組み立てを回避するのみ。CC の 3 層キャッシュ：
-
-1. **lodash memoize**: `getSystemContext` と `getUserContext` がセッション中キャッシュ（`context.ts`）
-2. **セクション登録キャッシュ**: `STATE.systemPromptSectionCache` が動的セクションの結果をキャッシュ、`/clear` や `/compact` でクリア
-3. **API レベルキャッシュ**: `splitSysPromptPrefix()`（`api.ts`）が boundary を通じて異なる cache scope のブロックに分割
-
-### getUserContext vs getSystemContext
-
-| | getSystemContext | getUserContext |
-|---|---|---|
-| 内容 | gitStatus、cacheBreaker | CLAUDE.md 内容、currentDate |
-| 注入方式 | system prompt 配列に追加 | `<system-reminder>` ユーザーメッセージとして先頭に配置 |
-| スキップ条件 | カスタム system prompt 時 | 常に実行 |
-
-### モードによる prompt の変化
-
-- **CLAUDE_CODE_SIMPLE**: prompt 全体が 2 行のみ
-- **Proactive/KAIROS**: コンパクト版 prompt が標準セクション全体を置換
-- **Coordinator**: コーディネータ専用 prompt がデフォルトを完全に置換
-- **Agent モード**: Agent 定義の prompt がデフォルトを置換または追加
-
-### 総サイズ
-
-標準インタラクティブモードの system prompt コアは約 20-30KB テキスト。CLAUDE_CODE_SIMPLE は約 150 文字。ユーザーコンテキスト（CLAUDE.md）とシステムコンテキスト（git status）がこれに加算。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
