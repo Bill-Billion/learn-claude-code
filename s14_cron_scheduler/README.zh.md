@@ -9,207 +9,109 @@ s01 → ... → s12 → s13 → `s14` → [s15](../s15_agent_teams/) → s16 →
 
 ---
 
-## 问题
+s13 之后，Agent 干活不再卡壳，但每一件事仍然由你的一句话启动。"每天早上 9 点跑测试""每 30 分钟看一眼 CI"，这类活总不能雇个人定时来敲回车。
 
-闹钟不需要你盯着它才会响。你设好 7:00，到点它自己响，你在睡觉、在洗澡、在做饭，它都照响不误。
+第一反应也许是把要求写给模型："记住，每天 9 点跑测试。"这句话暴露了一个此前没点破的事实：**模型只在被调用时存在。** 没有请求进来，它就是一堆静止的权重，上下文里写着"每天 9 点"，可到了 9 点，没有任何东西会醒来看一眼。时间感这个能力，模型根本没有地方长，它只能长在 harness 上。
 
-s13 让 Agent 能后台执行慢操作，但所有操作仍然是你手动触发的。你说一句，Agent 动一下。"每天早上 9 点跑测试"、"每 30 分钟检查 CI 状态"，这些周期性任务不该需要人每次来推。
-
----
-
-## 解决方案
+harness 里怎么长？让主循环 `sleep` 到 9 点是不行的，那是把整个 Agent 冻住。答案和你的闹钟一样：一个独立的、一直醒着的小东西，只负责看表，到点了喊一嗓子。
 
 ![Cron Scheduler Overview](images/cron-scheduler-overview.svg)
 
-教学代码沿用 S13 的简化任务系统、后台执行和 prompt 组装；为了聚焦调度器，省略完整错误恢复、记忆和技能系统。新增：独立的 cron 调度线程，每秒检查一次，时间到了把任务塞进 `cron_queue`；再由 queue processor 在 Agent 空闲时自动交付。
-
-手动 vs 定时：
-
-| | 手动触发 (s13) | 定时触发 (s14) |
-|---|---|---|
-| 触发者 | 用户输入 | 调度线程 |
-| 触发时机 | 随时 | cron 表达式指定 |
-| 需要人参与 | 是 | 否（调度器自动入队，空闲时自动交付） |
-| 持久性 | — | durable 跨重启 |
-
 ---
 
-## 工作原理
+## 注册：坏表达式挡在门口
 
-### 四层模型
-
-Cron 调度分四层：
-
-1. **Scheduler**：daemon 线程，每秒轮询，判断时间到了没有
-2. **Queue**：`cron_queue`，调度线程写入已触发任务
-3. **Queue Processor**：发现队列非空且 Agent 空闲，启动一轮 agent_loop
-4. **Consumer**：agent_loop 从队列消费，注入到 messages
-
-教学版实现的是最小 queue processor：用 `agent_lock` 判断 Agent 是否空闲，空闲时自动交付定时任务。真实 Claude Code 的 `useQueueProcessor.ts` 还会处理 UI 阻塞、队列优先级和不同消息模式。
-
-### CronJob: 数据结构
-
-每个 cron 任务是一个 `CronJob` 对象：
+任务用五段式 cron 表达式描述（分 时 日 月 星期），注册时立刻校验：
 
 ```python
 @dataclass
 class CronJob:
     id: str
-    cron: str        # "0 9 * * *" (五段式 cron 表达式)
+    cron: str        # "0 9 * * *"
     prompt: str      # 触发时注入给 Agent 的消息
     recurring: bool  # True=周期性，False=一次性
-    durable: bool    # True=写磁盘，跨会话保留
+    durable: bool    # True=落盘，跨重启存活
+
+def schedule_job(cron, prompt, recurring=True, durable=True):
+    err = validate_cron(cron)      # 先校验，坏表达式当场拒绝
+    if err:
+        return err
+    job = CronJob(id=f"cron_{random.randint(0, 999999):06d}", ...)
+    with cron_lock:
+        scheduled_jobs[job.id] = job
+    if durable:
+        save_durable_jobs()        # 落盘到 .scheduled_tasks.json
 ```
 
-Cron 表达式，五段式，Unix 用了 50 年：
+校验为什么必须在注册时做？想象反面：`99 99 * * *` 混了进去，等到调度线程逐个匹配时才抛异常，而调度线程是全局唯一的，一个坏任务能把所有任务的闹钟一起炸哑。教学版双保险：注册时校验拦住绝大多数，调度循环里再给每个任务套 try/except，单个任务出错只打日志，线程不死。
 
-```
-分钟  小时  日  月  星期
-  *    *   *   *   *      每分钟
-  0    9   *   *   *      每天早上 9:00
- */5    *   *   *   *      每 5 分钟
-  0    9   *   *  1-5     工作日早上 9:00
-```
+---
 
-支持 `*`、`*/N`、`N`、`N-M`、`N,M,...`。
+## 匹配：每秒看一次表，但每分钟只响一次
 
-### cron_matches: 五段式匹配
-
-标准 cron 语义：分钟、小时、月必须全部匹配；日（DOM）和星期（DOW）同时被约束时任一匹配即可（OR）：
-
-```python
-def cron_matches(cron_expr: str, dt: datetime) -> bool:
-    fields = cron_expr.strip().split()
-    if len(fields) != 5:
-        return False
-    minute, hour, dom, month, dow = fields
-    dow_val = (dt.weekday() + 1) % 7  # Python Monday=0 → cron Sunday=0
-
-    m = _cron_field_matches(minute, dt.minute)
-    h = _cron_field_matches(hour, dt.hour)
-    dom_ok = _cron_field_matches(dom, dt.day)
-    month_ok = _cron_field_matches(month, dt.month)
-    dow_ok = _cron_field_matches(dow, dow_val)
-
-    if not (m and h and month_ok):
-        return False
-    # DOM and DOW: both constrained → either matching is enough (OR)
-    dom_unconstrained = dom == "*"
-    dow_unconstrained = dow == "*"
-    if dom_unconstrained and dow_unconstrained:
-        return True
-    if dom_unconstrained:
-        return dow_ok
-    if dow_unconstrained:
-        return dom_ok
-    return dom_ok or dow_ok
-```
-
-### 独立调度线程: 每秒轮询
-
-调度器跑在独立的 daemon 线程里，不依赖 agent_loop 是否在执行。单个 job 异常不会杀掉整个线程：
+调度线程每秒醒来，拿当前时间对每个任务的表达式做匹配：
 
 ```python
 def cron_scheduler_loop():
     while True:
         time.sleep(1)
         now = datetime.now()
-        minute_marker = now.strftime("%Y-%m-%d %H:%M")
+        minute_marker = now.strftime("%Y-%m-%d %H:%M")   # 注意：带日期
         with cron_lock:
             for job in list(scheduled_jobs.values()):
                 try:
                     if cron_matches(job.cron, now):
                         if _last_fired.get(job.id) != minute_marker:
-                            cron_queue.append(job)
-                            _last_fired[job.id] = minute_marker
+                            cron_queue.append(job)               # 触发：进队列
+                            _last_fired[job.id] = minute_marker  # 本分钟内不再响
                         if not job.recurring:
-                            scheduled_jobs.pop(job.id, None)
-                            if job.durable:
-                                save_durable_jobs()
+                            scheduled_jobs.pop(job.id, None)     # 一次性任务用完即弃
                 except Exception as e:
-                    print(f"[cron error] {job.id}: {e}")
+                    print(f"[cron error] {job.id}: {e}")         # 单个坏任务不杀线程
 ```
 
-关键设计：
-- **独立于 agent_loop**：即使 agent_loop 没在跑，调度器也在后台检查时间
-- **date-aware minute_marker**：用 `"YYYY-MM-DD HH:MM"` 防止同一分钟重复触发，同时不会在第二天跳过
-- **单 job try/except**：一个坏 job 不会拖垮整个调度线程
-- **一次性任务**：触发后自动从 scheduled_jobs 里删除
+两个容易做错的细节都藏在 `minute_marker` 里。第一，每秒轮询意味着同一个匹配分钟会命中 60 次，任务却只该响一次，所以要记住"这个任务在这一分钟已经响过"。第二，标记必须带日期：如果只记 `09:00`，每天 9 点的任务第一天响过之后，第二天 9 点一看标记相同，就再也不响了。这类 bug 上线一天后才发作，最难查。
 
-### Queue Processor + agent_loop: 交付端
+`cron_matches` 本身忠实还原了传统 cron 的一个怪癖：日期和星期两个字段**同时**有约束时，语义是"或"不是"与"。`0 9 13 * 5` 的意思是"13 号或周五的 9 点"，想表达"既是 13 号又是周五"，标准 cron 写不出来。教学版没有"修正"它，兼容怪癖也是兼容的一部分。
 
-queue processor 不检查时间，只负责在队列有任务且 Agent 空闲时拉起一轮执行：
+---
+
+## 解耦：调度器只管扔进队列，不管执行
+
+到点之后，调度线程做的唯一动作是把任务追加进 `cron_queue`，然后继续看表。它绝不自己去跑 agent turn。原因有两层：跑一轮 agent 可能要几分钟，调度线程被拖住，后面所有任务的触发都延误；而且此刻用户可能正在和 Agent 对话，两个轮次并发写同一份历史，消息交错，s01 的配对规矩当场崩。
+
+闹钟只负责响，不负责把你拖下床。把你拖下床的是另一个角色：
 
 ```python
 def queue_processor_loop():
+    """队列有活、且 Agent 空闲时，自动开一轮。"""
     while True:
         time.sleep(0.2)
         if not has_cron_queue():
             continue
-        if not agent_lock.acquire(blocking=False):
+        if not agent_lock.acquire(blocking=False):   # 拿不到锁 = Agent 正忙，下次再试
             continue
         try:
-            if has_cron_queue():
-                run_agent_turn_locked()
+            run_agent_turn_locked()                  # 自动开一轮 agent turn
         finally:
             agent_lock.release()
 ```
 
-agent_loop 也不负责检查时间，它只从 `cron_queue` 里拿已触发的任务，注入到 messages 里：
+`agent_lock` 是整个结构的轴心：用户敲回车的路径和定时触发的路径抢同一把锁，同一时刻只可能有一轮 agent turn 在跑。定时任务永远不会打断你正在进行的对话，只会等你说完话的空档进来。
+
+最后一环在 `agent_loop` 开头，把触发的任务作为 user 消息注入，还是那条"世界的声音"通道：
 
 ```python
 fired = consume_cron_queue()
 for job in fired:
-    messages.append({"role": "user",
-                     "content": f"[Scheduled] {job.prompt}"})
+    messages.append({"role": "user", "content": f"[Scheduled] {job.prompt}"})
 ```
 
-生产者（调度线程）、交付者（queue processor）和消费者（agent_loop）通过 `cron_queue`、`cron_lock`、`agent_lock` 解耦。
+四层各司其职：调度器（看表）→ 队列（缓冲）→ 队列处理器（找空闲时机）→ 消费者（注入执行）。每一层只做一件事，这就是"调度与执行解耦"的全部含义。
 
-### 校验：防止坏 cron 杀掉调度器
+durable 任务落在 `.scheduled_tasks.json`，程序启动时重新加载，加载时再校验一遍（磁盘上的文件可能被手改坏），非法的跳过并打日志。
 
-`schedule_job` 在注册前校验 cron 表达式，非法的直接返回错误：
-
-```python
-def schedule_job(cron, prompt, recurring=True, durable=True):
-    err = validate_cron(cron)
-    if err:
-        return err
-    # ... register job
-```
-
-从磁盘加载 durable job 时也会跳过非法表达式，避免单个坏任务拖垮启动。
-
-### Durable vs Session-only
-
-- **Durable**：任务定义写进 `.scheduled_tasks.json`。Agent 重启后加载文件，恢复任务。
-- **Session-only**：只在内存里。Agent 关闭就没了。
-
-> **重要前提**：cron 调度器必须在 Agent 进程内跑。进程关闭，调度也停。Durable 只意味着任务定义跨重启保留，下次 Agent 启动时调度器才会发现"该触发了"并触发。如果需要"即使应用关闭也能定时跑"，请用系统 crontab 或 systemd timer。
-
-### 合起来跑
-
-```
-1. 启动时：
-   load_durable_jobs() → 从 .scheduled_tasks.json 恢复持久化任务
-   Thread(cron_scheduler_loop, daemon=True).start() → 调度线程开始轮询
-   Thread(queue_processor_loop, daemon=True).start() → 队列处理器等待交付
-
-2. 注册任务：
-   schedule_cron(cron="*/2 * * * *", prompt="run date", durable=True)
-   → CronJob 写入 scheduled_jobs + .scheduled_tasks.json
-
-3. 每 2 分钟：
-   调度线程检查 → cron_matches 返回 True → cron_queue.append(job)
-   → queue processor 发现 Agent 空闲 → agent_loop consume_cron_queue
-   → 注入 "[Scheduled] run date"
-   → LLM 收到消息，执行 date 命令
-
-4. 关闭进程：
-   调度线程跟着停（daemon=True）
-   .scheduled_tasks.json 还在磁盘上
-   下次启动 → load_durable_jobs → 任务恢复
-```
+> 真实 Claude Code：注册上限 50 个任务，重复任务 7 天自动过期；触发时间带抖动——重复任务最多延后周期的 10%，防止全世界的"9 点整"任务在同一秒砸向 API（惊群）；cron 发起的请求还会被标成低优先级工作负载，容量紧张时给交互式用户让路。
 
 ---
 
@@ -217,13 +119,11 @@ def schedule_job(cron, prompt, recurring=True, durable=True):
 
 | 组件 | 之前 (s13) | 之后 (s14) |
 |------|-----------|-----------|
-| 触发方式 | 用户手动触发 | 调度线程自动入队 |
-| 新类型 | — | CronJob dataclass (id, cron, prompt, recurring, durable) |
-| 新函数 | — | cron_matches, validate_cron, schedule_job, cancel_job, cron_scheduler_loop, queue_processor_loop |
-| 新存储 | — | .scheduled_tasks.json (durable) + 内存 (session-only) |
-| 线程 | 后台执行线程 | + 调度线程 (daemon, 1s 轮询) + queue processor 线程 |
-| 队列 | background_results | + cron_queue (调度线程写, queue processor 交付, agent_loop 消费) |
-| 工具 | 8 (s12/s13) | + schedule_cron, list_crons, cancel_cron (11) |
+| 触发方式 | 用户输入 | +cron 表达式定时触发 |
+| 新线程 | 后台执行线程 | +调度线程（1s 轮询）+ 队列处理线程 |
+| 新工具 | — | `schedule_cron`, `list_crons`, `cancel_cron`（共 11 个） |
+| 持久化 | `.tasks/` 任务 | +`.scheduled_tasks.json` durable 作业 |
+| 并发控制 | `background_lock` | +`cron_lock`, `agent_lock`（用户轮与定时轮互斥） |
 
 ---
 
@@ -234,70 +134,17 @@ cd learn-claude-code
 python s14_cron_scheduler/code.py
 ```
 
-试试这些 prompt：
-
-1. `Schedule a task to print the current date every 2 minutes`
-2. `List all cron jobs`
-3. `Create a one-shot reminder in 1 minute to check the build status`
-4. `Cancel the recurring job and verify with list_crons`
-
-观察重点：调度线程是否在独立运行？cron 任务是否在正确的时间点触发？不输入新 prompt 时，是否也出现 `[queue processor]` 并自动执行？durable job 是否写入了 `.scheduled_tasks.json`？
+1. **看它自己动起来**：`Schedule a cron job that runs every minute: report the current time`。等到下一个整分钟，终端会在你没有敲任何字的情况下自己热闹起来：`[cron fire]` → `[queue processor] delivering scheduled work` → `[inject cron]`，然后 Agent 跑完一整轮汇报时间。这是全课程第一次，工作不由你的输入启动；
+2. **坏表达式进不了门**：`Schedule a cron job with expression "99 99 * * *" that says hi`。注册被拒，`minute: Value 99 out of bounds [0-59]`，调度器毫发无伤；
+3. **跨重启**：`q` 退出再重启，启动日志出现 `[cron] loaded 1 durable job(s)`，下一个整分钟它照响。看够了就 `Cancel that cron job`，顺手翻一眼 `.scheduled_tasks.json` 确认清空；
+4. **正在对话时它不插嘴**：趁整分钟到来之前问 Agent 一个需要多轮工具的问题，观察 cron 触发后 `[queue processor]` 不会立刻交付，等你这轮结束才进来。那就是 `agent_lock` 在工作。
 
 ---
 
 ## 接下来
 
-一个 Agent 能计划、压缩、后台执行、定时调度。但有些任务太大了，比如"重构整个后端"，认证模块、数据库层、API 路由、测试全部翻新，一个 Agent 的上下文窗口装不下。
+Agent 现在又能干又准时，但它仍然是单兵作战。一个真正的项目需要并行推进：前端、后端、测试各是一摊活。s06 的子 Agent 是串行的打下手，s13 的后台线程只会跑命令，都不是"几个 Agent 同时开工、各管一摊"。
 
-s15 Agent Teams → 多 Agent 协作，持久队友 + 异步收件箱。
+s15 Agent Teams → 主 Agent 当 lead，随手拉起几个 teammate 各干各的，靠一套文件邮箱互通消息。
 
-<details>
-<summary>深入 Claude Code 源码</summary>
-
-> 以下基于 Claude Code 源码 `CronCreateTool.ts`、`cronScheduler.ts`、`cron.ts`、`cronTasks.ts`、`cronTasksLock.ts`、`useScheduledTasks.ts`（139 行）的完整分析。
-
-### 一、三个 Cron 工具
-
-Claude Code 暴露了三个 cron 工具给模型：`CronCreate`、`CronDelete`、`CronList`。全部由编译时门控 `feature('AGENT_TRIGGERS')` 和运行时 GrowthBook 标志 `tengu_kairos_cron` 控制。还有一个 `CLAUDE_CODE_DISABLE_CRON` 环境变量做本地覆盖。
-
-### 二、存储：`.claude/scheduled_tasks.json`
-
-```json
-{ "tasks": [{ "id": "abc12345", "cron": "0 9 * * *", "prompt": "...", "recurring": true, "durable": true, "createdAt": 1714567890000 }] }
-```
-
-Durable 任务写磁盘；session-only 任务存于 `STATE.sessionCronTasks` 内存数组（进程重启丢失）。还有一个 `.scheduled_tasks.lock` 文件防止同项目的多个 session 重复触发。
-
-### 三、调度器：1 秒轮询
-
-`cronScheduler.ts` 每秒检查一次（`CHECK_INTERVAL_MS = 1000`）。谁持有锁谁触发文件任务；所有 session 都触发仅 session 任务。还有一个 `chokidar` 文件观察者监视 `scheduled_tasks.json` 变更。
-
-### 四、Cron 表达式：标准 5 字段
-
-分钟 小时 日 月 星期。支持 `*`、`*/N`、`N`、`N-M`、`N-M/S`、`N,M,...`。不支持 `L`、`W`、`?`。所有时间以本地时区解释。Day-of-month 和 day-of-week 同时约束时用 OR 语义。
-
-### 五、抖动（防惊群效应）
-
-- 重复性任务：触发延迟最多可达期间的 10%（上限 15 分钟），基于任务 ID 的确定性哈希
-- 一次性任务：当触发时间落在 `:00` 或 `:30` 时，最多提前 90 秒触发
-- 抖动配置可通过 GrowthBook 实时调整，60 秒刷新一次
-
-### 六、自动过期
-
-重复性任务 7 天后自动过期（可配置，上限 30 天）。过期前最后一次触发，触发后自动删除。
-
-### 七、作业数上限
-
-`MAX_JOBS = 50`（`CronCreateTool.ts:25`）。超限时返回错误："Too many scheduled jobs (max 50). Cancel one first."
-
-### 八、触发注入
-
-触发后通过 `enqueuePendingNotification()` 以 `priority: 'later'` 入队命令队列。标记 `workload: WORKLOAD_CRON`，API 在容量紧张时以更低的 QoS 为 cron 发起的请求服务。
-
-### 九、Queue Processor：自动交付
-
-真实 Claude Code 通过 `useQueueProcessor.ts:48-60` 在无 query、无阻塞 UI、队列非空时自动触发处理。`queueProcessor.ts:52-87` 按队列优先级把命令交给 `handlePromptSubmit()`。教学版用 `queue_processor_loop` 保留核心行为：队列有任务且 Agent 空闲时，自动启动一轮 agent_loop。
-
-</details>
-
-<!-- translation-sync: zh@v1, en@v1, ja@v1 -->
+<!-- translation-sync: zh@v2, en@v1, ja@v1 -->
