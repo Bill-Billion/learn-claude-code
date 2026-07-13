@@ -10,31 +10,13 @@ s01 → ... → s18 → s19 → `s20`
 
 ---
 
-## 问题
+十九课下来，你手里攒了十九个零件，每个都单独跑通过。但真实的 Agent 不是十九个 demo，是一个进程：压缩要在记忆提取前让路，权限要卡在分发之前，cron 不能打断用户正聊着的轮次。零件对了，装配顺序错了，机器照样散架。
 
-前 19 章每章只加一个机制。这样适合学习，但真实 Agent 不会只带一个机制运行。
-
-一个能长期工作的 coding agent 需要同时拥有：
-
-- 工具分发和权限边界
-- hooks 扩展点
-- todo 计划和任务图
-- 技能、记忆、系统 prompt 组装
-- 压缩和错误恢复
-- 后台任务和 cron 调度
-- 团队、协议、自治认领
-- worktree 隔离
-- MCP 外部工具接入
-
-难点不是把功能堆起来，而是看清楚它们都挂在循环的哪个位置。S20 就是终点章：把所有组件归位。
-
----
-
-## 解决方案
+这一课不发明任何新机制，只回答一个问题：**每个零件挂在循环的哪个位置，为什么是那个位置。**
 
 ![System Architecture](images/system-architecture.svg)
 
-S20 不是再发明一个新机制，而是把前面的教学组件合成一个完整 harness：
+一图流的版本是这样：
 
 ```text
 用户输入
@@ -52,7 +34,9 @@ S20 不是再发明一个新机制，而是把前面的教学组件合成一个�
           → 下一轮
 ```
 
-循环本身仍然是同一个结构：调用模型，检查响应里是否出现 `tool_use` block，执行工具，把结果追加回 `messages`。Claude Code 源码里也不直接信任 `stop_reason == "tool_use"`，而是以实际出现的 tool_use block 作为是否继续工具轮的信号。变化的是循环周围的 harness 变完整了。
+循环本身还是 s01 那五步：调模型、看它是否要工具、执行、结果喂回去、再来。变完整的是循环周围的一切。
+
+> 真实 Claude Code：连"看它是否要工具"都不信任 `stop_reason`，而是检查内容里有没有 `tool_use` 块（s01 讲过流式下的原因）。教学版到最后一课也保持 `stop_reason` 判断，非流式下它足够准。
 
 ---
 
@@ -63,126 +47,53 @@ S20 不是再发明一个新机制，而是把前面的教学组件合成一个�
 | 用户输入前后 | `UserPromptSubmit` hooks | 记录、注入、审计用户输入 |
 | LLM 前 | cron queue | 把定时触发的 prompt 注入 `messages` |
 | LLM 前 | background notifications | 后台任务完成后以 `<task_notification>` 注入 |
-| LLM 前 | compaction pipeline | 先压大输出，再裁历史，再压旧 tool_result，必要时摘要 |
+| LLM 前 | compaction pipeline | 先转存大结果，再裁历史，再占位旧结果，必要时摘要 |
 | LLM 前 | memory / skills / MCP state | 组装 system prompt，让模型看到当前能力和长期上下文 |
-| LLM 调用 | error recovery | 429/529 重试，`max_tokens` 升级，prompt too long 触发 reactive compact |
-| 工具执行前 | `PreToolUse` hooks + permission | 拦截危险命令、写越界、破坏性 MCP 工具 |
-| 工具分发 | `assemble_tool_pool` | 组装内置工具和 MCP 动态工具 |
-| 工具执行时 | background dispatch | 慢 bash 操作放 daemon thread，主循环先返回占位结果 |
+| LLM 调用 | error recovery | 429/529 退避，`max_tokens` 升级，超限触发 reactive compact |
+| 工具执行前 | `PreToolUse` hooks + permission | 拦危险命令、写越界、破坏性 MCP 工具 |
+| 工具分发 | `assemble_tool_pool` | 内置工具 + MCP 动态工具，每轮重组 |
+| 工具执行时 | background dispatch | 慢操作进 daemon 线程，主循环拿占位凭条先走 |
 | 工具执行后 | `PostToolUse` hooks | 大输出告警、日志等后处理 |
-| 返回循环 | tool_result | 每个 `tool_use` 对应一个 `tool_result`，再回到下一轮 |
-| 本轮没有 tool_use / 停止时 | `Stop` hooks | 统计、清理、审计 |
+| 返回循环 | tool_result | 每个 `tool_use` 对应一个 `tool_result`，回到下一轮 |
+| 停止时 | `Stop` hooks | 统计、清理，返回非 None 可拒绝收工 |
 
 ---
 
-## code.py 包含什么
+## 装配顺序不是随意的
 
-### 工具与分发
+各章讲过的硬约束，装到一台机器上就成了装配规程。翻车方式当时都单独论证过，这里汇成一张清单：
 
-内置工具池包含 27 个工具：
+| 规程 | 反着装会怎样 | 出处 |
+|------|------------|------|
+| `tool_result_budget` 先于 `micro_compact` | 大结果先被擦成占位符，永远失去转存机会 | s08 |
+| 记忆提取用压缩前快照 | 对着被裁剪的历史考古，关键偏好已成占位符 | s09 |
+| 权限检查先于工具分发 | 命令已经跑了，拦截变成事后通报 | s03/s04 |
+| 拒绝、拦截也要回 `tool_result` | 配对断裂，API 直接 400 | s01/s03 |
+| 后台通知不复用 `tool_use_id` | id 已配对过，复用报错；通知走 user 文本通道 | s13 |
+| cron 轮与用户轮共用 `agent_lock` | 两个轮次并发写同一份历史，消息交错 | s14 |
+| 信箱消费统一入口、路由先行 | 协议答复被掏走未登记，请求永远 pending | s16 |
+| 销毁前先确认（存盘/解析/数变更） | 一次失败清空记忆 / 蒸发工位里的工作 | s08/s09/s18 |
+| 一切模型给的名字先过安检 | 路径注入：读走 `.env`，工位开到仓库外 | s02/s07/s18/s19 |
 
-```text
-bash, read_file, write_file, edit_file, glob
-todo_write, task, load_skill, compact
-create_task, list_tasks, get_task, claim_task, complete_task
-schedule_cron, list_crons, cancel_cron
-spawn_teammate, send_message, check_inbox
-request_shutdown, request_plan, review_plan
-create_worktree, remove_worktree, keep_worktree
-connect_mcp
-```
+这张表就是全课程的骨架。单看每一条都是小心思，合在一起是同一个立场：**模型负责决策，harness 负责让决策无法造成结构性破坏。**
 
-`assemble_tool_pool()` 每轮组装：
+---
 
-```text
-BUILTIN_TOOLS + connected MCP tools
-BUILTIN_HANDLERS + mcp__server__tool handlers
-```
+## code.py 里都有什么
 
-所以 `connect_mcp("docs")` 后，下一轮工具池里会出现 `mcp__docs__search`。
+**工具与分发。** 内置 27 个工具（bash、文件、todo、task/subagent、skill、compact、任务图五件套、cron 三件套、团队六件套、worktree 三件套、connect_mcp），加上 MCP 发现的动态工具，`assemble_tool_pool()` 每轮重组。s02 的查表分发一路用到最后一课，没改过一行结构。
 
-### 权限和 hooks
+**两层计划。** `todo_write` 管单 Agent 的当前会话（防漂移，s05），任务图管跨会话协作（依赖、认领、持久化，s12）。两层并存不冗余，一个是便签，一个是看板。
 
-权限不写死在工具执行行里，而是作为 `PreToolUse` hook：
+**两种委派。** `task` 拉一次性子 Agent（干净上下文，只回摘要，s06）；`spawn_teammate` 拉持久队友（信箱通信、自治认领，s15-s17）。前者解决上下文隔离，后者解决长期并行。
 
-```python
-blocked = trigger_hooks("PreToolUse", block)
-if blocked:
-    results.append(tool_result(block.id, blocked))
-    continue
-```
+**prompt 与知识。** `assemble_system_prompt(context)` 按真实状态装配（s10）：身份、工具、workspace、技能目录、记忆索引、已连接的 MCP server。技能和记忆都是目录常驻、正文按需（s07/s09）。
 
-这样 permission、log、审计都可以挂在同一个 hook 点上。执行后再触发 `PostToolUse`。
+**压缩与恢复。** LLM 前四步管线（s08），调用外包一层恢复（429/529 退避、`max_tokens` 两级升级、超限 reactive compact，s11）。
 
-### 计划与任务
+**后台与定时。** 慢命令进线程、凭条占位、通知注入（s13）；cron 调度线程独立看表，触发走队列，与用户轮互斥（s14）。
 
-S20 同时保留两层计划：
-
-- `todo_write`：当前会话内的轻量计划，保存在内存中
-- task graph：跨会话、可依赖、可认领的任务文件，写入 `.tasks/task_*.json`
-
-前者帮助单个 Agent 不漂移；后者支撑团队协作。
-
-### 子 agent 与团队
-
-S20 有两种 delegation：
-
-- `task`：一次性 subagent。独立 `messages[]`，中间过程丢弃，只返回最终摘要。
-- `spawn_teammate`：持久队友线程。通过 MessageBus 收发消息，能 idle 轮询任务板并自动认领。
-
-一次性 subagent 解决“上下文隔离”；持久队友解决“长期并行协作”。
-
-### 记忆、技能和 prompt
-
-`assemble_system_prompt(context)` 每轮组装：
-
-- 身份和工具说明
-- workspace
-- skills catalog
-- `.memory/MEMORY.md`
-- 已连接 MCP server
-
-技能只在 system prompt 里放目录。完整内容通过 `load_skill(name)` 按需加载。
-
-### 压缩和恢复
-
-LLM 前先跑压缩管线：
-
-```text
-tool_result_budget → snip_compact → micro_compact → compact_history
-```
-
-调用模型时再包一层恢复：
-
-- 429：指数退避重试
-- 529：指数退避，连续失败可切 fallback model
-- `max_tokens`：先提高 max_tokens，再要求 continuation
-- prompt too long：reactive compact 后重试
-
-### 后台和 cron
-
-慢 bash 操作不会阻塞主循环：
-
-```text
-should_run_background → start_background_task → placeholder tool_result
-后台完成 → task_notification → 下一轮注入 messages
-```
-
-cron 调度器独立 daemon thread 每秒检查一次。CLI 会监听 `cron_queue`，命中后主动把 `[Scheduled] ...` 注入并运行一轮 Agent。
-
-### worktree 与 MCP
-
-worktree 负责隔离目录：
-
-- `create_worktree(name, task_id)` 创建独立分支和目录
-- task 的 `worktree` 字段绑定目录
-- 队友 claim 到带 worktree 的 task 后，bash/read/write 自动在对应目录下执行
-
-MCP 负责外部能力：
-
-- `connect_mcp(name)` 连接 mock server
-- `assemble_tool_pool()` 把 MCP 工具组装进工具池
-- 工具名统一为 `mcp__server__tool`
+**隔离与外接。** 任务可绑 worktree，队友在工位目录里干活（s18）；MCP 工具发现后带前缀入池（s19）。
 
 ---
 
@@ -190,18 +101,13 @@ MCP 负责外部能力：
 
 | 组件 | s19 | s20 |
 |------|-----|-----|
-| 工具池 | 内置 + MCP | 内置 + MCP，补齐 s01-s18 的工具 |
+| 工具池 | 内置 + MCP | 补齐 s01-s18 的全部工具 |
 | 权限 | 教学主体省略 | `PreToolUse` hook 中执行 |
-| hooks | 省略 | UserPromptSubmit / PreToolUse / PostToolUse / Stop |
-| todo | 省略 | `todo_write` + reminder |
-| skill | 省略 | catalog in system prompt + `load_skill` |
-| compact | 省略 | LLM 前压缩 + `compact` 工具 + reactive compact |
-| error recovery | 简化 try/except | retry / max_tokens / prompt too long |
-| background | 省略 | 慢操作后台线程 + task notification |
-| cron | 省略 | daemon scheduler + durable jobs |
-| multi-agent | 保留 | 保留；队友使用隔离目录下的基础工具 |
-| worktree | 保留 | 保留 |
-| MCP | 新增 | 保留，作为最终工具池的一部分 |
+| hooks | 省略 | 四事件全挂载 |
+| todo / skill / compact | 省略 | 全部回归 |
+| error recovery | 简化 try/except | 退避 / 升级 / reactive compact |
+| background / cron | 省略 | 后台线程 + durable 调度 |
+| multi-agent / worktree | 保留 | 保留，队友在工位目录执行 |
 
 ---
 
@@ -212,29 +118,19 @@ cd learn-claude-code
 python s20_comprehensive/code.py
 ```
 
-可以试：
+1. `Create a todo list for inspecting this repo, then list Python files`：s05 的便签和 s02 的工具在同一轮里工作；
+2. `Connect to the docs MCP server and search for agent loop`：s19 的发现与装配；
+3. `Create two tasks, create worktrees for them, then spawn alice and bob. Ask them to submit plans before claiming tasks.`：s12+s15+s16+s18 四套机制咬合运转，看计划审批通过后队友才认领、认领后在各自工位里干活；
+4. `Remind me of the meeting in 3 minutes.`：s14 的闹钟，到点终端自己动；
+5. `Run 'sleep 20 && echo build done' in the background and continue reading README.md`：s13 的凭条与通知。
 
-1. `Create a todo list for inspecting this repo, then list Python files`
-2. `Connect to the docs MCP server and search for agent loop`
-3. `Create two tasks, create worktrees for them, then spawn alice and bob. Ask them to submit plans before claiming tasks.`
-4. `remind me of the meeting in 3 minutes.`
-5. `Run npm install in the background and continue reading README.md`
-
-观察重点：
-
-- 工具调用前是否经过 hooks/permission
-- `connect_mcp` 后下一轮是否出现 MCP 工具
-- 慢操作是否返回 background placeholder
-- 到点是不是自动提醒开会
-- 队友是否提交 plan，并在 approval 前暂停
-- plan 批准后，队友是否能认领任务
-- worktree 绑定后，队友是否切到对应目录
+观察重点：每个工具调用前的 `[HOOK]` 行、`connect_mcp` 后下一轮的新工具、后台占位凭条、到点自动提醒、审批前队友是否暂停、worktree 绑定后队友的执行目录。十九章的日志标记全部在场。
 
 ---
 
 ## 结束亦是开始
 
-从 s01 到 s20，代码表面越来越复杂，但核心始终没变：
+从 s01 到 s20，代码表面越来越复杂，核心始终没变：
 
 ```python
 while True:
@@ -245,10 +141,8 @@ while True:
     messages.append(tool_results)
 ```
 
-Claude Code 的复杂性不是“另一个 agent 大脑”，而是一个成熟 harness 的复杂性。模型负责判断和行动选择；harness 负责把环境、工具、权限、记忆、团队和外部能力组织好。
+Claude Code 的复杂性不是"另一个 Agent 大脑"，而是一个成熟 harness 的复杂性。模型负责判断和选择，harness 负责把环境、工具、权限、记忆、团队和外部能力组织好，并且守住上面那张装配规程表。
 
-这是 s01–s20 主线的收束：所有组件都集合在同一个循环里。
-
-而这个循环始终是单步、模型驱动的——每一轮，模型挑一个工具。当编排的形状已经固定（并行扇出、逐项流水、断点续跑），与其让模型一轮轮驱动，不如把它写成一段确定性、可恢复的脚本。
+这是 s01-s20 主线的收束。而这个循环始终是单步、模型驱动的：每一轮，模型挑一个工具。当编排的形状已经固定（并行扇出、逐项流水、断点续跑），与其让模型一轮轮驱动，不如把它写成一段确定性、可恢复的脚本。
 
 接下来：[s21 Workflow Runtime](../s21_workflow_runtime/) — 模型决定单步，脚本决定编排。
