@@ -13,7 +13,7 @@
 
 它回了你一条挺像样的 bash 命令，然后就停了。命令是你复制到终端里跑的，输出是你手动粘贴回去的；它看完输出，给出下一条命令，你再跑、再贴。
 
-任务是它规划的，活儿全是你干的。一个真实的开发任务，几十次命令来回很正常，也就是几十轮人肉传话。这一章做的事只有一件：把"你"从这个来回里换成一个 `while` 循环。换完，Agent 就诞生了。
+任务是它规划的，活儿全是你干的。一个真实的开发任务，几十次命令来回很正常，也就是几十轮人工传话。这一章做的事只有一件：把"你"从这个往返里换成一个 `while` 循环。换完，Agent 就诞生了。
 
 ![Agent Loop](images/agent-loop.svg)
 
@@ -38,11 +38,11 @@ response = client.messages.create(model=MODEL, messages=messages, ...)
 
 ---
 
-## 模型没有手
+## 模型只做决策，执行靠程序
 
 模型运行在云端的服务器上，你的终端在本地。它可以在回复里写出 `ls *.py`，但它碰不到你的 shell，一行命令也执行不了。能执行命令的只有一个角色：你本地跑着的这段 Python 程序。
 
-所以 API 设计了一套"点菜"协议，叫工具调用（tool use）：
+所以 API 设计了一套工具调用（tool use）协议，你可以把它理解成"菜单式交互"：
 
 1. 你在请求里用 `tools` 参数告诉模型：有这些工具可用，每个叫什么、干什么、参数长什么样；
 2. 模型想用某个工具时，不再回普通文本，而是回一个 `tool_use` 块：工具名、参数，外加一个编号 `id`；
@@ -86,7 +86,7 @@ def run_bash(command: str) -> str:
 
 ---
 
-## 把人肉来回变成循环
+## 用循环替代人工往返
 
 现在把开头那套"你跑命令、你贴结果"翻译成代码，一共五步。
 
@@ -96,7 +96,7 @@ def run_bash(command: str) -> str:
 messages = [{"role": "user", "content": query}]
 ```
 
-**第 2 步**：消息和工具菜单一起发给模型。
+**第 2 步**：消息和工具列表一起发给模型。
 
 ```python
 response = client.messages.create(
@@ -105,9 +105,9 @@ response = client.messages.create(
 )
 ```
 
-`system` 是一条常驻说明，告诉模型它的角色和行事风格。这里写的是：你是个编码 Agent，用 bash 干活，少解释多行动。s10 会专门讲怎么写好它。
+`system` 是一条常驻说明，告诉模型它的角色和行事风格。这里写的是：你是个编码 Agent，用 bash 完成任务，少解释多行动。s10 会专门讲怎么写好它。
 
-**第 3 步**：把模型的回复追加进历史，然后看它是想干活还是说完了。判断依据是 `stop_reason`：模型请求调工具时，这个字段的值是 `"tool_use"`；没请求，说明它认为任务已经结束，循环退出。
+**第 3 步**：把模型的回复追加进历史，然后看它是想继续执行还是已经结束。判断依据是 `stop_reason`：模型请求调用工具时，这个字段的值是 `"tool_use"`；没请求，说明它认为任务已经完成，循环退出。
 
 ```python
 messages.append({"role": "assistant", "content": response.content})
@@ -115,7 +115,7 @@ if response.stop_reason != "tool_use":
     return
 ```
 
-**第 4 步**：执行模型点的每一道菜，结果和编号一一对应收集起来。
+**第 4 步**：执行模型调用的每一个工具，结果和编号一一对应收集起来。
 
 ```python
 results = []
@@ -191,7 +191,7 @@ messages[5]  assistant  text: 文件已创建并验证。                       
 
 **结果要原样喂回去，包括报错。** 命令失败的输出（`command not found`、Python 的 traceback）不要吞掉，照样放进 `tool_result`。模型看到报错才会修正思路，这是它自我纠错的唯一线索。
 
-**`while True` 没有保险丝。** 教学版特意不加轮数上限：循环停不停，完全由模型决定。绝大多数任务它干完就停；真遇到停不下来的，`Ctrl+C`。生产系统当然不能这么裸奔，轮数上限、预算控制这些保护，s11 和 s22 会补上。
+**`while True` 没有保护机制。** 教学版特意不加轮数上限：循环停不停，完全由模型决定。绝大多数任务它干完就停；真遇到停不下来的，`Ctrl+C`。生产系统当然不能这么裸奔，轮数上限、预算控制这些保护，s11 和 s22 会补上。
 
 ---
 
@@ -217,9 +217,9 @@ python s01_agent_loop/code.py
 
 1. `Create a file called hello.py that prints "Hello, World!"`：通常两轮，创建之后自发验证一次；
 2. `List all Python files in this directory`：通常一轮，拿到列表就直接回答；
-3. `What is the current git branch?`：一轮。可以接着追问 `Now count how many commits this branch has`，看它在同一段历史上继续干活。
+3. `What is the current git branch?`：一轮。可以接着追问 `Now count how many commits this branch has`，看它在同一段历史上继续执行。
 
-观察重点：模型什么时候继续调工具（循环继续），什么时候直接回答（循环结束）。退出循环的从来不是代码里的某个条件写死了几轮，而是模型的一个决定。
+观察重点：模型什么时候继续调用工具（循环继续），什么时候直接回答（循环结束）。退出循环的从来不是代码里的某个条件写死了几轮，而是模型的一个决定。
 
 ---
 
@@ -227,6 +227,6 @@ python s01_agent_loop/code.py
 
 现在模型手里只有 bash 一个工具，读文件要 `cat`，写文件要 `echo ... >`，找个文件要 `find`，不够直观，也容易拼错。
 
-s02 Tool Use → 给它 5 个真正的工具，会发生什么？模型会不会一次调用多个工具？几个工具同时跑会不会互相踩？
+s02 Tool Use → 给它 5 个真正的工具，会发生什么？模型会不会一次调用多个工具？几个工具同时跑会不会互相影响？
 
 <!-- translation-sync: zh@v2, en@v2, ja@v2 -->
