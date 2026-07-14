@@ -1,191 +1,117 @@
-# 第7课 会话可以分支——像游戏存档一样管理历史
+# 第 7 课 · Session Tree
 
-[English](README.md) · 中文 · [日本語](README.ja.md)
+[课程首页](../README.zh.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s06](../s06_turn_state/README.zh.md) · [目录](../README.zh.md) · [s08 →](../s08_context_resources/README.zh.md)
+> 在 Pi 中的位置：Harness Session 层的 Append-only Session Entry、JSONL Storage、Branch Navigation 与 Context Materialization。
 
-用Agent聊代码的时候，你肯定遇到过这种场景：模型给了个方案，你觉得不对，想回到刚才那个问题，换个思路重新问。
-
-这个需求听起来再普通不过了，但如果你的session只是个简单的消息数组，你会发现怎么做都别扭：
-- 直接覆盖旧回答吧，之前的回答就没了，想对比都不行
-- 复制一份新会话吧，两份历史从此各走各的，文件翻倍还不好管理
-- 把新回答直接接在后面吧，模型会同时看到两个互相矛盾的回答，直接混乱
-
-问题出在哪？出在简单的数组表达不了"历史有分叉"这件事。这节课我们就把session从线性数组改成可以分叉的树结构，想回哪就回哪，历史永远不丢。
-
----
-
-## 游戏存档系统给我们的启发
-
-玩过单机游戏的人都懂这个设计：
-- 旧存档永远不覆盖，每到关键节点就存个新档
-- 想回到三小时前的岔路口试另一条剧情线，直接读那个档就行
-- 从旧档打出来的新剧情，不会覆盖原来的存档
-- 所有存档都在，你随时可以切回任意一条线继续玩
-
-Pi的session就是完全一样的设计：
-1. **所有历史只追加，不修改不删除**，就像旧存档永远不覆盖
-2. **每条记录都记着自己的父节点**，就像每个存档都知道自己是从哪个档来的
-3. **当前位置由一个leaf指针决定**，就像"你现在玩到哪个档了"
-4. **想回旧问题换路走，只需要移动leaf指针**，不需要复制也不需要删除任何历史，新消息直接接在新的leaf后面就行
-5. **连"移动指针读档"这个动作本身，也会被记成一条记录**，历史里没有不留痕的操作
-
-非常简单，但非常强大。有了这个结构，什么/fork、/tree、/clone这些命令，本质上都是在操作这个leaf指针。
-
----
-
-## 两种entry，搭起整棵树
-
-树的节点我们叫entry，一共就两种：
-
-### 1. MessageEntry：真正的对话内容
-就是用户和模型说的话，每个消息entry带这几个字段：
-- id：唯一标识
-- parentId：父节点id，也就是这条消息接在谁后面
-- timestamp：时间戳
-- message：真正的消息内容
-
-### 2. LeafEntry：导航记录
-记录"leaf指针移动到了哪里"，也就是"我读档了"这个动作。字段和message类似，只是多了个targetId，表示leaf被移动到了哪个entry。
-
-为什么连移动指针都要记成一条entry？因为这样我们持久化的时候，只需要把所有entry按顺序写出去，任何时候从头读一遍，就能完整重建出整棵树和当前leaf的位置——不需要额外存任何状态。
-
----
-
-## 核心操作：加消息和开分支
-
-### appendMessage：新消息接在当前leaf后面
-加新消息的逻辑非常简单：
-1. 新消息的parentId就是当前的leafId
-2. 把新消息追加到entry列表
-3. 把leafId移动到新消息的id上
-
-就这么简单，相当于正常聊下去自动存新档，当前进度往后走。
-
-### branch：开新分支，只移动指针
-这是最巧妙的地方：回到旧节点开新分支，不需要复制任何历史，也不需要删除任何东西，只需要：
-1. 追加一条LeafEntry，记录"leaf从当前位置移动到了目标entryId"
-2. 把内存里的leafId改成目标entryId
-
-就完了。
-旧分支的所有消息都原封不动留在那里，只是当前指针移回去了。接下来再appendMessage，新消息自然就接在旧节点后面，长出一条新的分支，和旧分支平行存在。
-
-举个例子：
 ```text
-e1 用户问：session怎么存？
-└─ e2 模型答：存成数组  ← 原来的leaf
+append-only entries + parentId + current leaf
+                    |
+                    +-> active root-to-leaf path -> AgentMessage[] -> s06 Harness Turn
 ```
-你觉得这个回答不对，调用branch(e1)回到问题节点，再问一次：
+
+## 先搞懂：为什么 Message Array 不足以保存分支历史
+
+扁平 Message Array 可以延续对话，却无法在不复制或改写历史的前提下，为同一个旧问题保留两个回答。Coding Session 还需要记录导航与摘要，同时不能让旧记录悄悄消失。
+
+模型的需求正好相反：它不应该收到所有已放弃 Branch，而只需要 Active Path 上一份连贯的 Context。
+
+## 思路：用 Append-only Entry Tree 保存 Session
+
+s07 把 Session 保存为 Header 加一组只能追加的 Entry：
+
 ```text
-e1 用户问：session怎么存？
-├─ e2 模型答：存成数组
-└─ e4 模型答：存成entry树  ← 新的leaf
+session
+message
+message
+leaf
+branch_summary
+message
+compaction
 ```
-旧回答e2还在，只是leaf指针移到了新回答e4上。中间的e3就是那条LeafEntry，记录了"leaf从e2移到了e1"。
 
----
+每个 Entry 都有 ID、`parentId` 与时间戳。`message` 保存 `AgentMessage`；`leaf` 记录一次导航；`branch_summary` 与 `compaction` 保存调用方提供的 Summary。内存中的 Leaf 表示 Active Position。
 
-## buildContext：模型只看当前分支
-
-有分支了，模型会不会同时看到两个回答然后混乱？不会。
-因为buildContext给模型拿消息的时候，只会从当前leaf开始，沿着parentId一路往上走到根节点，把这条路径上的所有消息拿出来——也就是当前正在走的这条分支。其他分支的消息留在文件里，但不会进当前请求。
-
-就像你读档玩游戏，加载的只是你选的这条剧情线，其他分支的剧情不会串进来。
-
----
-
-## 持久化：一行一个entry，只追加不修改
-
-存文件更简单，用JSONL格式，一行一个entry，永远只追加，不修改之前的内容。
-
-比如刚才那个分支的例子，存到文件里就是5行：
-1. session头信息
-2. e1 用户消息
-3. e2 第一个模型回答
-4. e3 leaf移动记录（从e2移到e1）
-5. e4 第二个模型回答
-
-任何时候程序崩溃了、重启了，只要把这个文件从头读一遍：
-- 遇到message entry，就加到树里，leafId移到这个entry
-- 遇到leaf entry，就把leafId移到它的targetId
-- 读完最后一行，leafId正好就是当前位置，整棵树完整重建，一个bit都不会丢。
-
-为什么能做到无损重建？因为我们从来不会修改或删除任何已经写出去的内容，所有操作都是追加，文件里每一行都是当时真实发生的事，从头重放一遍自然就回到了当时的状态。
-
----
+`buildContext()` 只遍历 Active Root-to-leaf Path，再把沿途 Entry 物化成 `AgentMessage[]`。
 
 ## 先跑起来看看
 
-```sh
-npm run session:s07
+配置好课程 `.env` 后，从 `learn-pi-agent/` 运行：
+
+```bash
+npm run s07
 ```
 
-输出长这样：
+也可以直接发送一次 Prompt：
+
+```bash
+npm run s07 -- "使用 read_file 检查 README.md，并总结学习阶段。"
+```
+
+这条命令运行 s06 的真实模型与 `read_file` Loop，但 Session 现在由 `createSessionTree()` 提供。具体输出可能变化；稳定变化在存储层：每条 User、Assistant 和 Tool Result Message 都会成为当前 Leaf 下的新 `message` Entry。
+
+## 代码怎么写的
+
+### 1. 在当前 Leaf 下追加 Message
+
+`appendMessage()` 会深拷贝 `AgentMessage`，把 `parentId` 设为当前 Leaf，追加 Entry，再把 Leaf 推进到新 ID。
+
 ```text
-Session: demo-session
-Old branch: How should Pi store sessions? -> As a plain message list.
-Active branch: How should Pi store sessions? -> As an append-only entry tree with a movable leaf.
-Current leaf: e4
-Children of question: e2, e4
-JSONL row types: session -> message -> message -> leaf -> message
-New answer parent: e1
+e1 user
+└─ e2 assistant  <- leaf
 ```
 
-你可以清楚看到：同一个问题e1下面挂了两个回答e2和e4，这就是分支。旧分支还能完整读出来，但当前激活的是新分支。JSONL里确实多了一条leaf类型的记录，新回答的父节点确实是e1。
+对话继续增长时，旧 Entry 永远不会被改写。
 
----
+### 2. 移动 Leaf，但不删除 Branch
+
+`branch(entryId)` 会先追加一条 `leaf` Entry，记录旧位置与目标，再把内存 Leaf 移到 `entryId`。下一条 Message 自然成为目标的另一个 Child：
+
+```text
+e1 user
+├─ e2 assistant
+└─ e4 assistant  <- leaf
+```
+
+第一个回答仍可通过 `buildContext(e2)` 访问；Active Context 则沿着 `e4`。
+
+### 3. 把 Summary Entry 物化进 Context
+
+`appendBranchSummary(summary, fromId)` 保存外部提供的 Summary，以及它描述的 Entry。该 Entry 位于 Active Path 时，`buildContext()` 会把它变成 `BranchSummaryMessage`。
+
+`appendCompaction({ summary, firstKeptEntryId, tokensBefore })` 记录外部提供的 Summary 与 Retained Suffix Boundary。当它是 Active Path 上最新的 Compaction 时，Context 会以一条 `CompactionSummaryMessage` 开始，后接从 `firstKeptEntryId` 起保留的 Message。
+
+本课只实现 Entry Storage 与 Context Materialization。它不会选择 Token Threshold、决定 Cut Point，也不会生成任一种 Summary；这些值都由调用方提供。
+
+### 4. 让 Append-only JSONL 往返一致
+
+`toJSONL()` 会把 Session Header 与所有 Entry 按每行一个 JSON Object 输出。`loadSessionTreeFromJSONL()` 在重建 Entry Map 和 Leaf Position 时校验引用。
+
+同一个 Session Object 实现 s06 所需的 `buildContext()`、`getMetadata()` 与 `appendMessage()`。因此 `runHarnessTurn()` 可以直接使用这棵树，并在真实 Tool Loop 中逐条持久化已完成 Message。
 
 ## 动手试一试
 
-### 实验1：给同一个问题加第三个分支
-在demo里，加完第二个回答之后，再branch回问题节点，加第三个回答"存成数据库表"。
-你会看到问题下面的子节点变成了3个，JSONL里又多了一条leaf记录和一条message记录。
-注意第三个回答的id是e6不是e5——因为branch操作本身占了e5这个id，历史里没有不留痕的操作。
+1. 追加一条 User Message，并在两条 Assistant Message 之间调用 `branch()`，再比较两个 Leaf ID 的 `buildContext()`。
+2. 用 `toJSONL()` 序列化，再用 `loadSessionTreeFromJSONL()` 重载，确认 Active Context 与 Entry Type 不变。
+3. 从放弃的 Leaf 返回后加入 Branch Summary，再用自己选择的 Retained Boundary 加入 Compaction，观察最终 `AgentMessage` Role。
 
-### 实验2：把整个JSONL打印出来
-在demo最后打印session.toJSONL()，一行一行看每个entry的parentId和targetId，你可以手动画出整棵树。
-画一遍你就彻底理解这个结构了，比读十遍代码都管用。
+## 接入课程主线
 
-### 实验3：从JSONL重建，读旧分支
-把session序列化成JSONL，再加载回来，然后从旧回答e2的id调用buildContext。
-你会发现旧分支的内容完整读出来了，和原来一模一样——旧存档不是"没被删除"，是真的随时可以再读出来用。
+| 边界 | s06 | s07 |
+| --- | --- | --- |
+| Session Storage | 内存 `AgentMessage[]` | Append-only Entry Tree |
+| 当前位置 | Array 末尾 | 可移动 Leaf |
+| 备选历史 | 无法表达 | 通过 `parentId` 形成 Sibling Branch |
+| Summary | 已有 Message Type | Summary Entry 物化成这些 Message Type |
+| 持久化格式 | 无 | JSONL Header 加 Entry |
+| 真实执行 | `runHarnessTurn()` | 同一条真实 Loop 使用 `SessionTree` |
 
-跑完三个实验，你应该能回答下面检查点的问题。改完可以用`npm run test:s07`确认没破坏行为约定。
+## 对照 Pi 源码
 
----
+Entry Tree、Leaf 恢复、Active Path Context，以及 Branch 与 Compaction Summary 的物化都对应 Pi 0.79.1。Pi 有更多 Entry Type 与独立 Storage 实现；课程只保留展示数据模型所需的最小集合。
 
-## 本节课打下的地基
+固定源码映射与 Summary Generation 的准确边界见 [pi-source.zh.md](pi-source.zh.md)。
 
-s07我们把session从线性数组改成了可分支的树，彻底解决了历史回退和分支的问题：
+## 下一课
 
-| 这节课立的约定 | 后面会怎么用 |
-|----------------|--------------|
-| session是append-only的entry树，leaf指针决定当前位置 | /fork、/tree、/clone等命令都是操作这个结构 |
-| 开分支只移动leaf指针，不复制不删除历史 | 分支操作O(1)，性能极高，历史永不丢失 |
-| buildContext只取leaf到root的当前分支消息 | 模型永远不会看到其他分支的矛盾内容 |
-| JSONL一行一个entry，只追加不修改 | 崩溃恢复、历史审计、多设备同步都非常简单 |
-| 连leaf移动本身也是entry，全量操作可追溯 | 所有操作都有记录，完整重放就能重建状态 |
-
-**本课引入的核心原语**：`SessionTree` / `MessageEntry` / `LeafEntry` / `appendMessage` / `branch` / `buildContext` / `toJSONL`
-
----
-
-## 检查点
-
-学完这节课，你应该能脱口回答这几个问题：
-- 开新分支为什么不需要复制历史？只移动指针不会丢东西吗？
-- 模型为什么不会同时看到多个分支的回答？
-- 为什么JSONL只追加不修改，就能完整重建整个会话状态？
-
----
-
-## 本节课小结
-
-这节课我们其实只讲了一个核心道理：
-> 历史永远不要修改或删除，用可移动的指针表示当前位置，你就免费获得了分支、回退、审计、崩溃恢复所有能力。
-
-看起来只是把数组换成了树，实际上这是整个会话系统最核心的数据结构——后面的上下文压缩、分支总结、多会话管理，全都是在这个树上做文章。有了这个结构，用户想怎么回退、怎么试错都可以，历史永远在那里。
-
-现在会话存储的问题解决了，但s06快照里还有个东西我们一直没展开：resources。项目里的AGENTS.md、skill、prompt模板这些东西，是怎么被发现、怎么加载、怎么进到请求里的？下节课我们就来讲上下文资源的加载规则。
-
-进入下一课：[s08 上下文资源 —— 哪些东西该进系统提示，哪些不该进](../s08_context_resources/README.zh.md)
+[第 8 课 · Context Resources](../s08_context_resources/) 会从 Filesystem-backed Source 加载项目指令、Skill 与 Prompt Template，并把它们放进下一份 Turn Snapshot。

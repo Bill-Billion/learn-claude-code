@@ -1,265 +1,161 @@
 # s12 · Pi Package
 
-English · [中文](README.zh.md) · [日本語](README.ja.md)
+[Course home](../README.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s11](../s11_trust_execution_env/README.md) · [Contents](../README.md) · [s13 →](../s13_integrated_harness/README.md)
+> Where this sits in Pi: the resolver that turns configured package sources into enabled Extensions, Skills, Prompt Templates, and Themes before Resource loading.
 
-> In one sentence: a package is just a distribution unit — the resolver flattens it back into the same four resource kinds (extensions, skills, prompts, themes), and the runtime gains nothing new.
->
-> Where this sits in Pi: the package-manager layer of `@earendil-works/pi-coding-agent`.
-
-→ With no installer filter, the `pi` manifest is the authoritative boundary: unlisted files aren't exported, and omitted resource keys don't fall back to the convention directories
-→ An installer's filter can only shrink a package — not even `+` can smuggle in a file the author never listed
-→ Not every `.ts` under `extensions/` counts as an extension — only top-level files and explicit entry points do; helpers pulled in via import don't
-→ Project packages pass the s11 trust gate first; once through, they face off against a same-named global package — and the project side wins
-
----
+```text
+package entries + installed file map + projectTrusted
+  -> resolvePiPackages()
+  -> enabled paths
+       +-> Extension path -> explicit factory -> Extension runner
+       +-> Skill path -------------------------> Context Resources
+       +-> Prompt path ------------------------> explicit invocation catalog
+       +-> Theme path -------------------------> selection only in s12
+  -> the same MiniCoreRuntime
+```
 
 ## The problem
 
-By s11, a complete workflow is scattered across four directories:
+By s11, the Harness can load Extensions, Skills, and Prompt Templates from known paths. Sharing a workflow still requires a distribution contract: given a package source, which files count as resources, which ones are disabled, and which scope wins when the same package appears twice?
 
-```text
-extensions/review.ts
-skills/review/SKILL.md
-prompts/review.md
-themes/review.json
-```
+A package is not a new Agent mechanism. It is a way to select and group resource paths before the existing Resource Loader and Extension Runtime see them. The difficult part is preserving three different authorities without confusing them:
 
-For your own use, dropping them into `~/.pi/agent/` or the project's `.pi/` is enough. The moment you want to hand this to a team or the community, a new question shows up: given a package, how does Pi know which files are extensions, which are skills, and which are just implementation details?
+| Authority | What it decides |
+| --- | --- |
+| package author | the resources exported by a `pi` manifest |
+| directory convention | fallback discovery when manifest rules permit it |
+| installer configuration | which candidate resources remain enabled |
 
-At its core this is a question of authority. The package author, the directory conventions, and the person installing all want a say. Draw the boundary wrong and you get accidents — a helper the author never meant to export gets loaded into someone else's session; an installer writes `[]` thinking it means "not configured" and switches off an entire resource kind.
-
-The package resolver written in s12 is that boundary mechanism. It introduces no new runtime capability; the output is still the same four resource kinds from the earlier units.
+This is selection authority, not a filesystem or execution security boundary. Manifest entries may resolve outside the package directory, and selected Extensions still run with the host process's permissions.
 
 ## The idea
 
-A Pi package is just an ordinary npm-style directory: `package.json` gains a `pi` field that declares the four resource kinds. The resolver takes the package list from settings, resolves each source to a local directory, then computes the final file set through three layers of authority:
+s12 separates package resolution from runtime activation.
 
-| Who | Where they speak | Extent of their power |
-| --- | --- | --- |
-| Package author | the `pi` field in `package.json` | once written, it's the authoritative boundary — unlisted files aren't exported |
-| Directory conventions | `extensions/` `skills/` `prompts/` `themes/` | fallback only when the manifest is absent |
-| Installer | object-form filters in settings | can only narrow within the set the author provided |
+`resolvePiPackages()` accepts a normalized file map, user and project package entries, a Project Trust decision, and the roots where package sources are already present. It returns four lists of `ResolvedResource` objects. Each object retains its path, scope metadata, source, and `enabled` flag.
 
-Two rules from earlier units stack on top: project packages must pass the s11 trust gate first, and when the same package is configured at both global and project scope, the project side takes effect.
+`createPackageRuntime()` then activates only enabled resources:
 
-This unit does no installing. npm install, git clone, and version pinning are all untouched — files are represented entirely by in-memory fixtures, and the resolver answers exactly one question: which files take effect.
+| Resource | What s12 does with it |
+| --- | --- |
+| Extension | requires a matching, explicit `MiniExtensionSource` factory and loads it into the Extension runner |
+| Skill | adds the path to the real Context Resource Turn |
+| Prompt | loads catalog metadata and expands the template only when `invokePromptTemplate()` is called |
+| Theme | reports the enabled path in `selection.themePaths`; no TUI applies it in this lesson |
+
+Project packages enter resolution only when `projectTrusted` is true. For duplicate npm or Git identities, the project entry wins over the user entry.
 
 ## Run it first
 
-```sh
-npm run session:s12
+From `learn-pi-agent/`, with the course `.env` configured:
+
+```bash
+npm run s12 -- "Use read_file to inspect package.json and summarize this lesson's dependencies."
 ```
 
-Output looks like this:
+This lesson does not install Packages. It explains how Package resources that already exist are resolved and used to configure the real Runtime. The CLI supplies empty package lists and an empty file map while exercising the same Model, Session Tree, Extension Turn, and Tool loop from the earlier lessons.
 
-```text
-Extensions: 1
-Skills: 1
-Prompts: 1
-Themes: 1
-```
-
-The demo has a single in-memory package, `/packages/review`: the manifest lists one entry per resource kind, and the package holds one file for each. The four numbers are the effective resource counts computed by `resolvePiPackages()`. The numbers themselves are unremarkable — everything in this unit is about the situations where they stop being 1.
+To observe package behavior, call `resolvePiPackages()` with the host's existing file map and package entries, then pass the same inputs to `createPackageRuntime()`. The returned `selection` shows which resource paths are enabled, while the Runtime and Session show how those resources affect a Turn.
 
 ## How the code works
 
-Six steps.
+### 1. Resolve package sources and scope
 
-**Step 1**: a package starts with the `pi` field in `package.json`. The demo uses `createPackageManifest()` to save a few lines of JSON:
+`resolvePackageSourcePath()` maps configured sources to locations where the host has already placed them:
 
-```ts
-createPackageManifest("review-pack", {
-  extensions: ["extensions"],
-  skills: ["skills"],
-  prompts: ["prompts/review.md"],
-  themes: ["themes"],
-});
-```
-
-Real Pi has the same shape:
-
-```json
-{
-  "name": "my-package",
-  "keywords": ["pi-package"],
-  "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"],
-    "prompts": ["./prompts"],
-    "themes": ["./themes"]
-  }
-}
-```
-
-Paths are relative to the package root, and entries can be files, directories, or globs.
-
-**Step 2**: turn a source into a package root. A package entry in settings can be a local path, an `npm:` package name, or a `git:` repository: `npm:` maps to the install directory under `node_modules`, `git:` maps to a clone directory laid out by host/path, and a local absolute path is used as-is. Different spellings of the same package land on the same root — `git:github.com/team/review` and `https://github.com/team/review` resolve identically.
-
-How the strings themselves get pulled apart is install-flow detail:
-
-```ts
-import { parseGitSource, parseNpmName } from "./source-parsing.ts";
-```
-
-Stripping the package name out of `npm:@scope/name@1.2.0` and normalizing git URLs into host/path both live in [source-parsing.ts](source-parsing.ts) in this directory — feel free to skip it on a first read. There's also one shortcut: when a source points straight at a `.ts` file, that file is a single-file extension and skips the manifest flow entirely.
-
-**Step 3**: with no filter, the manifest is the authoritative boundary. The resolver first picks a collection mode for each resource kind:
-
-```ts
-const patterns = filter?.[resourceType];
-const mode = filter
-  ? patterns === undefined
-    ? "filtered-default"
-    : "filtered-candidates"
-  : "manifest-authoritative";
-const allFiles = collectPackageResourceFiles(files, packageRoot, resourceType, mode);
-```
-
-When the settings entry is just a string (string form) there is no filter, and all four kinds go through `manifest-authoritative`:
-
-```ts
-if (mode === "manifest-authoritative" && manifest) {
-  return collectFilesFromEntries(files, packageRoot, manifestEntries ?? [], resourceType);
-}
-```
-
-The key is `?? []`: as long as a `pi` object exists in `package.json`, it governs all four resource kinds at once. The manifest's `prompts` lists only `prompts/review.md`, so the neighboring `prompts/draft.md` isn't exported; the `skills` key isn't written, so `?? []` turns it into an empty list instead of falling back to scanning the `skills/` directory; an explicit `skills: []` likewise exports nothing.
-
-Only when the entire `pi` field is absent do you land in the convention directories at the end of the function:
-
-```ts
-const conventionDir = joinPath(packageRoot, resourceType);
-return listResourceFiles(files, conventionDir, resourceType);
-```
-
-So a tiny package can ship just the four convention directories and never write `pi` at all; but the moment you write a manifest, you have to list every kind you want exported. Even the official docs are vague about "omitted keys don't fall back to convention directories" — this unit sides with the source code.
-
-**Step 4**: extension directory discovery adds an entry-point check. For skills, prompts, and themes, scanning a directory just means collecting files. Extensions can't work that way, because a single extension may consist of multiple files.
-
-The rules inside the convention directory: top-level `.ts` / `.js` files are standalone entry points; a subdirectory either has an `index.ts` / `index.js`, or declares its entries via `pi.extensions` in its own `package.json`; helpers imported by an entry point are not loaded as standalone extensions.
-
-Manifest globs obey this layer too. `extensions/*` matches both files and subdirectories: files are collected directly, and directories go through entry discovery again. So what you get is `standalone.ts` and `subagent/index.ts` — never `subagent/helper.ts`.
-
-**Step 5**: the filter is the installer's choice, and it only narrows. Object form adds another layer of filtering for a specific package in settings:
-
-```ts
-{
-  source: "/packages/review",
-  extensions: ["extensions/*.ts", "!extensions/legacy.ts"],
-  prompts: [],
-  themes: ["+themes/review.json"],
-}
-```
-
-Six spellings, one job each:
-
-- omit the key: this kind goes through the filtered default — use the manifest's array for that kind if it has one, and only fall back to the convention directory when the manifest doesn't list it
-- `[]`: explicitly turn everything off
-- plain pattern: only matches are on
-- `!pattern`: exclude matches
-- `+path`: force-enable one exact path
-- `-path`: force-disable one exact path
-
-Two baselines first.
-
-First: "omitting a key" in object form is not the same as "no filter" in string form. Same package, manifest missing `skills`: under string form, skills export as empty; under object form — even with zero keys written in the filter — skills fall back to the convention directory. The moment you write object form, the resolution path changes.
-
-Second: a filter cannot carve out anything the author didn't provide. Explicit patterns draw their candidate set from a non-empty manifest array; only when the manifest is missing or empty for that kind do candidates come from the convention directory. So a filter can shrink a non-empty manifest ever smaller, but can't squeeze in a file the author never listed — `+path` doesn't work either, because the candidate set simply doesn't contain it.
-
-Matching uses minimatch semantics, checking three candidate spellings per resource: the package-relative path, the basename, and the absolute path; `SKILL.md` additionally checks the same three spellings of its parent directory. That's why `*.ts` can pick extensions by filename and `review` can pick a skill by directory name.
-
-Two spots where intuition tends to fail: the `**` in `extensions/**/*.ts` matches zero or more directory levels, so the top-level `top.ts` matches too; going the other way, a glob-free `extensions` is just one exact pattern — it doesn't mean "everything under the directory". If you want directory contents, write the glob explicitly. `+` / `-` always compare exact paths, and a skill can use its directory path as its identity.
-
-Choosing a spelling compresses to one sentence: when unsure, use plain patterns; reach for the special syntax only when you need exclusion or an exact named path.
-
-| Scenario | What to use | Example |
+| Source | User scope | Project scope |
 | --- | --- | --- |
-| Ship all skills | plain pattern | `skills/**` |
-| Keep a subset, drop tests | `!pattern` | `skills/**`, `!**/*.test.*` |
-| Force-include an exact path no pattern would match | `+path` | `skills/**`, `+skills/internal/legacy.md` |
-| None of this kind at all | `[]` | `prompts: []` |
-| Keep this kind at its default | omit the key | don't write `themes` |
+| `npm:name` | `~/.pi/agent/npm/node_modules/name` | `.pi/npm/node_modules/name` |
+| Git source | `~/.pi/agent/git/host/path` | `.pi/git/host/path` |
+| relative local path | relative to Agent directory | relative to project `.pi/` |
+| absolute local file | the file itself | the file itself |
 
-One habit worth building: to say "don't filter this kind", omit the key — don't use `[]` as a placeholder. The empty array is an explicit full shutdown, and unless you genuinely want to ship an empty skeleton, it's not what you mean.
+A local file is treated as one Extension. A directory continues through package rules. Missing roots are skipped because s12 neither installs nor fetches anything.
 
-Resources switched off by a filter don't vanish; they stay in the result carrying `enabled: false` — real Pi's `ResolvedResource` has the same field. What tests and any UI above see is "this prompt was explicitly disabled", not "it doesn't exist".
+Project packages are considered first, then user packages. `dedupePackageEntries()` identifies npm and Git sources independent of scope, so the project version wins. Local identities keep their scope.
 
-**Step 6**: the trust gate comes first, and scope decides who wins. Project packages pass the s11 gate before they ever reach the resolver:
+### 2. Combine manifest, conventions, and filters
+
+The exact rule depends on package-entry form.
+
+For a string entry, an existing `pi` manifest is authoritative for resource selection: a missing or empty key exports nothing for that type. With no manifest, the conventional `extensions/`, `skills/`, `prompts/`, and `themes/` directories are used.
+
+For an object entry with installer filters:
+
+- if a filter key is omitted, a present manifest key is used, including an empty array; otherwise conventions supply candidates;
+- if a filter key is present, a non-empty manifest key supplies candidates; a missing or empty key falls back to conventions before filtering;
+- include and `!` patterns select or remove candidates, then exact `+` and `-` overrides run in order;
+- a force-include can only re-enable a known candidate. It cannot manufacture a path outside the candidate set.
+
+The resolver preserves disabled candidates in its result. `getEnabledPaths()` is the boundary used before runtime activation.
+
+### 3. Discover Extension entrypoints, then require factories
+
+Extension discovery does not treat every nested `.ts` or `.js` file as an Extension. It accepts top-level files, a child directory's `index.ts` or `index.js`, or explicit entries from that child directory's manifest. Imported helper files stay helpers.
+
+Resolution produces paths, not executable modules. `createPackageRuntime()` builds a map from every supplied `extensionSources[].path` to its factory. If an enabled package Extension has no matching factory, construction fails:
 
 ```ts
-const packageEntries = dedupePackageEntries([
-  ...(options.projectTrusted ? options.projectPackages.map((pkg) => ({ pkg, scope: "project" as const })) : []),
-  ...options.userPackages.map((pkg) => ({ pkg, scope: "user" as const })),
-]);
-```
-
-When `projectTrusted` is false, project packages never enter resolution at all, while the user's global packages load as usual. It's the same sentence as s11: trust governs the loading of project inputs, not an execution sandbox.
-
-When the same package is configured on both sides, dedupe goes by source identity — npm by package name, git by host/path, local paths kept once per scope:
-
-```ts
-if (!existing || (entry.scope === "project" && existing.scope === "user")) {
-  seen.set(identity, entry);
+const source = extensionByPath.get(normalizePath(path));
+if (!source) {
+  throw new Error("Missing extension factory for resolved package path: " + path);
 }
 ```
 
-Project entries are listed first, so when identities collide the global entry never gets in: a project can pin its own workflow without a same-named package from the user's global settings taking it over.
+That explicit map is the lesson's host contract. It makes execution eligibility visible, but it is not a sandbox. s12 does not dynamically import arbitrary TypeScript.
+
+### 4. Put enabled resources into a real Turn
+
+After selection, `createPackageRuntime()` composes the same runtime built in s10:
+
+```ts
+const prepared = await createPackageRuntime({
+  files,
+  userPackages: ["/packages/review"],
+  projectPackages: [],
+  projectTrusted: true,
+  extensionSources: [{ path: extensionPath, factory: reviewExtension }],
+  runtimeOptions,
+});
+
+await runPrintMode(prepared.runtime, "Review this change");
+```
+
+Enabled Extensions register real Tools and Hooks. Enabled Skills enter the System Prompt through s08. Enabled Prompt files become entries in `prepared.promptTemplates`; an ordinary Turn does not inject their bodies into the System Prompt. `prepared.invokePromptTemplate(name, args)` uses s08's `formatPromptTemplateInvocation()` and submits the expanded text as that Turn's User Prompt. During a normal Turn, the Model context contains the Skill and Tool, the package Tool can run, and the real AgentMessage Session records the resulting Tool Call and Tool Result.
+
+Themes remain presentation resources. Their enabled paths are observable in `selection.themePaths`, but this lesson has no theme renderer.
 
 ## Try it yourself
 
-Open `demo()` at the bottom of `code.ts` — the fixture lives there. After each change, rerun `npm run session:s12` and watch the four numbers.
-
-1. Add a neighboring file to the fixture:
-
-```ts
-"/packages/review/prompts/draft.md": "Draft release notes.",
-```
-
-Prompts stays at 1. The manifest lists only `prompts/review.md`; a file sitting next to it doesn't get exported along for the ride.
-
-2. Keep draft.md, and replace the `createPackageManifest(...)` block with `JSON.stringify({ name: "review-pack" })`. Prompts becomes 2 — only without a `pi` field do the four kinds fall back to the convention directories. Now restore the manifest but delete the `prompts: ["prompts/review.md"]` line: Prompts becomes 0, not 2. Omitting a key and having no manifest are two different paths.
-
-3. Restore the manifest, keep draft.md, then swap `userPackages: ["/packages/review"]` for object form:
-
-```ts
-userPackages: [{ source: "/packages/review", prompts: [] }],
-```
-
-Prompts drops to 0 and the other three numbers don't move — `[]` is an explicit full shutdown. Now try `prompts: ["prompts/draft.md"]`, hoping to fish out the draft.md from step 1: Prompts is still 0, because the candidate set comes from the files the manifest listed, and draft.md isn't among them. Switch to `["+prompts/draft.md"]` and Prompts comes back to 1 — but the file that takes effect is review.md. With no plain pattern, every candidate survives, and the file `+` tried to force open still isn't a candidate. This is "a filter can only shrink" in a form you can touch.
-
-When you're done, restore `demo()` and run `npm run test:s12` to confirm the resolver's behavioral contract still holds.
+1. Give a string package a `pi` manifest that omits `prompts`. Add a conventional Prompt file and confirm it remains unexported.
+2. Change the same source to object form with an explicit Prompt filter. Observe when conventions become the candidate set and when the filter disables a path.
+3. Put `helper.ts` next to a child Extension's `index.ts`. `discoverExtensionEntries()` should select only the entrypoint.
+4. Resolve an enabled Extension without adding it to `extensionSources`. Construction should fail rather than importing it.
+5. Send an ordinary Prompt through `prepared.runtime`, then inspect the Model's Tool list, System Prompt, and AgentMessage Session. Extension and Skill resources should affect that Turn, but the Prompt body must remain absent until `invokePromptTemplate()` submits it as User input. Theme should remain selection data.
+6. Set `projectTrusted` to false and verify that user packages remain while project packages disappear.
 
 ## Wiring into the main line
 
-The resolver's output brings no new runtime system: extensions go back to s09 for loading, skills, prompts, and themes go back to s08, and the runtime shells are still the s10 lineup. What s12 welds on is the "distribution" link:
-
-| Component | s11 | s12 |
+| Boundary | s11 | s12 |
 | --- | --- | --- |
-| Where resources come from | loose files in the project `.pi/` and the user's global directory | file sets carved out of a package root by the manifest or convention directories |
-| Inputs behind the trust gate | project settings, extensions, prompts | one more kind: project packages don't reach the resolver without passing the gate |
-| What the installer can configure | trust decisions (approve / store / default) | the packages list in settings + object-form filters |
-| Output | a single `projectTrusted` boolean | four resource lists carrying `enabled` and `scope` |
+| Trust | decides whether project inputs participate | gates the entire project package list |
+| Resource paths | direct project paths | paths selected from package sources |
+| Extensions | trusted direct Extension paths | enabled package paths plus explicit factories |
+| Skills and Prompts | trusted direct paths | enabled paths loaded; Prompt text enters only on explicit invocation |
+| Themes | not used | resolved and reported, not rendered |
+| Core and Session | one real cumulative runtime | unchanged |
 
 ## Against the Pi source
 
-Finish this unit, then read [pi-source.md](pi-source.md).
+Pi 0.79.1 follows the same resolver model: npm, Git, and local sources lead to package roots; `package.json#pi` and conventional directories identify resource candidates; filters set enabled state; Project Trust gates project packages; project scope wins duplicate identities; and `ResourceLoader` consumes enabled paths.
 
-The mapping in one sentence: s12's `resolvePiPackages()` corresponds to the minimal path through `DefaultPackageManager.resolve()` in Pi's `package-manager.ts`. Read `docs/packages.md` first for the package author's mental model, then look at how `collectPackageResources()` and `applyPackageFilter()` merge the manifest, convention directories, and filters. Real Pi has a whole installation machinery beyond this line — npm install, git clone, pinned versions, offline mode. When you hit the install flow you can stop; it doesn't affect the resolver main line.
+Real Pi also installs and updates packages, dynamically loads Extension modules, parses every supported resource type, reports diagnostics, and applies Themes in its UI. s12 expects an already-populated file map, uses an explicit factory map, and leaves Themes as selection data.
+
+Neither implementation treats the package root as a containment boundary. A manifest entry is a resource-selection instruction, not a sandbox rule. Review package content before loading it, and use an external container, VM, micro-VM, remote sandbox, or OS policy when strong isolation is required.
+
+See [pi-source.md](pi-source.md) for the pinned source mapping.
 
 ## Next up
 
-What s12 completes is the package resolver: from in-memory files and configuration, it can compute which extensions, skills, prompts, and themes take effect — but those results aren't wired into an agent turn yet. s13 writes no new mechanisms; it does adaptation and orchestration only — reusing the public interfaces of the earlier units to compose trust, package, resource, extension, tool loop, session, and runtime mode into one deterministic offline chain.
-
-Set expectations right too: s13's packages and extensions are still in-memory fixtures. It won't install packages or dynamically import TypeScript, and it includes no context compaction, hot reload, or sandbox.
-
-To keep going into real Pi's engineering details, these are good entry points to drill into (line numbers are marked in [pi-source.md](pi-source.md)):
-
-```text
-offline mode and pinned npm versions   the source taxonomy in docs/packages.md:50-112, the install flow in package-manager.ts
-installing git ref dependencies        git clone / git fetch in package-manager.ts, how pinned refs land on disk
-name collision diagnostics             resource precedence ordering and collision diagnostics
-```
-
-[s13 Integrated Harness](../s13_integrated_harness/README.md): the parts raised over twelve units, joined into one deterministic request chain that actually runs. After that, s14 keeps the same chain and replaces the fixture provider with an optional OpenAI-compatible live provider.
+[s13 · Integrated Harness](../s13_integrated_harness/) composes Project Trust, direct and packaged Resources, Extensions, a real Model, an AgentMessage Session, and every runtime shell into one host-facing API.

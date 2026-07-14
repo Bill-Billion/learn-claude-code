@@ -1,334 +1,219 @@
+import type {
+  Api,
+  AssistantMessage,
+  AssistantMessageEvent,
+  Message,
+  Model,
+  ProviderStreamOptions,
+  ToolCall,
+  ToolResultMessage as PiToolResultMessage,
+  UserMessage,
+} from "@earendil-works/pi-ai";
+
+import { isMainModule, runPromptCli } from "../shared/cli.ts";
+import { loadCourseModel } from "../shared/model.ts";
 import {
-  dispatchTool,
-  createDemoToolRegistry,
-  listToolDefinitions,
+  createInitialState,
+  createUserMessage,
+  type AgentState,
+} from "../s01_agent_loop/code.ts";
+import {
+  createCourseToolRegistry,
+  createRegistryToolRuntime,
   type ToolRegistry,
 } from "../s02_tool_schema/code.ts";
-import {
-  type AssistantMessage,
-  type EventProvider,
-  type ProviderContext,
-  type ProviderEvent,
-  type TextContent,
-  type ToolCall,
-  createTextProvider,
-  createToolCallProvider,
-  readTextBlocks,
-} from "../s03_provider_events/code.ts";
+import { collectAssistantStream, readTextBlocks } from "../s03_provider_events/code.ts";
 
-export type ToolResultMessage = {
-  role: "toolResult";
-  toolCallId: string;
-  toolName: string;
-  content: TextContent[];
-  isError: boolean;
-  timestamp: number;
-};
-
-export type LoopMessage = AssistantMessage | ToolResultMessage;
+export type ToolResultMessage = PiToolResultMessage;
+export type LoopMessage = Message;
 
 export type AgentEvent =
-  | { type: "agent_start" }
-  | { type: "agent_end"; messages: LoopMessage[] }
-  | { type: "turn_start" }
-  | { type: "turn_end"; message: AssistantMessage; toolResults: ToolResultMessage[] }
-  | { type: "message_start"; message: LoopMessage }
-  | { type: "message_update"; message: AssistantMessage; providerEvent: ProviderEvent }
-  | { type: "message_end"; message: LoopMessage }
-  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: Record<string, unknown> }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: ToolResultMessage; isError: boolean };
+  | { type: "agent_start"; prompt: string }
+  | { type: "agent_end"; messages: Message[] }
+  | { type: "turn_start"; turn: number }
+  | { type: "turn_end"; turn: number; message: AssistantMessage; toolResults: ToolResultMessage[] }
+  | { type: "message_start"; turn: number; message: Message }
+  | { type: "message_update"; turn: number; message: AssistantMessage; providerEvent: AssistantMessageEvent }
+  | { type: "message_end"; turn: number; message: Message }
+  | { type: "tool_execution_start"; turn: number; toolCall: ToolCall }
+  | { type: "tool_execution_end"; turn: number; toolCall: ToolCall; result: ToolResultMessage };
+
+export type ToolExecutionContext = {
+  turn: number;
+  assistantMessage: AssistantMessage;
+  toolCall: ToolCall;
+  messages: Message[];
+  executeDefault(toolCall?: ToolCall): Promise<ToolResultMessage>;
+};
+
+export type ToolExecutionOutcome = {
+  message: ToolResultMessage;
+  terminate?: boolean;
+};
+
+export type ToolCallExecutor = (
+  context: ToolExecutionContext,
+) => Promise<ToolExecutionOutcome> | ToolExecutionOutcome;
+
+export type RunEventedToolLoopOptions = {
+  model: Model<Api>;
+  prompt: string;
+  registry: ToolRegistry;
+  state?: AgentState;
+  userMessage?: UserMessage;
+  systemPrompt?: string;
+  streamOptions?: ProviderStreamOptions;
+  maxTurns?: number;
+  onEvent?: (event: AgentEvent) => void | Promise<void>;
+  executeToolCall?: ToolCallExecutor;
+};
 
 export type RunEventedToolLoopResult = {
-  messages: LoopMessage[];
+  state: AgentState;
   events: AgentEvent[];
-  eventTypes: string[];
+  eventTypes: AgentEvent["type"][];
   toolResults: ToolResultMessage[];
+  finalMessage: AssistantMessage;
+  terminated: boolean;
 };
-
-export type ToolLoopProviderOptions = {
-  toolName: string;
-  args: Record<string, unknown>;
-  finalText: string;
-  allowUnknownTool?: boolean;
-};
-
-export function createToolLoopProvider(options: ToolLoopProviderOptions): EventProvider {
-  return {
-    stream(context: ProviderContext) {
-      const hasToolResult = context.messages.some((message) => {
-        return typeof message === "object" && message !== null && (message as { role?: string }).role === "toolResult";
-      });
-
-      if (hasToolResult) {
-        return createTextProvider([options.finalText]).stream(context);
-      }
-
-      if (options.allowUnknownTool) {
-        return streamUnknownToolCall(options.toolName, options.args);
-      }
-
-      return createToolCallProvider(options.toolName, options.args).stream(context);
-    },
-  };
-}
-
-export type ToolCallSpec = {
-  toolName: string;
-  args: Record<string, unknown>;
-};
-
-export function createMultiToolCallProvider(calls: ToolCallSpec[], finalText: string): EventProvider {
-  return {
-    stream(context: ProviderContext) {
-      const hasToolResult = context.messages.some((message) => {
-        return typeof message === "object" && message !== null && (message as { role?: string }).role === "toolResult";
-      });
-
-      if (hasToolResult) {
-        return createTextProvider([finalText]).stream(context);
-      }
-
-      return streamToolCallBatch(calls);
-    },
-  };
-}
-
-async function* streamToolCallBatch(calls: ToolCallSpec[]): AsyncIterable<ProviderEvent> {
-  const message: AssistantMessage = {
-    role: "assistant",
-    content: calls.map((call, index) => ({
-      type: "toolCall",
-      id: `call_${index + 1}`,
-      name: call.toolName,
-      arguments: {},
-    })),
-    stopReason: "toolUse",
-    timestamp: Date.now(),
-  };
-
-  yield { type: "start", partial: cloneAssistantMessage(message) };
-
-  for (let index = 0; index < calls.length; index++) {
-    yield { type: "toolcall_start", contentIndex: index, partial: cloneAssistantMessage(message) };
-
-    const block = message.content[index] as ToolCall;
-    block.arguments = { ...calls[index]!.args };
-    yield {
-      type: "toolcall_delta",
-      contentIndex: index,
-      delta: JSON.stringify(calls[index]!.args),
-      partial: cloneAssistantMessage(message),
-    };
-    yield {
-      type: "toolcall_end",
-      contentIndex: index,
-      toolCall: cloneToolCall(block),
-      partial: cloneAssistantMessage(message),
-    };
-  }
-
-  yield { type: "done", reason: "toolUse", message: cloneAssistantMessage(message) };
-}
-
-async function* streamUnknownToolCall(name: string, args: Record<string, unknown>): AsyncIterable<ProviderEvent> {
-  const now = Date.now();
-  const message: AssistantMessage = {
-    role: "assistant",
-    content: [{ type: "toolCall", id: "call_1", name, arguments: {} }],
-    stopReason: "toolUse",
-    timestamp: now,
-  };
-
-  yield { type: "start", partial: cloneAssistantMessage(message) };
-  yield { type: "toolcall_start", contentIndex: 0, partial: cloneAssistantMessage(message) };
-
-  const block = message.content[0] as ToolCall;
-  block.arguments = { ...args };
-  yield {
-    type: "toolcall_delta",
-    contentIndex: 0,
-    delta: JSON.stringify(args),
-    partial: cloneAssistantMessage(message),
-  };
-  yield {
-    type: "toolcall_end",
-    contentIndex: 0,
-    toolCall: cloneToolCall(block),
-    partial: cloneAssistantMessage(message),
-  };
-  yield { type: "done", reason: "toolUse", message: cloneAssistantMessage(message) };
-}
 
 export async function runEventedToolLoop(
-  provider: EventProvider,
-  registry: ToolRegistry,
-  options: { maxTurns?: number } = {},
+  options: RunEventedToolLoopOptions,
 ): Promise<RunEventedToolLoopResult> {
-  const maxTurns = options.maxTurns ?? 4;
-  const messages: LoopMessage[] = [];
+  const maxTurns = options.maxTurns ?? 8;
+  if (!Number.isSafeInteger(maxTurns) || maxTurns <= 0) {
+    throw new Error("maxTurns must be a positive safe integer");
+  }
+
+  const state = options.state ?? createInitialState();
+  const runtime = createRegistryToolRuntime(options.registry);
   const events: AgentEvent[] = [];
-  const allToolResults: ToolResultMessage[] = [];
+  const toolResults: ToolResultMessage[] = [];
+  const runStartIndex = state.messages.length;
+  let lifecycleClosed = false;
+  let observerFailed = false;
 
-  const emit = (event: AgentEvent) => events.push(event);
-  emit({ type: "agent_start" });
-
-  for (let turn = 0; turn < maxTurns; turn++) {
-    emit({ type: "turn_start" });
-    const assistantMessage = await streamAssistant(provider, registry, messages, emit);
-    messages.push(assistantMessage);
-
-    const toolCalls = assistantMessage.content.filter((block): block is ToolCall => block.type === "toolCall");
-    const turnToolResults: ToolResultMessage[] = [];
-
-    for (const toolCall of toolCalls) {
-      const result = await executeToolCall(registry, toolCall, emit);
-      messages.push(result);
-      turnToolResults.push(result);
-      allToolResults.push(result);
+  const emit = async (event: AgentEvent, notifyObserver = true): Promise<void> => {
+    events.push(event);
+    if (!notifyObserver) return;
+    try {
+      await options.onEvent?.(event);
+    } catch (error) {
+      observerFailed = true;
+      throw error;
     }
-
-    emit({ type: "turn_end", message: assistantMessage, toolResults: turnToolResults });
-
-    if (toolCalls.length === 0) {
-      break;
-    }
-  }
-
-  emit({ type: "agent_end", messages });
-
-  return {
-    messages,
-    events,
-    eventTypes: events.map((event) => event.type),
-    toolResults: allToolResults,
   };
-}
+  const closeLifecycle = async (notifyObserver = true): Promise<void> => {
+    if (lifecycleClosed) return;
+    lifecycleClosed = true;
+    await emit({
+      type: "agent_end",
+      messages: structuredClone(state.messages.slice(runStartIndex)),
+    }, notifyObserver);
+  };
 
-async function streamAssistant(
-  provider: EventProvider,
-  registry: ToolRegistry,
-  messages: LoopMessage[],
-  emit: (event: AgentEvent) => void,
-): Promise<AssistantMessage> {
-  let finalMessage: AssistantMessage | undefined;
-  let started = false;
+  state.messages.push(options.userMessage ?? createUserMessage(options.prompt));
 
-  for await (const event of provider.stream({
-    messages,
-    tools: listToolDefinitions(registry),
-  })) {
-    if (event.type === "start") {
-      started = true;
-      emit({ type: "message_start", message: cloneAssistantMessage(event.partial) });
-      continue;
-    }
-
-    if (isAssistantUpdate(event)) {
-      emit({
-        type: "message_update",
-        message: cloneAssistantMessage(event.partial),
-        providerEvent: event,
-      });
-      continue;
-    }
-
-    if (event.type === "done") {
-      finalMessage = event.message;
-      if (!started) {
-        emit({ type: "message_start", message: cloneAssistantMessage(finalMessage) });
-      }
-      emit({ type: "message_end", message: finalMessage });
-      continue;
-    }
-
-    if (event.type === "error") {
-      finalMessage = event.error;
-      if (!started) {
-        emit({ type: "message_start", message: cloneAssistantMessage(finalMessage) });
-      }
-      emit({ type: "message_end", message: finalMessage });
-    }
-  }
-
-  if (!finalMessage) {
-    throw new Error("Provider stream ended without a final assistant message");
-  }
-
-  return finalMessage;
-}
-
-function isAssistantUpdate(event: ProviderEvent): event is Extract<
-  ProviderEvent,
-  { type: "text_start" | "text_delta" | "text_end" | "toolcall_start" | "toolcall_delta" | "toolcall_end" }
-> {
-  return event.type !== "start" && event.type !== "done" && event.type !== "error";
-}
-
-async function executeToolCall(
-  registry: ToolRegistry,
-  toolCall: ToolCall,
-  emit: (event: AgentEvent) => void,
-): Promise<ToolResultMessage> {
-  emit({
-    type: "tool_execution_start",
-    toolCallId: toolCall.id,
-    toolName: toolCall.name,
-    args: toolCall.arguments,
-  });
-
-  let message: ToolResultMessage;
   try {
-    const result = await dispatchTool(registry, toolCall.name, toolCall.arguments);
-    message = {
-      role: "toolResult",
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
-      content: [{ type: "text", text: result.content }],
-      isError: false,
-      timestamp: Date.now(),
-    };
+    await emit({ type: "agent_start", prompt: options.prompt });
+    for (let turn = 1; turn <= maxTurns; turn++) {
+      await emit({ type: "turn_start", turn });
+      const streamed = await collectAssistantStream({
+        model: options.model,
+        context: {
+          systemPrompt: options.systemPrompt,
+          messages: state.messages,
+          tools: runtime.tools,
+        },
+        streamOptions: options.streamOptions,
+        async onEvent(providerEvent) {
+          if (providerEvent.type === "start") {
+            await emit({ type: "message_start", turn, message: providerEvent.partial });
+          } else if (providerEvent.type !== "done" && providerEvent.type !== "error") {
+            await emit({
+              type: "message_update",
+              turn,
+              message: providerEvent.partial,
+              providerEvent,
+            });
+          }
+        },
+      });
+      const assistantMessage = streamed.message;
+      state.messages.push(assistantMessage);
+      await emit({ type: "message_end", turn, message: assistantMessage });
+
+      if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
+        await emit({ type: "turn_end", turn, message: assistantMessage, toolResults: [] });
+        throw new Error(assistantMessage.errorMessage ?? `Model stopped with ${assistantMessage.stopReason}`);
+      }
+
+      const toolCalls = assistantMessage.content.filter(
+        (block): block is ToolCall => block.type === "toolCall",
+      );
+      const turnResults: ToolResultMessage[] = [];
+      const outcomes: ToolExecutionOutcome[] = [];
+
+      for (const toolCall of toolCalls) {
+        await emit({ type: "tool_execution_start", turn, toolCall });
+        const executeDefault = (override = toolCall) => runtime.execute(override);
+        const outcome = options.executeToolCall
+          ? await options.executeToolCall({
+              turn,
+              assistantMessage,
+              toolCall,
+              messages: state.messages,
+              executeDefault,
+            })
+          : { message: await executeDefault() };
+        state.messages.push(outcome.message);
+        toolResults.push(outcome.message);
+        turnResults.push(outcome.message);
+        outcomes.push(outcome);
+        await emit({ type: "tool_execution_end", turn, toolCall, result: outcome.message });
+        await emit({ type: "message_start", turn, message: outcome.message });
+        await emit({ type: "message_end", turn, message: outcome.message });
+      }
+
+      await emit({ type: "turn_end", turn, message: assistantMessage, toolResults: turnResults });
+
+      if (toolCalls.length === 0) {
+        await closeLifecycle();
+        return {
+          state,
+          events,
+          eventTypes: events.map((event) => event.type),
+          toolResults,
+          finalMessage: assistantMessage,
+          terminated: false,
+        };
+      }
+
+      if (outcomes.every((outcome) => outcome.terminate === true)) {
+        await closeLifecycle();
+        return {
+          state,
+          events,
+          eventTypes: events.map((event) => event.type),
+          toolResults,
+          finalMessage: assistantMessage,
+          terminated: true,
+        };
+      }
+    }
+
+    throw new Error(`Agent exceeded the maximum of ${maxTurns} model turn${maxTurns === 1 ? "" : "s"}`);
   } catch (error) {
-    message = {
-      role: "toolResult",
-      toolCallId: toolCall.id,
-      toolName: toolCall.name,
-      content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }],
-      isError: true,
-      timestamp: Date.now(),
-    };
+    try {
+      await closeLifecycle(!observerFailed);
+    } catch {
+      // Preserve the error that ended the run rather than replacing it with observer cleanup failure.
+    }
+    throw error;
   }
-
-  emit({
-    type: "tool_execution_end",
-    toolCallId: toolCall.id,
-    toolName: toolCall.name,
-    result: message,
-    isError: message.isError,
-  });
-  emit({ type: "message_start", message });
-  emit({ type: "message_end", message });
-
-  return message;
 }
 
-function cloneAssistantMessage(message: AssistantMessage): AssistantMessage {
-  return {
-    ...message,
-    content: message.content.map((block) => {
-      if (block.type === "toolCall") return cloneToolCall(block);
-      return { ...block };
-    }),
-  };
-}
-
-function cloneToolCall(toolCall: ToolCall): ToolCall {
-  return {
-    ...toolCall,
-    arguments: { ...toolCall.arguments },
-  };
-}
-
-export function readTextBlocksFromLastAssistant(messages: LoopMessage[]): string[] {
+export function readTextBlocksFromLastAssistant(messages: Message[]): string[] {
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index];
     if (message?.role === "assistant") {
@@ -338,22 +223,16 @@ export function readTextBlocksFromLastAssistant(messages: LoopMessage[]): string
   return [];
 }
 
-export async function runDemo(): Promise<void> {
-  const result = await runEventedToolLoop(
-    createToolLoopProvider({
-      toolName: "read",
-      args: { path: "README.md" },
-      finalText: "I saw the tool result.",
-    }),
-    createDemoToolRegistry(),
-  );
-
-  console.log(`Events: ${result.eventTypes.join(" -> ")}`);
-  console.log(`Messages: ${result.messages.map((message) => message.role).join(" -> ")}`);
-  console.log(`Tool result: ${result.toolResults[0]?.content[0]?.text}`);
-  console.log(`Final text: ${readTextBlocksFromLastAssistant(result.messages).join("")}`);
+async function runLiveCli(): Promise<void> {
+  const runtime = loadCourseModel();
+  const state = createInitialState();
+  const registry = createCourseToolRegistry(process.cwd());
+  await runPromptCli("s04 Evented Tool Loop", async (prompt) => {
+    const result = await runEventedToolLoop({ ...runtime, prompt, state, registry });
+    return readTextBlocks(result.finalMessage).join("");
+  });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  await runDemo();
+if (isMainModule(import.meta.url)) {
+  await runLiveCli();
 }

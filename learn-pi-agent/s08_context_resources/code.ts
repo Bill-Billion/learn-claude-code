@@ -1,17 +1,30 @@
-import { createDemoToolRegistry, type ToolRegistry } from "../s02_tool_schema/code.ts";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import type { Api, Model } from "@earendil-works/pi-ai";
+
+import { isMainModule, runPromptCli } from "../shared/cli.ts";
+import { loadCourseModel } from "../shared/model.ts";
+import { createCourseToolRegistry, type ToolRegistry } from "../s02_tool_schema/code.ts";
+import type { ToolHooks } from "../s05_tool_hooks/code.ts";
 import {
-  createDemoSession,
   createMiniHarness,
+  runHarnessTurn,
+  type AgentMessage,
   type MiniHarnessOptions,
-  type MiniMessage,
-  type MiniModel,
   type MiniPromptTemplate,
   type MiniSession,
   type MiniSkill,
+  type RunHarnessTurnResult,
+  type TransformContext,
   type TurnState,
 } from "../s06_turn_state/code.ts";
+import { createSessionTree } from "../s07_session_tree/code.ts";
 
-export type MemoryFiles = Record<string, string>;
+export type ResourceSource = {
+  readText(path: string): string | undefined | Promise<string | undefined>;
+};
 
 export type ContextFile = {
   path: string;
@@ -36,7 +49,7 @@ export type ContextResources = {
 };
 
 export type LoadContextResourcesOptions = {
-  files: MemoryFiles;
+  source: ResourceSource;
   cwd: string;
   agentDir: string;
   skillFiles?: string[];
@@ -51,21 +64,61 @@ export type BuildContextSystemPromptOptions = {
 };
 
 export type CreateContextResourceTurnStateOptions = LoadContextResourcesOptions & {
-  session: MiniSession;
-  model: MiniModel;
+  session: MiniSession<AgentMessage>;
+  model: Model<Api>;
   registry: ToolRegistry;
   activeToolNames?: string[];
+  streamOptions?: MiniHarnessOptions["streamOptions"];
+  transformContext?: TransformContext;
 };
 
 export type ContextResourceTurnState = TurnState & {
   contextFiles: ContextFile[];
 };
 
-export function loadContextResources(options: LoadContextResourcesOptions): ContextResources {
+export type RunContextResourceTurnOptions = CreateContextResourceTurnStateOptions & {
+  prompt: string;
+  hooks?: ToolHooks;
+  maxTurns?: number;
+  onEvent?: Parameters<typeof runHarnessTurn>[0]["onEvent"];
+};
+
+export type RunContextResourceTurnResult = RunHarnessTurnResult & {
+  contextResources: ContextResources;
+};
+
+export type PreparedContextResources = {
+  contextResources: ContextResources;
+  harnessResources: NonNullable<MiniHarnessOptions["resources"]>;
+  systemPrompt: MiniHarnessOptions["systemPrompt"];
+};
+
+export function createFileSystemResourceSource(): ResourceSource {
   return {
-    contextFiles: loadProjectContextFiles(options.files, options.cwd, options.agentDir),
-    skills: (options.skillFiles ?? []).map((filePath) => loadSkill(options.files, filePath)),
-    promptTemplates: (options.promptTemplateFiles ?? []).map((filePath) => loadPromptTemplate(options.files, filePath)),
+    async readText(path) {
+      try {
+        return await readFile(path, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      }
+    },
+  };
+}
+
+export async function loadContextResources(options: LoadContextResourcesOptions): Promise<ContextResources> {
+  const skills: ContextSkill[] = [];
+  for (const filePath of options.skillFiles ?? []) {
+    skills.push(await loadSkill(options.source, filePath));
+  }
+  const promptTemplates: ContextPromptTemplate[] = [];
+  for (const filePath of options.promptTemplateFiles ?? []) {
+    promptTemplates.push(await loadPromptTemplate(options.source, filePath));
+  }
+  return {
+    contextFiles: await loadProjectContextFiles(options.source, options.cwd, options.agentDir),
+    skills,
+    promptTemplates,
   };
 }
 
@@ -75,7 +128,6 @@ export function buildContextSystemPrompt(options: BuildContextSystemPromptOption
     "",
     `Current working directory: ${options.cwd}`,
   ];
-
   if (options.contextFiles.length > 0) {
     lines.push("", "<project_context>", "");
     for (const file of options.contextFiles) {
@@ -85,28 +137,22 @@ export function buildContextSystemPrompt(options: BuildContextSystemPromptOption
     }
     lines.push("</project_context>");
   }
-
-  if (options.activeToolNames.includes("read")) {
+  if (options.activeToolNames.some((name) => name === "read" || name === "read_file")) {
     const skillsBlock = formatSkillsForSystemPrompt(options.skills);
-    if (skillsBlock) {
-      lines.push("", skillsBlock);
-    }
+    if (skillsBlock) lines.push("", skillsBlock);
   }
-
   return lines.join("\n");
 }
 
 export function formatSkillsForSystemPrompt(skills: ContextSkill[]): string {
   const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
   if (visibleSkills.length === 0) return "";
-
   const lines = [
     "The following skills provide specialized instructions for specific tasks.",
     "Read the full skill file when the task matches its description.",
     "",
     "<available_skills>",
   ];
-
   for (const skill of visibleSkills) {
     lines.push("  <skill>");
     lines.push(`    <name>${escapeXml(skill.name)}</name>`);
@@ -114,15 +160,12 @@ export function formatSkillsForSystemPrompt(skills: ContextSkill[]): string {
     lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
     lines.push("  </skill>");
   }
-
   lines.push("</available_skills>");
   return lines.join("\n");
 }
 
 export function formatPromptTemplateInvocation(template: ContextPromptTemplate, args: string[] = []): string {
   const allArgs = args.join(" ");
-  // Single pass over the template, like Pi: argument values that contain
-  // $1, $@, or $ARGUMENTS are NOT recursively substituted.
   return template.content.replace(/\$(ARGUMENTS|@|\d+)/g, (_match, token: string) => {
     if (token === "ARGUMENTS" || token === "@") return allArgs;
     return args[Number(token) - 1] ?? "";
@@ -132,77 +175,101 @@ export function formatPromptTemplateInvocation(template: ContextPromptTemplate, 
 export async function createContextResourceTurnState(
   options: CreateContextResourceTurnStateOptions,
 ): Promise<ContextResourceTurnState> {
-  const contextResources = loadContextResources(options);
-  const harness = createMiniHarness({
+  const prepared = await prepareContextResources(options);
+  const turnState = await createMiniHarness({
     session: options.session,
     model: options.model,
     registry: options.registry,
     activeToolNames: options.activeToolNames,
-    resources: {
-      skills: contextResources.skills.map(({ name, description }) => ({ name, description })),
-      promptTemplates: contextResources.promptTemplates.map(({ name, description, content }) => ({
-        name,
-        description,
-        content,
-      })),
-    },
-    systemPrompt({ activeTools }) {
-      return buildContextSystemPrompt({
-        cwd: options.cwd,
-        activeToolNames: activeTools.map((tool) => tool.name),
-        contextFiles: contextResources.contextFiles,
-        skills: contextResources.skills,
-      });
-    },
-  } satisfies MiniHarnessOptions);
-
-  const turnState = await harness.createTurnState();
+    streamOptions: options.streamOptions,
+    transformContext: options.transformContext,
+    resources: prepared.harnessResources,
+    systemPrompt: prepared.systemPrompt,
+  }).createTurnState();
   return {
     ...turnState,
-    contextFiles: contextResources.contextFiles.map((file) => ({ ...file })),
+    contextFiles: prepared.contextResources.contextFiles.map((file) => ({ ...file })),
   };
 }
 
-function loadProjectContextFiles(files: MemoryFiles, cwd: string, agentDir: string): ContextFile[] {
+export async function runContextResourceTurn(
+  options: RunContextResourceTurnOptions,
+): Promise<RunContextResourceTurnResult> {
+  const prepared = await prepareContextResources(options);
+  const result = await runHarnessTurn({
+    session: options.session,
+    model: options.model,
+    registry: options.registry,
+    activeToolNames: options.activeToolNames,
+    streamOptions: options.streamOptions,
+    transformContext: options.transformContext,
+    resources: prepared.harnessResources,
+    systemPrompt: prepared.systemPrompt,
+    prompt: options.prompt,
+    hooks: options.hooks,
+    maxTurns: options.maxTurns,
+    onEvent: options.onEvent,
+  });
+  return { ...result, contextResources: cloneContextResources(prepared.contextResources) };
+}
+
+export async function prepareContextResources(
+  options: CreateContextResourceTurnStateOptions,
+): Promise<PreparedContextResources> {
+  const contextResources = await loadContextResources(options);
+  const harnessResources = {
+    skills: contextResources.skills.map(({ name, description }) => ({ name, description })),
+    promptTemplates: contextResources.promptTemplates.map(({ name, description, content }) => ({
+      name,
+      description,
+      content,
+    })),
+  };
+  const systemPrompt: MiniHarnessOptions["systemPrompt"] = ({ activeTools }) => buildContextSystemPrompt({
+    cwd: options.cwd,
+    activeToolNames: activeTools.map((tool) => tool.name),
+    contextFiles: contextResources.contextFiles,
+    skills: contextResources.skills,
+  });
+  return { contextResources, harnessResources, systemPrompt };
+}
+
+async function loadProjectContextFiles(
+  source: ResourceSource,
+  cwd: string,
+  agentDir: string,
+): Promise<ContextFile[]> {
   const result: ContextFile[] = [];
   const seen = new Set<string>();
-
-  const globalFile = findContextFile(files, agentDir);
+  const globalFile = await findContextFile(source, agentDir);
   if (globalFile) {
     result.push(globalFile);
     seen.add(globalFile.path);
   }
-
   for (const dir of ancestorDirs(cwd)) {
-    const file = findContextFile(files, dir);
+    const file = await findContextFile(source, dir);
     if (file && !seen.has(file.path)) {
       result.push(file);
       seen.add(file.path);
     }
   }
-
   return result;
 }
 
-function findContextFile(files: MemoryFiles, dir: string): ContextFile | undefined {
+async function findContextFile(source: ResourceSource, dir: string): Promise<ContextFile | undefined> {
   for (const name of ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]) {
     const path = joinPath(dir, name);
-    if (files[path] !== undefined) {
-      return { path, content: files[path] };
-    }
+    const content = await source.readText(path);
+    if (content !== undefined) return { path, content };
   }
   return undefined;
 }
 
-function loadSkill(files: MemoryFiles, filePath: string): ContextSkill {
-  const raw = readRequired(files, filePath);
-  const parsed = parseFrontmatter(raw);
+async function loadSkill(source: ResourceSource, filePath: string): Promise<ContextSkill> {
+  const parsed = parseFrontmatter(await readRequired(source, filePath));
   const name = String(parsed.frontmatter.name ?? basename(dirname(filePath)));
   const description = String(parsed.frontmatter.description ?? "").trim();
-  if (!description) {
-    throw new Error(`Skill ${filePath} is missing description`);
-  }
-
+  if (!description) throw new Error(`Skill ${filePath} is missing description`);
   return {
     name,
     description,
@@ -212,9 +279,8 @@ function loadSkill(files: MemoryFiles, filePath: string): ContextSkill {
   };
 }
 
-function loadPromptTemplate(files: MemoryFiles, filePath: string): ContextPromptTemplate {
-  const raw = readRequired(files, filePath);
-  const parsed = parseFrontmatter(raw);
+async function loadPromptTemplate(source: ResourceSource, filePath: string): Promise<ContextPromptTemplate> {
+  const parsed = parseFrontmatter(await readRequired(source, filePath));
   const firstLine = parsed.body.split("\n").find((line) => line.trim()) ?? "";
   return {
     name: basename(filePath).replace(/\.md$/i, ""),
@@ -226,15 +292,9 @@ function loadPromptTemplate(files: MemoryFiles, filePath: string): ContextPrompt
 
 function parseFrontmatter(content: string): { frontmatter: Record<string, string | boolean>; body: string } {
   const normalized = content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  if (!normalized.startsWith("---\n")) {
-    return { frontmatter: {}, body: normalized.trim() };
-  }
-
+  if (!normalized.startsWith("---\n")) return { frontmatter: {}, body: normalized.trim() };
   const endIndex = normalized.indexOf("\n---", 4);
-  if (endIndex === -1) {
-    return { frontmatter: {}, body: normalized.trim() };
-  }
-
+  if (endIndex === -1) return { frontmatter: {}, body: normalized.trim() };
   const frontmatter: Record<string, string | boolean> = {};
   for (const line of normalized.slice(4, endIndex).split("\n")) {
     const colon = line.indexOf(":");
@@ -243,11 +303,7 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, string
     const rawValue = line.slice(colon + 1).trim();
     frontmatter[key] = rawValue === "true" ? true : rawValue === "false" ? false : rawValue;
   }
-
-  return {
-    frontmatter,
-    body: normalized.slice(endIndex + 4).trim(),
-  };
+  return { frontmatter, body: normalized.slice(endIndex + 4).trim() };
 }
 
 function ancestorDirs(cwd: string): string[] {
@@ -262,11 +318,9 @@ function ancestorDirs(cwd: string): string[] {
   return dirs;
 }
 
-function readRequired(files: MemoryFiles, path: string): string {
-  const content = files[path];
-  if (content === undefined) {
-    throw new Error(`Missing file: ${path}`);
-  }
+async function readRequired(source: ResourceSource, path: string): Promise<string> {
+  const content = await source.readText(path);
+  if (content === undefined) throw new Error(`Missing file: ${path}`);
   return content;
 }
 
@@ -300,46 +354,36 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-export async function runDemo(): Promise<void> {
-  const files: MemoryFiles = {
-    "/home/me/.pi/agent/AGENTS.md": "Prefer small, verified changes.",
-    "/work/pi/AGENTS.md": "Use the local test command before claiming success.",
-    "/work/pi/.pi/skills/review/SKILL.md": [
-      "---",
-      "name: review",
-      "description: Review a change before shipping it.",
-      "---",
-      "Read the diff and list concrete risks.",
-    ].join("\n"),
-    "/work/pi/.pi/prompts/fix.md": [
-      "---",
-      "description: Fix one file.",
-      "---",
-      "Fix $1 and explain the verification.",
-    ].join("\n"),
-  };
-
-  const turnState = await createContextResourceTurnState({
-    files,
-    cwd: "/work/pi",
-    agentDir: "/home/me/.pi/agent",
-    session: createDemoSession("demo-session", [{ role: "user", content: "Review this change." }]),
-    model: { provider: "demo", id: "demo-model" },
-    registry: createDemoToolRegistry(),
-    activeToolNames: ["read", "bash"],
-    skillFiles: ["/work/pi/.pi/skills/review/SKILL.md"],
-    promptTemplateFiles: ["/work/pi/.pi/prompts/fix.md"],
-  });
-
-  const promptTemplate = turnState.resources.promptTemplates?.[0] as ContextPromptTemplate | undefined;
-  console.log(`Session: ${turnState.sessionId}`);
-  console.log(`Context files: ${turnState.contextFiles.map((file) => basename(file.path)).join(", ")}`);
-  console.log(`Skills in resources: ${turnState.resources.skills?.map((skill) => skill.name).join(", ")}`);
-  console.log(`Prompt templates: ${turnState.resources.promptTemplates?.map((template) => template.name).join(", ")}`);
-  console.log(`System prompt has skills: ${turnState.systemPrompt.includes("<available_skills>")}`);
-  console.log(`Template expansion: ${promptTemplate ? formatPromptTemplateInvocation(promptTemplate, ["README.md"]) : ""}`);
+function cloneContextResources(resources: ContextResources): ContextResources {
+  return structuredClone(resources);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  await runDemo();
+async function runLiveCli(): Promise<void> {
+  const runtime = loadCourseModel();
+  const cwd = process.cwd();
+  const session = createSessionTree({ cwd });
+  const registry = createCourseToolRegistry(cwd);
+  const source = createFileSystemResourceSource();
+  const agentDir = process.env.PI_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  await runPromptCli("s08 Context Resources", async (prompt) => {
+    const result = await runContextResourceTurn({
+      source,
+      cwd,
+      agentDir,
+      session,
+      model: runtime.model,
+      registry,
+      activeToolNames: ["read_file"],
+      streamOptions: runtime.streamOptions,
+      prompt,
+    });
+    return result.finalMessage.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+  });
+}
+
+if (isMainModule(import.meta.url)) {
+  await runLiveCli();
 }

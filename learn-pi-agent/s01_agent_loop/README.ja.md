@@ -1,157 +1,118 @@
 # s01 · Agent Loop
 
-[English](README.md) · [中文](README.zh.md) · 日本語
+[コーストップ](../README.ja.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[目次](../README.ja.md) · [s02 →](../s02_tool_schema/README.ja.md)
+> Pi の中での位置：`pi-ai` と Agent Loop を通る最小の実用経路です。User Message から始まり、モデルが Tool Call を選び、Harness が Tool Result を返し、モデルが最終回答を作ります。
 
-> ひとことで：agent loop はまず、messages と stopReason を軸にした制御フローです——user が入り、状態が一巡し、assistant が出てくる。
->
-> Pi の中での位置：`@earendil-works/pi-agent-core` の最小の状態フロー。
+```text
+model -> toolCall -> toolResult -> model
+```
 
-→ Pi を開いてまず目に入るのはターミナルとコマンドですが、その下にあるのは数十行で書ける制御フローです
-→ 1 リクエストの最小スライス：user message が入り、状態が一巡して、assistant message が出てくる
-→ stopReason のシグナルは 3 つ：stop / toolUse / error。toolUse はこの節では記録されるだけで、実行はされません
+## 問題：モデルを 1 回呼ぶだけでは Agent にならない
 
----
+1 回のモデルリクエストでテキストは返せますが、Agent はモデルからの行動要求も処理する必要があります。モデルが Tool Call を出したら、アプリケーションはツールを実行し、その結果をメッセージ履歴へ追加して、もう一度モデルを呼びます。ツール出力をそのままユーザーへ返すと、モデルが証拠を解釈する機会を飛ばしてしまいます。
 
-## 問題
+そのため最初のレッスンから、単なる Chat Wrapper ではなく、明示的な状態、ツール境界、終了条件を持つループを作ります。
 
-Pi を開くと、まずターミナル UI、モデル選択、session、extension、そして大量のコマンドが目に入ります。初学者はそのままそれらを追いかけて、agent の本体はコマンドと UI の中にあると思い込みがちです。
+## 考え方：メッセージ履歴の周囲で同じ処理を繰り返す
 
-しかし Pi の層構造では、その下にあるのが `@earendil-works/pi-agent-core` です。この層はターミナルの見た目に関心がなく、ツールがどう実行されるかにも関心がありません。問うのはもっと小さいことだけです：いまどの `AgentMessage` があるか、次のリクエストをどの provider に送るか、そして assistant が返ってきたあと、このターンは終了なのか、エラーなのか、ツールを呼びたいのか。
+順序を保った `messages` 配列を一つ持ち、次の処理を繰り返します。
 
-ここが見えないままだと、この先のイベントストリーム、ツール、session tree、extension runtime の話が、ぜんぶ仕組みの名前の羅列になってしまいます。s01 がやることは 1 つだけ：user message から assistant message までの状態変化を 1 ターン動かすことです。
+```text
+user message を追加
+  -> messages + tools でモデルを呼ぶ
+  -> assistant message を追加
+  -> toolCall なし：返す
+  -> toolCall あり：実行して toolResult を追加
+  -> モデルをもう一度呼ぶ
+```
 
-## 考え方
-
-![Agent Loop](images/agent-loop.svg)
-
-最小の `runOneTurn()` を書きます：まず user message を状態に入れ、状態全体を provider に渡し、最後に assistant message を状態に戻す。
-
-この節で残すシグナルは 3 つだけです：
-
-| シグナル | 意味 | この節での動作 |
-|------|------|---------|
-| `stopReason == "stop"` | assistant が正常に終了した | assistant message を記録する |
-| `stopReason == "toolUse"` | assistant がツールを呼びたい | シグナルを保持するだけで、ツールは実行しない |
-| `stopReason == "error"` | provider が正しい入力を受け取れなかった | エラーメッセージを記録する |
-
-この節ではツール実行も、session ファイルも、イベントストリームも、ターミナル UI も扱いません。
+`read_file` を呼ぶかどうかはモデルが選びます。ファイルの読み取り、安全性の検査、結果をモデルへ返す Message は Harness が管理します。
 
 ## まず動かす
 
-```sh
-npm run session:s01
+[コーストップ](../README.ja.md)に従って `.env` を設定し、`learn-pi-agent/` から実行します。
+
+```bash
+npm run s01
 ```
 
-出力はこんな感じです：
+引数を付けなければ対話入力ループが始まります。同じ依頼を繰り返し観察するときは、1 回だけ実行できます。
 
-```text
-User: hello
-Assistant [stop]: Received: hello
-User: does this lesson have tools?
-Assistant [toolUse]: I want to call a tool, but this lesson has no tool executor yet.
-Messages: 4
+```bash
+npm run s01 -- "read_file で package.json を読み、package name を教えてください。"
 ```
 
-この 4 件のメッセージが現在の状態です：
-
-```text
-user
-assistant
-user
-assistant
-```
-
-2 ターン目に注目してください：`stopReason=toolUse` は provider から流れてきましたが、ツールは何も実行されていません。s01 はそれをメッセージに残すだけで、本物の tool executor につながるのは s04 です。
+Tool Call と最終回答はモデルが選ぶため、具体的な文章は実行ごとに変わる場合があります。安定した経路を追ってください。最初のモデルターンが `read_file` を要求し、Harness が `toolResult` を返し、2 回目のモデルターンがその結果を使って答えます。
 
 ## コードの中身
 
-4 ステップです。
+### 1. 実際の `pi-ai` モデルを読み込む
 
-**ステップ 1**：agent state を作る。s01 の state は `messages` だけです。
+`runLiveCli()` は `loadCourseModel()` を呼びます。これは `OPENAI_API_KEY` を読み、OpenAI 互換の `Model<"openai-completions">` を作ります。`OPENAI_MODEL` の既定値は `gpt-4o-mini`、`OPENAI_BASE_URL` の既定値は OpenAI 公式 API です。
 
-```ts
-export function createInitialState(): AgentState {
-  return { messages: [] };
-}
-```
+### 2. 安全なツールを一つ定義する
 
-**ステップ 2**：ユーザー入力を `AgentMessage` に包んで、状態に追加する。
+`readFileTool` は正式な `pi-ai` の `Tool` です。TypeBox Schema はモデルが見る公開契約で、`createReadFileToolRuntime()` は実行可能なファイル読み取り Handler を Harness 側に保ちます。
 
-```ts
-const userMessage = createUserMessage(userInput);
-state.messages.push(userMessage);
-```
+Handler が受け付けるのは、コースルート内の通常の UTF-8 ファイルだけです。空のパス、隠しパス要素、ルート外へ出るパスやシンボリックリンク、通常ファイル以外、64 KiB を超えるファイルは拒否します。
 
-**ステップ 3**：現在の messages を provider に渡す。ここの `DemoProvider` は偽物のモデルで、API key がなくてもコースが安定して動くようにするためのものです。入力に `tool` という単語が含まれるかを見て toolUse を擬似的に発生させます——実際の provider ではツールを呼ぶかどうかをモデル自身が決めます。ここの文字列マッチは、stopReason というシグナルを安定して再現させるためだけのものです。
+### 3. ループ状態を明示的に保存する
+
+`AgentState` が順序を保った `Message[]` を所有します。`runAgentLoop()` は User Message を追加してからモデルループへ入ります。
 
 ```ts
-const assistantMessage = await provider.complete(state.messages);
-```
-
-**ステップ 4**：assistant message を状態に戻し、このターンの結果を返す。
-
-```ts
-state.messages.push(assistantMessage);
-return assistantMessage;
-```
-
-全体を組み上げると：
-
-```ts
-export async function runOneTurn(
-  state: AgentState,
-  provider: Provider,
-  userInput: string,
-): Promise<AssistantMessage> {
-  const userMessage = createUserMessage(userInput);
-  state.messages.push(userMessage);
-
-  const assistantMessage = await provider.complete(state.messages);
+for (let turn = 0; turn < maxTurns; turn++) {
+  const assistantMessage = await complete(model, {
+    messages: state.messages,
+    tools: toolRuntime.tools,
+  }, streamOptions);
   state.messages.push(assistantMessage);
 
-  return assistantMessage;
+  const toolCalls = assistantMessage.content.filter(
+    (block) => block.type === "toolCall",
+  );
+  if (toolCalls.length === 0) {
+    return { state, finalMessage: assistantMessage, toolResults };
+  }
+
+  for (const toolCall of toolCalls) {
+    state.messages.push(await toolRuntime.execute(toolCall));
+  }
 }
 ```
 
-10 行足らずです。これはまだ完全な agent loop ではなく、1 リクエストの最小スライスにすぎません。Pi の実際の loop は、この線の上に provider event stream、tool execution、hook、session、runtime mode を積み重ねていきます。
+実際の実装は System Prompt も渡し、各 Tool Result を記録し、最後の Assistant Message と完全な状態を返します。
+
+### 4. ツールの失敗をモデルが読める証拠にする
+
+`executeToolCallSafely()` は、引数検証とファイルエラーを `isError: true` の `ToolResultMessage` へ変換します。ループは続行できるため、モデルは失敗を説明したり、別の行動を選んだりできます。Provider の `error` と `aborted` は例外として表に出し、既定の 8 ターン制限で無限のツールループを防ぎます。
 
 ## 手を動かす
 
-`--demo` を付けずに実行すると、対話 REPL に入ります：
-
-```sh
-node s01_agent_loop/code.ts
-```
-
-まず適当に何往復か話してから、`tool` を含む一文を入力して、`[stop]` が `[toolUse]` に変わるのを観察してください。
-
-続けて、少し書き換えてみます：
-
-1. `DemoProvider` に 3 つ目のトリガーを追加する——入力に `fail` が含まれたら `stopReason: "error"` を返す。REPL に入り直して、3 つのシグナルがすべて発火することを確認します。
-2. `provider.complete()` の先頭に `console.log(messages.length)` を 1 行足して、何ターンか話してみる。1、3、5……と増えていくのが見えるはずです——provider は毎ターン完全な履歴を見ていて、最後の一文だけを見ているのではありません。この事実が、この先すべての節の土台になります。
-
-書き換えたら `npm run test:s01` で、この節の挙動の約束を壊していないか確認できます。
+1. モデルに `README.md` を読ませ、次に `package.json` を読ませます。文章の完全一致ではなく、回答が参照したファイルを比べてください。
+2. `npm run s01 -- "read_file で .env を読み、実行結果を説明してください。"` を実行します。ツールは隠しパスを拒否し、モデルはその失敗を Tool Result として受け取ります。
+3. `runLiveCli()` から一時的に `maxTurns: 1` を渡し、ファイル読み取りを依頼します。最初の Tool Call は実行できますが、続くモデルターンがないため、明示的な上限エラーになります。
 
 ## 本線につなぐ
 
-s01 には比較できる前の節がありません。ここで立てるのは、この先の全節が踏むことになる土台です：
-
-| この節で立てた部品 | この先どこで使うか |
+| 境界 | s01 の実装 |
 | --- | --- |
-| `AgentMessage` / `AgentState` | s04 の tool loop、s06 の turn state、s07 の session tree はすべてこれの拡張 |
-| `Provider` インターフェース | s03 がイベント化し、s04 からはループで呼び出す |
-| `stopReason` | s04 の tool loop がこれを見て、ターンを続けるか終えるかを決める |
+| Model | `loadCourseModel()` と `pi-ai` の `complete()` |
+| State | `AgentState.messages` |
+| モデルに見せるツール | `readFileTool` |
+| ローカル実行 | `createReadFileToolRuntime()` |
+| Loop の入口 | `runAgentLoop()` |
+| 終了条件 | Tool Call なし、Provider の失敗、`maxTurns` の超過 |
+
+s01 では Tool Schema と Handler を一つの小さな Runtime Object に置きます。s02 では、モデルに見せる Schema と非公開の Handler Registry を分離します。
 
 ## Pi ソースと照合
 
-この節を読み終えたら [pi-source.md](pi-source.md) を見てください。
+実装は `@earendil-works/pi-ai` 0.79.1 の `Model`、`Message`、`Tool`、`ToolCall`、`ToolResultMessage`、引数検証、`complete()` を直接使います。外側の制御フローは Pi Agent Loop の教材版です。
 
-対応関係をひとことで：s01 の `runOneTurn()` は、Pi の `agent-loop.ts` にある `runAgentLoop()` と `runLoop()` の最小経路に対応し、`AgentState.messages` は `AgentContext.messages` に対応します。Pi の実際の loop にはさらに event stream、context の変換、tool execution があります——provider event stream が出てきたら s03 まで飛んでかまいません。tool execution が出てきたらそこで止めてください。それは s04 の内容です。
+固定版ソースとの対応は英語の [pi-source.md](pi-source.md) を参照してください。
 
-## 次の節
+## 次のレッスン
 
-これで core は user/assistant の 1 ターンを回せるようになりましたが、assistant はまだ外部の能力を実際には呼べません。モデルがファイルを読みたい、書きたい、コマンドを実行したいなら、まずどんなツールが使えるのか、各ツールの入力がどんな形なのかを知る必要があります。
-
-[s02 Tool Schema](../s02_tool_schema/README.ja.md)：Pi はローカル関数をそのままモデルに渡すのではなく、まずツールを provider が読める schema として記述します。
+[s02 · Tool Schema](../s02_tool_schema/) では、実行可能な Handler を Registry の内側へ移し、モデルには Schema だけを公開します。

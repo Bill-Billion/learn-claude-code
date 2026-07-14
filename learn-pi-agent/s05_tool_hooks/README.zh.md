@@ -1,215 +1,134 @@
-# 第5课 给工具执行加审核——两个钩子搞定拦截和审计
+# 第 5 课 · Tool Hooks
 
-[English](README.md) · 中文 · [日本語](README.ja.md)
+[课程首页](../README.zh.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s04](../s04_evented_tool_loop/README.zh.md) · [目录](../README.zh.md) · [s06 →](../s06_turn_state/README.zh.md)
+> 在 Pi 中的位置：`pi-agent-core` 中包围 Tool Execution 边界的 `beforeToolCall` 与 `afterToolCall` 策略。
 
-上节课我们写的工具循环是"来单必做"：模型说调什么就调什么，中间没有任何审核。真把这个循环用起来，你很快就会遇到三个绕不开的需求：
-1. 有些调用根本不该执行——比如读敏感文件、跑rm -rf这种危险命令
-2. 有些结果需要改一改再给模型——比如加审计标记、删掉不该暴露的敏感字段
-3. 有些工具执行完就该直接结束——比如已经把结果发给用户了，没必要再让模型说废话
-
-这节课我们就在工具执行路径上加两个钩子，把这些能力都开放出来，而且内核一行具体判断都不写。
-
----
-
-## 先搞懂：把判断直接写进循环里为什么不行？
-
-很多人第一反应是：这还不简单？我在执行工具的地方加几个if不就行了？敏感路径直接return，危险命令直接抛错，执行完notify就break。
-
-这个思路做个demo可以，但做不成通用框架。
-
-第一，**这些判断是和场景强相关的**。什么路径算敏感、什么命令算危险，每个项目、每个用户的标准都不一样，你把这些写死在内核里，换个场景就得改内核代码。
-
-第二，**内核会越改越厚**。今天加个文件权限判断，明天加个命令审计，后天加个结果脱敏，最后工具执行那几行代码会塞满各种业务逻辑，谁也看不懂循环本身在干嘛。
-
-第三，**扩展能力为零**。第三方扩展想加自己的审核逻辑？根本没地方插，只能改内核。
-
-Pi的设计非常克制：内核不做任何具体的业务判断，只在工具执行路径的固定位置留两个"插口"，具体拦不拦、改不改、停不停，全交给外面传进来的钩子函数决定。就像地铁安检：安检机的位置是固定的，但查不查充电宝、查不查液体，是安检员按规定判断的，不是安检机自己决定的。
-
----
-
-## 两个钩子分别能做什么？
-
-两个钩子分别卡在工具执行的一前一后：
 ```text
-tool_execution_start
-  → beforeToolCall （执行前，决定跑不跑）
-  → 真正执行本地handler
-  → afterToolCall （执行后，决定改不改、停不停）
-  → tool_execution_end
-  → toolResult进上下文
+Tool Call -> before hook -> Handler -> after hook -> Tool Result
 ```
 
-### beforeToolCall：执行前的拦截
-在真正调用本地handler之前调用，返回值决定这次调用要不要执行：
-- 返回`{ block: true, reason: "xxx" }`：拦截这次调用，handler不执行，reason会被包成一个`isError: true`的toolResult给模型
-- 返回undefined或者不返回：放行，正常执行handler
+## 先搞懂：为什么只观察 Tool Execution 还不够
 
-注意：被拦截不是"悄悄跳过"，而是照样生成toolResult、照样发事件、照样进上下文。模型看到拦截原因，自己会决定换个工具、换个参数重试，或者告诉用户"这个操作我做不了"。就像安检拦下了违禁品，也会给你开个条子说明原因，不是直接把东西没收了什么都不说。
+s04 让 Tool Execution 可以被观察，但观察本身不能改变行为。产品可能需要阻止操作、改写批准后的参数、标记结果、把成功改判为失败，或者在下一次模型 Turn 前结束。
 
-### afterToolCall：执行后的处理
-handler执行完、toolResult还没进上下文之前调用，可以做两件事：
-1. **修改结果**：可以改content（比如加审计前缀、脱敏敏感字段），可以改isError（比如把成功结果改判成错误），没提到的字段保持原样
-2. **要求提前结束**：返回`{ terminate: true }`，表示这轮工具执行完就可以停了，不需要再让模型生成下一轮回答
+把每条规则写进每个 Handler 会重复 Policy；把产品特定条件直接加入 Agent Loop，又会让 Core 难以复用。执行边界需要两个窄接口，分别位于 Handler 前后。
 
-这里有个非常容易搞错的细节：**terminate是"全票通过"语义**。如果一轮有多个工具调用，必须所有工具的afterToolCall都返回terminate:true，循环才会真的提前结束；只要有一个工具没要求终止，就照常进入下一轮。
+## 思路：用两个可选 Hook 包围默认执行
 
-为什么？因为如果一批工具里有的说"可以停了"，有的说"我还要继续"，你直接停了，后面那个工具的结果模型就看不到了，回答肯定不完整。就像下班：必须组里所有人都做完手头的事才能走，一个人没做完大家都得等。
+```text
+beforeToolCall
+  -> block：不运行 Handler，返回 Error Tool Result
+  -> arguments：替换校验与执行使用的参数
+  -> 其他情况：继续
 
----
+executeDefault
 
-## 代码怎么写的
-
-首先定义两个钩子的类型，所有字段都是可选的——你不需要什么都管，只写你关心的逻辑就行：
-```ts
-// before钩子能返回的内容
-export type BeforeToolCallResult = {
-  block?: boolean;
-  reason?: string;
-};
-
-// after钩子能返回的内容
-export type AfterToolCallResult = {
-  content?: TextContent[];
-  isError?: boolean;
-  terminate?: boolean;
-};
-
-// 钩子上下文，判断需要的信息都在这里
-export type HookContext = {
-  assistantMessage: AssistantMessage;
-  toolCall: ToolCall;
-  args: Record<string, unknown>;
-  messages: LoopMessage[];
-};
+afterToolCall
+  -> 改写 content 或 isError
+  -> 请求 terminate
 ```
 
-带钩子的工具执行逻辑非常清晰：
-```ts
-async function executeToolCallWithHooks(...) {
-  // 先过before钩子
-  const beforeResult = await hooks.beforeToolCall?.(context);
-  let message: ToolResultMessage;
-  let terminate = false;
-
-  if (beforeResult?.block) {
-    // 被拦截了，生成错误的toolResult，handler不执行
-    message = createToolResultMessage(toolCall, beforeResult.reason || "Blocked", true);
-  } else {
-    // 放行，真正执行工具
-    message = await runLocalTool(registry, toolCall);
-
-    // 再过after钩子
-    const afterResult = await hooks.afterToolCall?.({ ...context, result: message, isError: message.isError });
-    if (afterResult) {
-      // 按钩子返回的内容修改结果，没提到的字段保持原样
-      message = {
-        ...message,
-        content: afterResult.content ?? message.content,
-        isError: afterResult.isError ?? message.isError,
-      };
-      terminate = afterResult.terminate ?? false;
-    }
-  }
-
-  return { message, terminate };
-}
-```
-
-循环里收集terminate标记的时候，用的是AND逻辑：
-```ts
-let shouldTerminate = toolCalls.length > 0;
-for (const toolCall of toolCalls) {
-  const result = await executeToolCallWithHooks(...);
-  messages.push(result.message);
-  // 所有工具都要求terminate，才是真的terminate
-  shouldTerminate = shouldTerminate && result.terminate;
-}
-
-// 两个退出条件：要么没工具调用了，要么全票通过要终止
-if (toolCalls.length === 0 || shouldTerminate) {
-  break;
-}
-```
-
-非常重要的一点：**不传钩子的时候，这个循环和s04的循环行为完全一模一样**。钩子是可选的，你不需要为了用循环必须写钩子，两个钩子位置空着就是普通通道。
-
----
+Loop 仍然管理 Message 顺序和生命周期 Event。Hook 可以影响一次 Tool Call，但不会变成第二条 Agent Loop。
 
 ## 先跑起来看看
 
-```sh
-npm run session:s05
+配置好课程 `.env` 后，从 `learn-pi-agent/` 运行：
+
+```bash
+npm run s05
 ```
 
-输出长这样：
-```text
-Blocked result: read is disabled in this lesson
-Patched result: audited: read: README.md
-Terminated: true
-Messages: assistant -> toolResult
+下面的单次请求会经过支持 Hook 的 Loop：
+
+```bash
+npm run s05 -- "使用 read_file 读取 package.json，并报告 pi-ai 版本。"
 ```
 
-demo跑了三个场景，正好对应三个能力：
-1. 拦截：before钩子返回block，handler根本没执行，返回了拦截原因
-2. 修改结果：after钩子在正常结果前面加了"audited: "前缀
-3. 提前终止：after钩子返回terminate:true，循环直接结束，没有第二轮模型生成
+默认 CLI 没有安装 Policy Hook，因此这条命令展示的是新接口的基线路径。回答和 Tool Call 细节可能变化。接下来的练习会在同一个 `runHookedToolLoop()` 调用中加入 Hook，观察 Tool Result 如何改变。
 
----
+## 代码怎么写的
+
+### 1. 保持 Hook Return Value 精简
+
+`beforeToolCall` 可以返回：
+
+```ts
+{
+  block?: boolean;
+  reason?: string;
+  arguments?: Record<string, unknown>;
+}
+```
+
+`afterToolCall` 可以返回：
+
+```ts
+{
+  content?: ToolResultMessage["content"];
+  isError?: boolean;
+  terminate?: boolean;
+}
+```
+
+返回 `undefined` 表示不做修改。Hook 不会直接改变 Registry 或 Message History。
+
+### 2. 提供足够的执行上下文
+
+两个 Hook 都会收到 Assistant Message、Tool Call、有效参数和当前 Message。After Hook 还会收到 Tool Result 与它的 `isError` 值。这些信息足以做 Policy 判断，同时不会暴露 Loop 内部的局部控制变量。
+
+### 3. 包围 s04 的默认 Executor
+
+主要入口接收一个 Options Object：
+
+```ts
+await runHookedToolLoop({
+  model,
+  prompt,
+  registry,
+  hooks: { beforeToolCall, afterToolCall },
+});
+```
+
+内部的 `createHookExecutor()` 会成为 s04 的 `executeToolCall` 函数。它先运行 Before Hook；如果参数被替换，就构造 Effective Tool Call；只有允许执行时，才调用 `context.executeDefault(effectiveToolCall)`。
+
+### 4. 让模型看见被阻止的调用
+
+Before Hook 返回 `{ block: true }` 时，Handler 不会执行。Hook 的 `reason` 会变成 Error `ToolResultMessage`，通过正常生命周期追加并返回模型。
+
+被阻止的调用不会运行 After Hook，因为没有 Handler Result 需要收尾。
+
+### 5. 执行后再完成结果
+
+默认执行完成后，`afterToolCall` 可以替换 `content`、修改 `isError`，或返回 `terminate: true`。替换后的值仍是普通 Tool Result Message，因此 s04 会照常为它发出 Tool Execution 和 Message Event。
+
+如果 `afterToolCall` 抛错，Handler 此时已经执行。`applyAfterToolCallHook()` 会保留已执行 Tool Result 的 Content，追加 `Post-tool hook failed after the tool executed: ...`，把 Result 标记为 Error，再让 Loop 继续。它绝不会重试 Handler 或重复其 Side Effect。
+
+一个 Turn 包含多个 Tool Call 时，只有这一批中的每个执行结果都请求终止，Loop 才会提前停止。混合批次仍会进入下一次模型 Turn。
 
 ## 动手试一试
 
-### 实验1：只拦截bash，不拦截read
-写个before钩子，只拦bash工具，read正常放行，用一次调用两个工具的provider测试。
-你会看到read正常返回结果，bash被拦成错误，两个结果都进上下文，循环正常走到最终回答。
+1. 在 `runLiveCli()` 中加入 `beforeToolCall` Hook，当 `args.path === "README.md"` 时阻止 `read_file`。请求这个文件，确认模型收到你的 Reason，而不是文件内容。
+2. 模型请求其他路径时返回 `{ arguments: { path: "package.json" } }`。确认 Handler 读取改写后的路径，Tool Result 仍保留原来的 Tool Call ID。
+3. 加入 `afterToolCall` Hook，在文本内容前添加 `audited:`。随后返回 `terminate: true`，比较它与正常后续模型 Turn 的生命周期。
 
-体会一下：权限判断就是这么简单，你只需要写判断逻辑，内核已经把位置给你留好了。
+## 接入课程主线
 
-### 实验2：验证terminate的全票语义
-还是两个工具的批次，只给read的after钩子返回terminate:true，bash不返回。
-你会发现循环没有终止，照样生成了最终回答——只有一个工具要求停不算数。
-改成两个工具都返回terminate:true，循环才会真的提前结束。
+| 边界 | s04 | s05 |
+| --- | --- | --- |
+| Loop 入口 | `runEventedToolLoop()` | `runHookedToolLoop({ ... })` |
+| 默认执行 | Registry Runtime | Hook Wrapper 内的 `executeDefault()` |
+| 执行前策略 | 无 | 阻止或替换参数 |
+| 执行后策略 | 无 | 改写结果或请求终止 |
+| 生命周期 | Agent / Turn / Message / Tool | 同一生命周期，使用收尾后的 Tool Result |
+| 模型访问 | 真实 Provider 路径 | 同一条真实 Provider 路径 |
 
-### 实验3：把成功结果改判成错误
-在after钩子里，把正常执行的结果加上isError:true，content保持不变。
-你会看到工具明明执行成功了，但进上下文的toolResult是错误状态。这和before拦截不一样：before是根本没执行，after是执行完了但结果被改判了。
+## 对照 Pi 源码
 
-跑完三个实验，你应该能回答下面检查点的问题。改完可以用`npm run test:s05`确认没破坏行为约定。
+Hook 位置、阻止行为、结果收尾和批量终止规则都对应 Pi 0.79.1。本课额外加入一个小型参数改写字段，让执行前转换保持可见；Pi 的准确 Hook Result Type 与更完整 Context 会在源码对照中说明。
 
----
+固定源码映射见 [pi-source.zh.md](pi-source.zh.md)。
 
-## 本节课打下的地基
+## 下一课
 
-s05我们给工具执行加上了可扩展的钩子，内核从此不再写死任何业务判断：
-
-| 这节课立的约定 | 后面会怎么用 |
-|----------------|--------------|
-| beforeToolCall可以拦截工具执行，拦截也生成错误toolResult | 权限控制、危险命令确认、敏感路径拦截都走这里 |
-| afterToolCall可以修改结果、要求提前终止 | 审计日志、结果脱敏、工具完成直接返回都走这里 |
-| terminate是全票通过语义，混合批次不终止 | 多工具调用时不会因为单个工具要求停就漏掉其他结果 |
-| 钩子是可选的，不传钩子行为和s04完全一致 | 基础使用不需要关心钩子，需要扩展时再加 |
-
-**本课引入的核心原语**：`beforeToolCall` / `afterToolCall` / `ToolHooks`
-
----
-
-## 检查点
-
-学完这节课，你应该能脱口回答这几个问题：
-- 工具被before钩子拦截了，为什么还要生成toolResult进上下文？直接跳过不行吗？
-- 一轮调用了三个工具，其中一个返回terminate:true，循环会停吗？为什么？
-- 为什么不把权限判断、审计逻辑直接写在内核的循环里？
-
----
-
-## 本节课小结
-
-这节课我们其实只讲了一个核心道理：
-> 内核只留插口，不做判断。什么能做、什么不能做、做完怎么处理，全是外面的事。
-
-看起来只是加了两个函数参数，实际上这是整个框架可扩展性的关键——权限、审计、确认、限流，所有和具体场景相关的逻辑，都可以通过这两个钩子加进来，内核永远保持薄薄一层，不会被业务逻辑塞爆。
-
-但现在还有个问题：每一轮调用模型的时候，用什么system prompt、给模型看哪些工具、带哪些资源，这些配置现在还是散的。如果一轮执行到一半外面改了配置，就会出现前后不一致的问题。下节课我们就来解决这个问题：每轮开始前先拍个快照，整轮都用快照里的配置，不允许中途变卦。
-
-进入下一课：[s06 轮次状态 —— 每轮开始前先拍快照，整轮只读不写](../s06_turn_state/README.zh.md)
+[第 6 课 · Harness Turn State](../s06_turn_state/) 会把 Message、Tool、Resource、Model 配置和 System Prompt 收进一份显式 Turn Snapshot。

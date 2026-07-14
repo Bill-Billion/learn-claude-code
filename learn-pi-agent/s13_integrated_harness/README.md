@@ -1,175 +1,147 @@
 # s13 · Integrated Harness
 
-English · [中文](README.zh.md) · [日本語](README.ja.md)
+[Course home](../README.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s12](../s12_pi_package/README.md) · [Contents](../README.md) · [s14 →](../s14_real_provider/README.md)
+> Where this sits in Pi: the assembly layer that resolves trust and resources, constructs one Agent Session runtime, and exposes it through CLI and SDK shells.
 
-> In one sentence: s13 writes no new mechanisms — it joins the public interfaces of the first 12 units into one runnable request chain. If it all connects, the boundaries were drawn right.
->
-> Where this sits in Pi: the product-layer orchestration of `pi-coding-agent` (where agent-harness, resource loader, session, and modes converge).
-
-→ Integration isn't adding features — it's acceptance testing: if two parts can only cooperate by digging through each other's internals, the boundary was drawn wrong
-→ The whole chain needs exactly three pieces of "glue": an adapter around the provider, a field mapping between hooks and extensions, and tagged JSON encoding for the session
-→ The debt s10 left gets paid off here: a real core plugs into four shells on nothing but the `prompt()/getState()` interface
-
----
+```text
+files + trust policy + package entries + Extension factories
+  -> Project Trust
+  -> direct Resources + Package Resolver
+  -> Extension runner + Skills + Prompt Templates
+  -> one MiniCoreRuntime
+       +-> real Model and Tool loop
+       +-> one AgentMessage Session
+  -> serialized IntegratedHarnessRuntime
+  -> Print / JSON / RPC / SDK
+```
 
 ## The problem
 
-Units s01 through s12 each raised one part: the tool loop in s05 (tool hooks), sessions in s07 (session tree), resources in s08 (context resources), extensions in s09 (extension runtime), shells in s10 (runtime modes), the loading boundary in s11 (trust), distribution in s12 (package). Every part has its own tests, but no single chain proves these interfaces actually mesh.
+Each earlier lesson proves one boundary in isolation. A usable Harness has to compose them in the correct order.
 
-This is exactly where harness designs tend to fall over: every module looks clean in isolation, then integration reveals that A needs to reach into B's internals to cooperate. So s13 sets itself one rule: **adaptation and orchestration only, no new implementations**. The tool loop is still executed by s05, sessions are still stored by s07, and resource, extension, trust, package, and mode each reuse the public interfaces of s08–s12. Wherever things don't connect, only one thin layer of glue is allowed — and each piece of glue has to be able to explain why the original interface doesn't have this.
+Trust must resolve before project Extensions and packages are selected. Package paths must resolve before Extension factories load. Context, Skills, and explicitly invoked Prompt Templates must reach the same Turn as the Tool registry. Every shell must share one AgentMessage Session. Two callers must not mutate that Session concurrently.
+
+If the assembly layer reimplements any of those parts, the course ends with a second, incompatible Agent. s13 therefore adds orchestration and one concurrency rule, not another Model-Tool loop.
 
 ## The idea
 
-One `prompt()` call walks this chain:
+`createIntegratedHarnessRuntime()` accepts host-owned dependencies and configuration, then connects the public APIs from s01-s12:
 
-```text
-prompt
-  -> s11 trust:      resolveProjectTrusted() / loadProjectInputs()
-  -> s12 package:    resolvePiPackages() computes resource and extension paths
-  -> s09 extension:  loadMiniExtensions() + createExtensionTurnState()
-  -> s07 session:    append the user message, take the current branch
-  -> glue 1 adapter: inject the session branch and systemPrompt into the provider
-  -> s05 tool loop:  runHookedToolLoop() runs the tool loop
-  -> glue 2 mapping: s09's tool_call handler wired to s05's beforeToolCall
-  -> glue 3 encoding: assistant/toolResult written back to s07 as tagged JSON
-  -> s10 shell:      print / json / rpc / sdk consume the same runtime
-```
+| Host input | Where it goes |
+| --- | --- |
+| `Model<Api>` and Stream options | the real s03-s06 Model path |
+| Tool registry and active Tool names | the real Tool loop |
+| `MiniSession<AgentMessage>` | one cumulative Session Tree |
+| Resource source and direct paths | Context, Skills, and Prompt Templates |
+| user/project Package entries | s12 Package Resolver |
+| path-to-Factory map | direct and packaged Extensions |
+| Trust policy and Store | s11 Project Trust |
 
-`createIntegratedHarnessRuntime()` resolves trust, project inputs, package resources, and extension factories at initialization. Every `prompt()` rebuilds the turn state, so the current session branch, AGENTS.md, skills, prompt templates, and extension hooks all enter the same turn.
-
-What this unit produces is a deterministic, offline teaching harness: the provider and files all come from in-memory fixtures — no model API, no network, no real shell, no project filesystem.
+The result is an `IntegratedHarnessRuntime`. It implements the s10 `MiniRuntime` contract, exposes `projectTrusted`, `projectInputs`, and `packageResources` for inspection, and preserves explicit Prompt Template invocation.
 
 ## Run it first
 
+From `learn-pi-agent/`, with the course `.env` configured:
+
 ```bash
-npm run session:s13
+npm run s13 -- "Use read_file to inspect package.json, then explain which components share the integrated Session."
 ```
 
-Output:
+The CLI uses the configured real Model, filesystem Context Resource source, Session Tree, `read_file` Tool, and Print shell. Model output and Tool choice can vary; all of that behavior goes through the integrated path constructed by `createIntegratedHarnessRuntime()`.
 
-```text
-Session: s13-demo
-Final text: Integrated harness ready.
-Events: session -> agent_start -> message -> agent_end
-Stored messages: 2
+`PI_PROJECT_TRUST` defaults to `ask`. This compact CLI has no trust-selection UI or persistent Store, so protected project inputs remain disabled when an applicable override is required. After reviewing the project, `always` enables them and `never` rejects them:
+
+```bash
+PI_PROJECT_TRUST=always npm run s13 -- "Summarize the trusted project resources."
 ```
 
-Four lines from four parts: the session id comes from s07's session tree, the final text made it through s05's tool loop, the events are the s10 shell's event projection, and the stored message count is what got written back to s07. One chain, four origins.
+The course host does not dynamically import TypeScript or parse project settings into package entries. A trusted direct Extension must have an explicit Factory supplied through the programmatic API; otherwise construction fails. The built-in CLI is therefore appropriate only when its selected project inputs do not require an unconfigured Extension Factory.
 
 ## How the code works
 
-### Glue 1: why the provider gets wrapped in an adapter
+### 1. Resolve Trust before selecting project inputs
 
-s05's loop only manages the assistant and tool-result messages produced within the current turn. It doesn't read s07, and it knows nothing about the system prompt s08 generates — that's s05's boundary, not a defect. s13 wraps the provider in one layer:
+`createIntegratedHarnessRuntime()` begins with `prepareProjectTrust()`. The decision controls three protected sources:
 
-```ts
-provider.stream({
-  ...loopContext,
-  messages: [...sessionPrefix, ...extensionMessages, ...context.messages],
-  systemPrompt,
-});
+- direct project Skills and Prompt Templates from s11;
+- direct project Extension entrypoints under `.pi/extensions`;
+- the entire `projectPackages` list passed by the host.
+
+User Extension, Skill, Prompt, and Package inputs remain independent of project trust. Context candidate files also remain outside the Trust Gate, using the per-directory precedence from s08 and s11.
+
+The decision is available as `runtime.projectTrusted`, and the exact gated paths are cloned into `runtime.projectInputs`.
+
+### 2. Merge Resource paths with explicit Extension factories
+
+Trusted direct project Extension directories pass through s12's entrypoint discovery, so a child `index.ts` can load without treating its `helper.ts` as a second Extension.
+
+`extensionFactories` is a normalized path-to-Factory map. It supplies both direct Extension factories and factories for Extension paths selected from packages. A selected path without a Factory is an error; the Harness never interprets a string path as permission to execute source code.
+
+`createPackageRuntime()` merges user paths, trusted project paths, and enabled package paths. Extension factories enter the runner, Skills enter Context Resources, and Prompt files enter the Template catalog. Template bodies are absent from ordinary System Prompts. `runtime.invokePromptTemplate(name, args)` expands one selected Template and queues the expanded User Prompt as a real Turn.
+
+### 3. Keep one real Model and AgentMessage Session
+
+The composed Core is still `MiniCoreRuntime`. It calls the real `runExtensionTurn()` path, which builds Context Resources, runs `before_agent_start` and Tool Hooks, streams the supplied Model, dispatches Tools, emits lifecycle Events, and appends complete `AgentMessage` objects to the supplied Session.
+
+If the host omits `session`, s13 creates a Session Tree. When the host supplies an explicit Session, each Tool-using Turn appends rich Messages in this order:
+
+```text
+user
+assistant(toolCall)
+toolResult
+assistant(final text)
 ```
 
-The first request sees the current session branch; after tools execute, s05 puts the new messages into `loopContext.messages`, so the next provider request sees both the history and this turn's results. There is still exactly one tool loop — s05's.
+Context instructions, package Skill metadata, explicit Prompt invocation, Extension-registered Tools, and base Tools all affect that same Session. No adapter flattens rich Messages into plain text.
 
-### Glue 2: how an extension blocks tool execution
+### 4. Serialize host prompts, then reuse every shell
 
-s09's `tool_call` handler and s05's `beforeToolCall` already return the same shape, so s13 only maps fields:
+`IntegratedHarnessRuntime.prompt()` chains work through `promptQueue`. Concurrent calls execute in submission order, so both Runs read and update one stable Session. The queue settles after either success or failure, preventing one rejected Run from blocking later work. Explicit Prompt Template invocation uses the same queue.
 
-```ts
-beforeToolCall: ({ toolCall, args }) =>
-  runner.emitToolCall({ toolName: toolCall.name, input: args })
-```
+`getState()` and `subscribe()` delegate to the Core. That makes the existing s10 helpers reusable without translation:
 
-When a handler returns `{ block: true, reason }`, s05 doesn't dispatch the local tool; it produces a structured tool result with `isError: true` instead, which the provider can read on its next turn. The two units' interfaces connect in one line because both were implemented, back in their own chapters, against the same Pi semantics (the hook protocol in `agent-loop.ts`).
-
-### Glue 3: why the session stores tagged JSON
-
-s07's teaching contract simplifies message content down to a string, while the assistant/tool-result messages from s03–s05 also carry tool call ids, arguments, error flags, and timestamps. s13 listens for s05's `message_end` events, encodes each complete message as a prefixed JSON string and writes it into s07 immediately, then decodes when building the next turn's provider context. No widening of s07's API, no loss of tool-call fields. Even if a tool has already executed and a later provider request fails, the completed assistant and tool-result records remain in the append-only session, available for audit.
-
-User messages are still stored as plain text. s10's `MiniRunResult.messages` projects only user messages and text-bearing assistant messages; the full record lives in the s07 session tree.
-
-### Trust and extension factories
-
-Package extension paths are decided by s12's resolver; project packages and `.pi/extensions` additionally pass through s11's trust. `extensionFactories` is an in-memory path-to-factory map, standing in for "modules already loaded":
-
-```ts
-extensionFactories: {
-  "/packages/review/extensions/review.ts": reviewFactory,
-}
-```
-
-If the resolver picks an extension path with no matching factory in the map, initialization fails outright — the teaching implementation does no dynamic TypeScript imports and doesn't silently skip missing modules. A trusted project's `.pi/extensions` reuses s12's entry discovery rules: top-level `.ts`/`.js` files are entries, subdirectories only count via `index.ts`/`index.js` or entries listed in a sub-manifest, and neighboring helper modules never enter the factory map.
+| Shell | Integrated behavior |
+| --- | --- |
+| Print | awaits one final text result |
+| JSON | serializes captured Events after the Run |
+| RPC | supports `prompt` and `get_state` on the same runtime |
+| SDK | receives live Events while the queued Turn is running |
 
 ## Try it yourself
 
-The demo's provider is a single plain-text reply, so the tool part of the chain never fires. Edit `demo()` at the bottom of `code.ts`:
-
-1. Swap the provider for s04's tool-calling provider:
-
-   ```ts
-   import { createToolLoopProvider } from "../s04_evented_tool_loop/code.ts";
-   // ...
-   provider: createToolLoopProvider({
-     toolName: "read",
-     args: { path: "README.md" },
-     finalText: "Read the file through the integrated loop.",
-   }),
-   ```
-
-   Rerun `npm run session:s13` and see what `Stored messages` becomes instead of 2. What is each extra message? Explain it from s07's point of view (hint: the assistant's toolCall, the tool result, and the final answer each land on disk as tagged JSON).
-
-2. At the end of `demo()`, hand the same runtime to an s10 shell:
-
-   ```ts
-   import { runJsonMode } from "../s10_runtime_modes/code.ts";
-   // ...
-   console.log(await runJsonMode(runtime, "hello from the json shell"));
-   ```
-
-   After both prompts, check `runtime.getState().messageCount` — different shells are driving the same session state. That's s10's invariant, "a mode shell owns no agent state of its own", running on a real core.
-
-3. The four end-to-end tests in `code.test.ts` are four ready-made modding recipes (the full package-skill chain, an extension blocking a tool, a trust rejection, four shells sharing one runtime). When you want to add ingredients, copy their fixtures into the demo.
-
-When you're done, run `npm run test:s13` to confirm the chain still holds.
+1. Compose a user package with one Extension Tool, Skill, and Prompt Template. Confirm an ordinary Turn sees the Tool and Skill but not the Prompt body.
+2. Call `invokePromptTemplate()` and inspect the last User Message. The expanded text should enter one real queued Turn.
+3. Add both user and project packages, then decline Trust. User resources should remain; project packages and direct project Extensions should disappear.
+4. Put `index.ts` and `helper.ts` in a trusted direct Extension directory. Supply a Factory only for the entrypoint and verify only that Factory loads.
+5. Call Print, JSON, RPC, and SDK in sequence. `getState().turns` and the Session Message list should include all four.
+6. Start two `prompt()` calls with `Promise.all()`. Their Run IDs and Session Messages should remain in submission order.
 
 ## Wiring into the main line
 
-s13 is the main line closing on itself, so the usual diff table becomes a parts list:
-
-| Part | From | Place in the chain |
+| Boundary | Earlier lessons | s13 composition |
 | --- | --- | --- |
-| Tool contract and registry | s02 | baseRegistry + merged extension tools |
-| Provider event stream | s03 | wrapped by the adapter, consumed by s05 |
-| Tool loop and event ordering | s04/s05 | `runHookedToolLoop()` executed as-is |
-| Turn state snapshot | s06/s09 | rebuilt on every `prompt()` |
-| Session tree | s07 | appends user/assistant/toolResult, supplies the next turn's branch |
-| Resource loading | s08 | AGENTS.md/skills/templates enter the system prompt |
-| Extension runtime | s09 | hooks, tools, custom messages join the turn |
-| Runtime modes | s10 | four shells consume the same runtime |
-| Trust | s11 | decides whether project inputs and extensions load |
-| Package resolver | s12 | computes resource and extension paths |
+| Model and Tool loop | s01-s05 | one real streamed Turn with Hooks and Events |
+| AgentMessage state | s06-s07 | one cumulative Session Tree |
+| Context and Resources | s08 | Context candidates, Skills, explicit Prompt invocation |
+| Extensions | s09 | direct and package-selected explicit Factories |
+| Runtime shells | s10 | one shared Print/JSON/RPC/SDK surface |
+| Project Trust | s11 | resolves before protected paths participate |
+| Packages | s12 | enabled paths enter the same Core |
+| Host concurrency | not previously owned | ordered Promise queue around the shared Session |
 
 ## Against the Pi source
 
-The source mapping lives in [pi-source.md](pi-source.md). Focus on how `agent-harness.ts` builds turn state, wires hooks, and stores messages, then on how coding-agent's `resource-loader.ts`, `agent-session.ts`, and the extension runner complete the product-layer orchestration — real Pi's "glue layer" is exactly those files.
+Pi 0.79.1 performs the same broad assembly through `createAgentSession()`, `AgentSessionRuntime`, `ResourceLoader`, `ProjectTrustStore`, `DefaultPackageManager`, the Extension loader and runner, `AgentHarness`, and Session APIs. CLI modes and SDK calls are shells around that assembled Session.
 
-Not implemented in this unit: context compaction, token budgets, a real provider, dynamic module imports, package install, terminal UI, hot reload, sandbox. `files`, the provider, tool handlers, and extension factories are all in-memory fixtures.
+The course keeps the composition visible and injectable. It accepts an already-created Model, Tool registry, file source, Package entries, and Extension factories. Pi additionally owns settings parsing, model discovery, Extension module loading, package installation, UI services, reload, compaction, and richer Session control.
 
-## Closing
+The transparent Promise queue is a course host policy. Pi does not silently serialize a second `prompt()` while streaming; callers select steering or follow-up behavior. Both designs protect the meaning of an active Session, but their public concurrency contracts differ.
 
-Behind every choice across these first thirteen units sits the same triple: what was chosen / what wasn't / what it costs. Collected once into a single table:
+See [pi-source.md](pi-source.md) for the pinned source mapping.
 
-| Dimension | Pi's choice | The alternative not taken | The cost |
-| --- | --- | --- | --- |
-| Model access | a unified provider protocol | binding to a single SDK | one adapter layer per model vendor, and the protocol itself needs maintaining |
-| Message structure | `AgentMessage` layered over LLM messages | sending the raw array directly | one more conversion, and debugging means knowing which layer you're in |
-| Output surface | an event stream | returning a string synchronously | callers must consume a stream — no one-line `await` for the result |
-| Session storage | an append-only session tree | an overwritable message array | history is immutable, branches need explicit management, storage only grows |
-| Capability extension | extension / skill / package first | built-in plan mode / sub-agents | core features lean on the ecosystem; newcomers must learn the outer machinery first |
-| Security boundary | trust separated from the execution environment | a built-in sandbox | you configure your own execution sandbox; trust only governs input loading |
-| Capability distribution | packages as the distribution unit | hardcoding capabilities into core | the manifest/resolver layer is extra engineering — worth it once distribution exists |
+## What you built
 
-That table is the through-line of this course: Pi core stays small, events stay legible, extension stays open, and isolation doesn't pretend to be solved inside the process. [s14](../s14_real_provider/README.md) now takes the next step: it keeps this integrated harness intact and replaces the deterministic provider with a real OpenAI-compatible stream.
+The final API is not a diagram of a Harness. It runs the real course Model path, Tool execution, Events, AgentMessage Session, Context Resources, Extensions, Trust Gate, Package Resolver, Prompt Template invocation, and four runtime shells together.
+
+Return to the [course home](../README.md) to review the complete learning path and choose a boundary to extend.

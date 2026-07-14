@@ -1,12 +1,9 @@
-# s04 的 Pi 源码对照
+# s04 的 Pi 0.79.1 源码对照
 
-s04 对应 `pi-agent-core` 的工具执行主路径。
+s04 在正式的 `pi-ai` Assistant Message Stream 外层，加入 `pi-agent-core` 使用的主要生命周期边界。
 
 ```text
-assistant message with toolCall
-  -> execute tool
-  -> toolResult message
-  -> next provider turn
+agent -> turn -> assistant message -> tool execution -> toolResult message
 ```
 
 ## 对应文件
@@ -15,60 +12,48 @@ assistant message with toolCall
 - [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts)
 - [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts)
 
-具体锚点：
-
-```text
-agent-loop.ts:192-218  stream assistant, find tool calls, append tool results, emit turn_end
-agent-loop.ts:275-367  streamAssistantResponse()
-agent-loop.ts:373-388  executeToolCalls()
-agent-loop.ts:395-449  executeToolCallsSequential()
-agent-loop.ts:562-626  prepareToolCall()
-agent-loop.ts:628-663  executePreparedToolCall()
-agent-loop.ts:717-742  tool_execution_end and toolResult message events
-types.ts:403-418       AgentEvent
-ai/types.ts:303-311    ToolResultMessage
-```
-
 ## 对应关系
 
-| s04 | Pi |
+| s04 | Pi 0.79.1 |
 | --- | --- |
-| `runEventedToolLoop()` | `runAgentLoop()` / `runLoop()` 的最小工具路径 |
-| `streamAssistant()` | `streamAssistantResponse()` |
-| `AgentEvent` | Pi `AgentEvent` |
-| `executeToolCall()` | `executeToolCallsSequential()` 的教学版 |
-| `ToolResultMessage` | Pi `ToolResultMessage` |
-| `tool_execution_start/end` | Pi 工具执行生命周期事件 |
-| `message_start/end(toolResult)` | Pi 的 `emitToolResultMessage()` |
+| `runEventedToolLoop()` | `runAgentLoop()` / `runLoop()` 中的 Tool Call 主路径 |
+| s03 `collectAssistantStream()` | Pi `streamAssistantResponse()` 内消费的 Stream |
+| `AgentEvent` | Pi `AgentEvent` Union 的教学版子集 |
+| `message_update.providerEvent` | Pi Agent Event 中名为 `assistantMessageEvent` 的字段 |
+| `createRegistryToolRuntime().execute()` | `executeToolCalls()` 下的准备、校验与执行路径 |
+| `ToolExecutionContext.executeDefault()` | 包围默认执行的课程显式接口 |
+| `tool_execution_start/end` | Pi Tool Execution 生命周期 Event |
+| Tool Result `message_start/end` | Pi 的 Tool Result Message 发出过程 |
+| `turn_end` | 记录 Tool Result 后完成的 Pi Turn |
 
-## 本节暂时不做什么
+课程直接使用 Pi 的 `Message`、`AssistantMessageEvent`、`ToolCall` 和 `ToolResultMessage` 类型。外层 `AgentEvent` 是课程本地类型，因为本课正在重建 Agent Runtime 层。
 
-s04 只做顺序执行。真实 Pi 还包含：
+## Event 由哪一层拥有
+
+两组 Event 分别属于不同层：
 
 ```text
-user / prompt message：Pi 的 runAgentLoop() 接收 prompts，并在首个 turn 里
-  为 prompt 发 message_start/end；s04 的循环从空上下文起跑，真实 provider
-  不可能这样开始
-parallel 工具执行
-per-tool executionMode
-TypeBox 参数验证
-prepareArguments
-AbortSignal
-tool_execution_update
-beforeToolCall / afterToolCall
-terminate=true 提前停止后续 provider turn
-steering / follow-up message queue
-maxTurns：mini 用 maxTurns=4 兜底；Pi 靠 hasMoreToolCalls 自然收敛，没有这个上限
+pi-ai
+  start, text_*, thinking_*, toolcall_*, done, error
+
+pi-agent-core
+  agent_*, turn_*, message_*, tool_execution_*
 ```
 
-还有一个改名要注意：mini 的 `message_update` 事件带的字段叫 `providerEvent`，Pi 里同位置的字段叫 `assistantMessageEvent`（`agent/src/types.ts:413`）。
+s04 把第一组保存在 `message_update` 中，再围绕完整 Loop 发出第二组。这样可以复现源码边界，而不是把所有 Event 压成一组互不相关的字符串。
 
-这些会在后面拆开讲。s04 只回答一个问题：assistant 发出 toolCall 以后，结果如何回到 messages。
+## s04 做了哪些简化
+
+课程按顺序执行 Tool Call，并保持它们在 Assistant Message 中的顺序。Pi 还支持每个 Tool 的 Execution Mode、并行执行、Tool 进度更新、参数准备、Abort Signal、Steering Message 和 Follow-up Queue。
+
+课程加入八个 Turn 的兜底上限；Pi 则根据 Tool Call 与 Queue State 决定是否继续。课程把 User Message 保存在 State 与 `agent_start.prompt` 中，而 Pi 的完整 Event Sequence 还可以为 Prompt Message 发出生命周期 Event。
+
+`ToolCallExecutor` 和 `executeDefault()` 是课程为了在 s05 加入 Hook 而设计的小型接口。它们对应 Pi 内部的准备与收尾边界，不是 Pi 中同名类型的复制。
 
 ## 建议读法
 
-先从 [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts) 的 `agentLoop()`（31 行）和 `runAgentLoop()`（95 行）进入，再落到 192-218 行——这一段是 `runLoop()` 里工具循环的主体。
-
-然后看 275-367 行。这里把 `pi-ai` 的 provider events 转成 agent events。
-
-最后看 395-449 行和 717-742 行。那里能看到 Pi 如何执行工具，发出 `tool_execution_end`，再把执行结果包装成 `toolResult` message。
+1. 先看 [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts) 中的 `AgentEvent`。
+2. 从 [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts) 的 `runAgentLoop()` 与 `runLoop()` 进入。
+3. 继续跟踪 `streamAssistantResponse()`，观察 Provider Event 如何转换成 Message 生命周期 Event。
+4. 沿 `executeToolCalls()` 追踪顺序执行与 Tool Result 发出过程。
+5. 看到 `beforeToolCall` 与 `afterToolCall` 边界时停下，下一课会展开它们。

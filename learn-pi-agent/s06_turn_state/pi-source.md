@@ -1,66 +1,56 @@
-# Pi Source Map for s06
+# s06 against the Pi 0.79.1 source
 
-s06 corresponds to `AgentHarness.createTurnState()`.
+s06 joins Pi's `AgentMessage` boundary to the Harness turn snapshot.
 
 ```text
-session + resources + tools + model + stream options
-  -> turn state
-  -> createContext()
-  -> runAgentLoop()
+Session.buildContext()
+  -> AgentHarnessTurnState
+  -> transformContext(AgentMessage[])
+  -> convertToLlm(Message[])
+  -> provider
 ```
 
-## Files
+## Corresponding files
 
+- [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts)
+- [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts)
 - [`packages/agent/src/harness/agent-harness.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/agent-harness.ts)
 - [`packages/agent/src/harness/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/types.ts)
+- [`packages/coding-agent/src/core/messages.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/messages.ts)
 
-Specific anchors:
+## The mapping
 
-```text
-agent-harness.ts:158-172  AgentHarnessTurnState
-agent-harness.ts:200-222  constructor stores tools/resources/options
-agent-harness.ts:331-362  createTurnState()
-agent-harness.ts:365-373  createContext()
-agent-harness.ts:377-404  createStreamFn() uses streamOptions/sessionId
-harness/types.ts:46-78    Skill / PromptTemplate / AgentHarnessResources
-harness/types.ts:80-96    AgentHarnessStreamOptions
-harness/types.ts:798-831  AgentHarnessOptions
-```
-
-## Mapping
-
-| s06 | Pi |
+| s06 | Pi 0.79.1 |
 | --- | --- |
-| `MiniHarness.createTurnState()` | `AgentHarness.createTurnState()` |
-| `MiniSession.buildContext()` | `Session.buildContext()` |
-| `MiniSession.getMetadata()` | `Session.getMetadata()` |
-| `resources` | `AgentHarnessResources` |
-| `streamOptions` | `AgentHarnessStreamOptions` |
-| `systemPrompt` function | `AgentHarnessOptions.systemPrompt` callback |
-| `activeToolNames` | `AgentHarness.activeToolNames` |
-| `activeTools` | the tools handed to the model this turn |
+| `AgentMessage` | core `AgentMessage` plus coding-agent custom-message augmentation |
+| four harness-only Message roles | `BashExecutionMessage`, `CustomMessage`, `BranchSummaryMessage`, `CompactionSummaryMessage` |
+| `convertToLlm()` | coding-agent `convertToLlm()` |
+| `TransformContext` | `AgentLoopConfig.transformContext` |
+| `createMiniHarness().createTurnState()` | `AgentHarness.createTurnState()` |
+| `TurnState.activeTools` | the active Tools copied into `AgentContext.tools` |
+| `runHarnessTurn()` | Harness state feeding the core Agent Loop |
 
-## What s06 doesn't do yet
+Pi's `streamAssistantResponse()` applies `transformContext` to `AgentMessage[]` first, calls `convertToLlm()` second, and only then builds the provider `Context`. The course preserves that boundary.
 
-s06 does not implement any of this:
+## Message conversion
 
-```text
-real Session storage
-JSONL entry tree
-compaction
-resources discovery / reload
-before_agent_start hook
-before_provider_request hook
-provider payload patch
-auth headers merge
-```
+Pi's coding-agent `messages.ts` defines the same four extra roles reconstructed by the lesson. Standard User, Assistant, and Tool Result Messages pass through. Bash and Custom records become User Messages, and Branch or Compaction Summaries become prefixed User Messages.
 
-Each of these gets its own section later. s06 answers one question only: before a turn starts, what does Pi snapshot?
+The course keeps the same semantic split but uses shorter summary wrappers. It also deep-clones converted values so the teaching snapshot is easy to test.
 
-## Suggested reading path
+## Turn snapshot and persistence
 
-Start with lines 331-362 of [`packages/agent/src/harness/agent-harness.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/agent-harness.ts). That's `createTurnState()`.
+Pi's `AgentHarnessTurnState` contains Messages, Resources, Stream Options, Session ID, System Prompt, Model, Tools, Active Tools, and `thinkingLevel`. s06 omits only `thinkingLevel` from that snapshot shape.
 
-Then lines 365-373. `createContext()` pulls the three things the provider actually needs out of the turn state: systemPrompt, messages, activeTools.
+`runHarnessTurn()` is course composition rather than a copied Pi function. It connects the snapshot to the s05 Loop and persists each `message_end` value through the Session sink. The important shared ownership rule is that the Harness prepares state while the Agent Loop owns model and Tool progression.
 
-Finish with `AgentHarnessOptions` in `harness/types.ts`. It shows where each of these fields is passed in from.
+## Course scope
+
+s06 intentionally leaves out steering and follow-up queues, abort handling, provider-request Hooks, API-key refresh, retry policy, and automatic compaction. It does not replace the Provider with a scripted response: the lesson CLI still loads a real `pi-ai` Model and can continue through `read_file` Tool Results.
+
+## Suggested reading order
+
+1. Read the custom Message declarations and `convertToLlm()` in coding-agent `messages.ts`.
+2. Read `streamAssistantResponse()` in `agent-loop.ts` for the transformation order.
+3. Read `AgentHarnessTurnState`, `createTurnState()`, and `createContext()` in `agent-harness.ts`.
+4. Compare those boundaries with `AgentMessage`, `createLlmContext()`, and `runHarnessTurn()` in this lesson.

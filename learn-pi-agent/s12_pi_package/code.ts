@@ -1,4 +1,24 @@
-import { basename, dirname, extname, isAbsolute, normalize, posix as pathPosix, relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, extname, isAbsolute, join, normalize, posix as pathPosix, relative, resolve, sep } from "node:path";
+
+import { createCourseToolRegistry } from "../s02_tool_schema/code.ts";
+import { createSessionTree } from "../s07_session_tree/code.ts";
+import {
+  createFileSystemResourceSource,
+  formatPromptTemplateInvocation,
+  loadContextResources,
+  type ContextPromptTemplate,
+} from "../s08_context_resources/code.ts";
+import { loadMiniExtensions, type MiniExtensionSource } from "../s09_extension_runtime/code.ts";
+import {
+  createMiniCoreRuntime,
+  runPrintMode,
+  type MiniCoreRuntime,
+  type MiniCoreRuntimeOptions,
+  type MiniRunResult,
+} from "../s10_runtime_modes/code.ts";
+import { isMainModule, runPromptCli } from "../shared/cli.ts";
+import { loadCourseModel } from "../shared/model.ts";
 
 import { parseGitSource, parseNpmName } from "./source-parsing.ts";
 
@@ -47,6 +67,29 @@ export type ResolvePiPackagesOptions = {
   projectTrusted: boolean;
   cwd?: string;
   agentDir?: string;
+};
+
+export type PackageRuntimeSelection = {
+  extensionPaths: string[];
+  skillPaths: string[];
+  promptPaths: string[];
+  themePaths: string[];
+};
+
+export type CreatePackageRuntimeOptions = ResolvePiPackagesOptions & {
+  extensionSources: MiniExtensionSource[];
+  additionalExtensionSources?: MiniExtensionSource[];
+  additionalSkillPaths?: string[];
+  additionalPromptPaths?: string[];
+  runtimeOptions: Omit<MiniCoreRuntimeOptions, "runner">;
+};
+
+export type PackageRuntime = {
+  resources: ResolvedPackageResources;
+  selection: PackageRuntimeSelection;
+  promptTemplates: ContextPromptTemplate[];
+  runtime: MiniCoreRuntime;
+  invokePromptTemplate(name: string, args?: string[]): Promise<MiniRunResult>;
 };
 
 const RESOURCE_TYPES: ResourceType[] = ["extensions", "skills", "prompts", "themes"];
@@ -120,6 +163,62 @@ export function summarizeResolvedResources(resources: ResolvedPackageResources):
     skills: getEnabledPaths(resources.skills),
     prompts: getEnabledPaths(resources.prompts),
     themes: getEnabledPaths(resources.themes),
+  };
+}
+
+export async function createPackageRuntime(options: CreatePackageRuntimeOptions): Promise<PackageRuntime> {
+  const resources = resolvePiPackages(options);
+  const selection: PackageRuntimeSelection = {
+    extensionPaths: getEnabledPaths(resources.extensions),
+    skillPaths: getEnabledPaths(resources.skills),
+    promptPaths: getEnabledPaths(resources.prompts),
+    themePaths: getEnabledPaths(resources.themes),
+  };
+  const extensionByPath = new Map(
+    options.extensionSources.map((source) => [normalizePath(source.path), source] as const),
+  );
+  const selectedExtensions = selection.extensionPaths.map((path) => {
+    const source = extensionByPath.get(normalizePath(path));
+    if (!source) throw new Error(`Missing extension factory for resolved package path: ${path}`);
+    return source;
+  });
+  const promptPaths = unique([
+    ...(options.additionalPromptPaths ?? []),
+    ...selection.promptPaths,
+  ]);
+  const runner = await loadMiniExtensions([
+    ...(options.additionalExtensionSources ?? []),
+    ...selectedExtensions,
+  ]);
+  const promptTemplates = (await loadContextResources({
+    source: options.runtimeOptions.source,
+    cwd: options.runtimeOptions.cwd,
+    agentDir: options.runtimeOptions.agentDir,
+    promptTemplateFiles: promptPaths,
+  })).promptTemplates;
+  const runtime = await createMiniCoreRuntime({
+    ...options.runtimeOptions,
+    runner,
+    skillFiles: unique([
+      ...(options.runtimeOptions.skillFiles ?? []),
+      ...(options.additionalSkillPaths ?? []),
+      ...selection.skillPaths,
+    ]),
+    promptTemplateFiles: unique([
+      ...(options.runtimeOptions.promptTemplateFiles ?? []),
+      ...promptPaths,
+    ]),
+  });
+  return {
+    resources,
+    selection,
+    promptTemplates: promptTemplates.map((template) => structuredClone(template)),
+    runtime,
+    invokePromptTemplate(name, args = []) {
+      const template = promptTemplates.find((candidate) => candidate.name === name);
+      if (!template) throw new Error(`Unknown prompt template: ${name}`);
+      return runtime.prompt(formatPromptTemplateInvocation(template, args));
+    },
   };
 }
 
@@ -581,34 +680,36 @@ function toPosix(path: string): string {
   return path.split(sep).join("/");
 }
 
-async function demo(): Promise<void> {
-  const files = {
-    "/packages/review/package.json": JSON.stringify(
-      createPackageManifest("review-pack", {
-        extensions: ["extensions"],
-        skills: ["skills"],
-        prompts: ["prompts/review.md"],
-        themes: ["themes"],
-      }),
-    ),
-    "/packages/review/extensions/review.ts": "export default function review() {}",
-    "/packages/review/skills/review/SKILL.md": "# Review skill",
-    "/packages/review/prompts/review.md": "Review this diff.",
-    "/packages/review/themes/review.json": "{}",
-  };
-  const resolved = resolvePiPackages({
-    files,
-    userPackages: ["/packages/review"],
-    projectPackages: [],
-    projectTrusted: true,
-  });
-
-  console.log(`Extensions: ${getEnabledPaths(resolved.extensions).length}`);
-  console.log(`Skills: ${getEnabledPaths(resolved.skills).length}`);
-  console.log(`Prompts: ${getEnabledPaths(resolved.prompts).length}`);
-  console.log(`Themes: ${getEnabledPaths(resolved.themes).length}`);
+function unique(paths: string[]): string[] {
+  return [...new Set(paths)];
 }
 
-if (process.argv.includes("--demo")) {
-  await demo();
+async function runLiveCli(): Promise<void> {
+  const courseModel = loadCourseModel();
+  const cwd = process.cwd();
+  const agentDir = process.env.PI_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  const prepared = await createPackageRuntime({
+    files: {},
+    userPackages: [],
+    projectPackages: [],
+    projectTrusted: true,
+    cwd,
+    agentDir,
+    extensionSources: [],
+    runtimeOptions: {
+      source: createFileSystemResourceSource(),
+      cwd,
+      agentDir,
+      session: createSessionTree({ cwd }),
+      model: courseModel.model,
+      registry: createCourseToolRegistry(cwd),
+      activeToolNames: ["read_file"],
+      streamOptions: courseModel.streamOptions,
+    },
+  });
+  await runPromptCli("s12 Pi Packages", (prompt) => runPrintMode(prepared.runtime, prompt));
+}
+
+if (isMainModule(import.meta.url)) {
+  await runLiveCli();
 }

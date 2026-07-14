@@ -1,12 +1,13 @@
-# s10 的 Pi 源码对照
+# s10 的 Pi 0.79.1 源码对照
 
-s10 对应 Pi 的运行模式层。
+s10 把四种访问 Shell 接到同一个累计 Agent Session Runtime。
 
 ```text
-create AgentSessionRuntime
-  -> app mode dispatch
-  -> interactive / print / json / rpc / sdk
-  -> same AgentSession and event stream
+AgentSessionRuntime
+  -> Interactive
+  -> Print: text or JSON
+  -> RPC
+  -> SDK AgentSession API
 ```
 
 ## 对应文件
@@ -14,89 +15,69 @@ create AgentSessionRuntime
 - [`packages/coding-agent/src/main.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/main.ts)
 - [`packages/coding-agent/src/core/agent-session-runtime.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session-runtime.ts)
 - [`packages/coding-agent/src/core/sdk.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/sdk.ts)
+- [`packages/coding-agent/src/modes/interactive/interactive-mode.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/modes/interactive/interactive-mode.ts)
 - [`packages/coding-agent/src/modes/print-mode.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/modes/print-mode.ts)
 - [`packages/coding-agent/src/modes/rpc/rpc-mode.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/modes/rpc/rpc-mode.ts)
 - [`packages/coding-agent/docs/json.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/json.md)
 - [`packages/coding-agent/docs/rpc.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/rpc.md)
 - [`packages/coding-agent/docs/sdk.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/sdk.md)
 
-具体锚点：
-
-```text
-README.md:20-24                  Pi 的定位和四种运行模式
-README.md:536-539                CLI mode 表
-main.ts:98-109                   resolveAppMode()
-main.ts:577-705                  createRuntime 并创建 AgentSessionRuntime
-main.ts:767-804                  appMode 分发到 rpc / interactive / print-json
-agent-session-runtime.ts:67-74   AgentSessionRuntime 持有当前 session 和 cwd-bound services
-agent-session-runtime.ts:400-424 createAgentSessionRuntime()
-print-mode.ts:32-45              runPrintMode() 接收 AgentSessionRuntime
-print-mode.ts:71-108             print/json mode 重新绑定 session 并订阅事件
-print-mode.ts:111-127            调用 session.prompt()
-print-mode.ts:129-145            text mode 输出最后 assistant 文本
-rpc-mode.ts:312-360              RPC mode 绑定 extension UI context 并订阅 session events
-rpc-mode.ts:390-411              prompt command 调用 session.prompt()
-rpc-mode.ts:442-457              get_state 从同一个 session 取状态
-sdk.ts:166-184                   createAgentSession() 创建 session 所需的基础对象
-docs/sdk.md:16-38                SDK quick start：subscribe + prompt
-docs/sdk.md:70-118               AgentSession API 形状
-```
-
 ## 对应关系
 
-| s10 | Pi |
+| s10 | Pi 0.79.1 |
 | --- | --- |
-| `MiniCoreRuntime` | `AgentSession` + `AgentSessionRuntime` 的最小合体 |
-| `MiniCoreRuntime.prompt()` | `AgentSession.prompt()` |
-| `MiniRuntimeEvent` | `AgentSessionEvent` / `AgentEvent` |
-| `runPrintMode()` | `modes/print-mode.ts` 的 text 分支 |
-| `runJsonMode()` | `modes/print-mode.ts` 的 json 分支 |
-| `runRpcMode()` | `modes/rpc/rpc-mode.ts` |
-| `createSdkSession()` | `createAgentSession()` 后直接使用 `session` |
-| `runInteractiveMode()` | `InteractiveMode.run()` 的极简影子 |
+| `MiniCoreRuntime` | Shared Agent Session Runtime 的教学 Facade |
+| 一份外部提供的 Session | `AgentSessionRuntime` 持有的 Current Session |
+| Async `createMiniCoreRuntime()` | 从既有 Metadata 与 Context 构造 Session Host |
+| 单调 `promptCount` | 不随 Active Context 缩短的课程 Attempt State |
+| `getPrompts()` / `getRuns()` | 本 Host 提交的 Attempt / 成功 Result Snapshot |
+| `runInteractiveMode()` | `InteractiveMode` |
+| `runPrintMode()` | `runPrintMode()` 的 Text 分支 |
+| `runJsonMode()` | `runPrintMode()` 的 JSON 分支 |
+| `runRpcMode()` | RPC Mode 的 Command/Response Core |
+| `createSdkSession()` | `createAgentSession()` 创建的直接 Agent Session API |
+| `MiniRuntime.getState()` | 向 Shell 暴露的教学版 Session State 子集 |
+| `MiniRuntime.subscribe()` | Live Agent Session Event Subscription |
+| 捕获的 `AgentEvent[]` | 既有 Event Protocol 的 Per-run Snapshot |
 
-## 本节采用的简化
+## 同一个 Runtime 与 Session
 
-真实 Pi 的 runtime modes 多了很多工程细节：
+Pi 的 `main.ts` 会在解析 App Mode 后，使用同一组 Service 与 Runtime Factory 构造 Current Agent Session。Interactive、Print/JSON 与 RPC 接收 Shared Runtime Host，而不会各自创建 Agent Loop。
 
-```text
-真实 stdin/stdout JSONL framing
-TUI editor 和快捷键
-extension UI context
-session replacement 后重新订阅事件
-stdout backpressure
-signal cleanup
-model / thinking level / scoped model 控制
-steer、follow_up、abort、fork、switch_session 等 RPC 命令
-RPC prompt accepted response 与后续事件流分离
-```
+SDK 是 Programmatic Entry：`createAgentSession()` 在没有 CLI Presentation Layer 的情况下构造同类 Model、Session Manager、Resource Loader、Tool 与 Extension。s10 把四种访问方式放到一个小型 `MiniRuntime` Interface 后，直接验证它们共享 State。
 
-s10 没有实现这些。它只保留一个不变量：
+课程 Factory 会先读取 Session Metadata 与 Active Context，因此 Resumed Message 在 Prompt 前就可见。`turns` 是教学 Host 的单调 Prompt-attempt Count，并根据已有 User Message 初始化。即使 Branch Navigation 或 Compaction 让 Active Context 变短，Run ID 仍使用该 Counter。失败 Attempt 会留在 `getPrompts()`，但只有产生 Result 才会进入 `getRuns()`。
 
-```text
-mode shell 不拥有独立 agent 状态
-```
+## Shell 行为
 
-事件词表也做了简化：mini 用 `session / agent_start / message / agent_end` 四种事件。其中 `message` 在 Pi 里并不存在（Pi 是 `message_start / message_update / message_end`），`session` 对应的是 JSON mode 先写出的 session header（`print-mode.ts:112-117`），不是事件。s13 会把这些外壳接回 s04/s05 那套真正的事件流。
+Pi 的 Print Mode 有两种输出分支。Text 在 Prompt 后读取 Final Assistant Message；JSON 会订阅 Session，再写出 Session Header 与 Event。RPC 订阅同一 Session，并把 `prompt`、`get_state` 等 JSON Command 转换为操作。
 
-只要这个不变量成立，外壳就可以增减。print 可以短，interactive 可以复杂，RPC 可以机器友好，SDK 可以嵌入应用。它们共享的是同一份 session/runtime。
+课程把 Print Text 与 JSON 暴露为两个 Helper，RPC Command Table 只保留 `prompt` 与 `get_state`。Interactive 返回 Transcript，不实现 Pi 的 Terminal UI。SDK Wrapper 会把 `subscribe()` 委托给 Core，因此 Callback 会在 `prompt()` 仍在运行时收到 Event。
 
-## 和前几节的关系
+课程 RPC 会等待完整 Prompt。Rejection 会变成可关联的 `success: false` Response；在此之前，Core 会尝试刷新失败 Turn 已经持久化的 Session Message。Pi RPC 则在 Preflight 后发出权威 Prompt Response，让 Session Event 独立继续。
+
+## Event Timing 差异
+
+两个面向机器的 Helper 仍保留了更简单的 Timing：
 
 ```text
-s03 Provider Events      JSON mode 输出事件
-s06 Turn State           runtime 一轮 prompt 时使用同一份状态快照
-s07 Session Tree         runtime 负责当前 session 的延续和切换
-s08 Context Resources    runtime 创建时加载 cwd 相关资源
-s09 Extension Runtime    每种 mode 都要按自己的 UI 能力绑定 extension
+course JSON: await prompt -> serialize captured Events
+course SDK:  subscribe -> receive live Events while prompt runs
+course RPC:  await prompt -> return full Run result or failure response
 ```
 
-这也是 Pi 的一个重要设计点：外壳可以不同，核心状态和事件协议尽量一致。
+课程 SDK 现在与 Pi 的 Live Agent Session Subscription 一致。课程 JSON Helper 仍会在完成后序列化，而 Pi 的 Print JSON 分支会在 Prompt 前订阅。课程 RPC `prompt` 会等待完整 Run Result 或捕获 Rejection；Pi RPC 在 Prompt Preflight 成功后确认 Command，而 Session Event 会独立继续。
+
+## 课程范围
+
+真实 Runtime 还支持 Session Replacement、Resume、Fork、Tree Navigation、Steering、Follow-up、Abort、Model 与 Thinking-level Change、Extension UI Binding、Signal Handling、Output Backpressure，以及更多 RPC Command。
+
+s10 保留真实的 s09 Model-Tool Path 与 Session Persistence，但把 Presentation 缩小为四类 Shell 和一个小型累计 State Object。Prompt-attempt Counter 与 Successful-only Run Snapshot 是课程 Observability Field，不是 Pi 完整 Session State Model 的复制。它没有引入第二套 Agent Core。
 
 ## 建议读法
 
-先看 `main.ts` 的 `resolveAppMode()` 和最终分发逻辑。这里能看到 CLI 参数只决定入口形态，不决定另起一套 agent。
-
-再看 `print-mode.ts`。text 和 JSON 在同一个函数里，差别主要是 text 取最后回答，JSON 订阅事件并逐行输出。
-
-最后看 `rpc-mode.ts` 和 `docs/sdk.md`。RPC 适合非 Node 进程或跨进程集成，SDK 适合 TypeScript 程序直接嵌入。两者目的接近，边界不同。
+1. 先看 `main.ts` 的 `resolveAppMode()` 与最终 Dispatch。
+2. 阅读 `runPrintMode()`，对比 Text 与 JSON 分支。
+3. 沿 RPC 的 `rebindSession()`、Session Subscription、`prompt` 与 `get_state` 阅读。
+4. 查看 `sdk.ts` 的 `createAgentSession()`。
+5. 最后与 `MiniCoreRuntime` 和课程四类 Shell 对照。

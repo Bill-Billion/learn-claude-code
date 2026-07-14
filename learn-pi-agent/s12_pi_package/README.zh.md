@@ -1,172 +1,161 @@
-# 第12课 Pi包——只是分发单元，不增加任何新机制
+# 第 12 课 · Pi Package
 
-[English](README.md) · 中文 · [日本語](README.ja.md)
+[课程首页](../README.zh.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s11](../s11_trust_execution_env/README.zh.md) · [目录](../README.zh.md) · [s13 →](../s13_integrated_harness/README.zh.md)
+> 在 Pi 中的位置：Resource 加载前，把已配置 Package Source 解析成 Enabled Extension、Skill、Prompt Template 与 Theme 的 Resolver。
 
-你写了一套很好用的代码评审工作流，包含一个扩展、一个skill、一个prompt模板、一个主题，自己用着很舒服，想发给同事用。
-现在的问题是：这四个文件散在四个不同的目录里，总不能让同事手动往四个目录各复制一个文件吧？我们需要一个打包分发的机制。
-
-很多人第一反应是：简单，约定extensions/下放扩展、skills/下放skill，只要是包里这四个目录下的文件，全部加载不就行了？
-这个思路几行代码就能写完，但用起来会非常难受。
-
----
-
-## 先搞懂：按目录全加载为什么不行？
-
-第一，**作者说了不算**。扩展旁边的工具函数、没写完的草稿、测试文件，只要放在约定目录里，就会被加载进别人的会话——作者根本没法控制哪些是对外发布的成品，哪些是内部实现细节。
-第二，**装的人说了不算**。包里有十个prompt，我只想要其中两个，按目录全加载就是全有或全无，用户一点选择余地都没有。
-第三，**优先级说不清**。项目里装了一个包，用户全局也装了同名的包，听谁的？按目录加载回答不了这个问题。
-
-所以包的核心问题不是"怎么把文件装进来"，而是**权力划分**：包作者能决定什么、安装者能决定什么、默认规则是什么，三者的边界要划清楚。
-
-这个逻辑和收快递一模一样：
-- 包就是个快递箱，package.json里的pi字段就是装箱单，作者列了什么才给你发什么，没列的不发
-- 你收快递的时候，可以在装箱单上划掉不要的，但你不能让快递员给你装箱单上没有的东西
-- 只有箱子上连装箱单都没贴的时候，快递员才按默认规矩：四个房间（extensions/skills/prompts/themes）的东西各归各位
-
-Pi的包机制就是这么简单，它**不增加任何新的运行时能力**，只是个分发单元，解析完了还是我们前面讲过的四类资源：扩展、skill、prompt、主题，该怎么加载怎么加载，没有任何特殊待遇。
-
----
-
-## 第一层权力：包作者的装箱单是权威边界
-
-包作者在package.json里加个pi字段，就是贴了装箱单，这是最高优先级的权威边界：
-```json
-{
-  "name": "my-review-pack",
-  "pi": {
-    "extensions": ["./extensions/review.ts"],
-    "skills": ["./skills/review"],
-    "prompts": ["./prompts/review.md"],
-    "themes": ["./themes/review.json"]
-  }
-}
+```text
+package entries + installed file map + projectTrusted
+  -> resolvePiPackages()
+  -> enabled paths
+       +-> Extension path -> explicit factory -> Extension runner
+       +-> Skill path -------------------------> Context Resources
+       +-> Prompt path ------------------------> explicit invocation catalog
+       +-> Theme path -------------------------> selection only in s12
+  -> the same MiniCoreRuntime
 ```
 
-这里有个90%的人会踩的坑：**只要你写了pi字段，它就管全部四类资源，没列的类型就是不导出，不会回退到默认目录**。
-比如你pi字段里只写了extensions，没写skills，那这个包的skill就一个都不会导出，不会自动去扫skills/目录。你pi字段里prompts只列了review.md，那同目录下的draft.md就不会导出，哪怕它确实在prompts目录下。
-只有整个pi字段都不写，才会回退到默认规则：扫四个约定目录下的所有文件。
+## 先搞懂：Package 解决的是分发，不是新的 Agent 机制
 
-记住：装箱单贴了，就全部按单子来，单子上没写的，哪怕就在箱子里也不给你。别想当然以为"没写就是默认"，不是的，没写就是没有。
+到 s11 为止，Harness 已能从已知 Path 加载 Extension、Skill 与 Prompt Template。若要分享一套 Workflow，还需要一个分发 Contract：给定一个 Package Source，哪些文件算 Resource，哪些被禁用，同一个 Package 同时出现在两个 Scope 时谁获胜？
 
-另外extension还有个特殊规则：不是目录下所有ts文件都是扩展入口。只有这三种才算：
-1. extensions目录下的顶层ts/js文件
-2. 子目录下有index.ts/index.js的，算一个扩展
-3. manifest里显式列出的入口文件
-被入口文件import的helper工具函数，不会被当成独立扩展加载——就像家具是整件搬的，不会把螺丝、木板单独算一件家具。
+Package 不会创造新的 Agent 机制。它只是在已有 Resource Loader 与 Extension Runtime 看到文件之前，完成 Resource Path 的选择与分组。难点在于不要混淆三种权力：
 
----
+| 权力来源 | 决定什么 |
+| --- | --- |
+| Package Author | `pi` Manifest 导出的 Resource |
+| Directory Convention | Manifest 规则允许时的 Fallback Discovery |
+| Installer Configuration | Candidate 中哪些 Resource 保持 Enabled |
 
-## 第二层权力：安装者的filter只能往小了筛
+这是选择权，不是文件系统或执行安全边界。Manifest Entry 可以解析到 Package Directory 之外，选中的 Extension 仍拥有 Host Process 的权限。
 
-用户安装包的时候，可以写filter来筛选要启用的资源，但是记住一条铁律：**filter只能把作者导出的资源越筛越小，绝对不能加作者没导出的东西**。
+## 思路：先解析 Path，再激活 Resource
 
-filter支持这几种写法：
-- 省略这个类型的key：走默认，作者导出什么用什么
-- 写`[]`：这个类型的资源一个都不要，全关
-- 写普通glob模式：只启用匹配的
-- 写`!模式`：排除匹配的
-- 写`+路径`：强制启用某个精确路径
-- 写`-路径`：强制禁用某个精确路径
+s12 把 Package Resolution 与 Runtime Activation 分开。
 
-很多人以为+号可以加作者没导出的文件，错了。+号只能在作者已经导出的集合里强制启用某个被其他规则排除的文件，作者没导出的文件，你写+号也没用——装箱单上没有的东西，快递员不会给你变出来。
+`resolvePiPackages()` 接收规范化 File Map、User/Project Package Entry、Project Trust Decision，以及 Host 已放置好 Package Source 的 Root，返回四组 `ResolvedResource`。每个 Object 都保留 Path、Scope Metadata、Source 与 `enabled` Flag。
 
-举个例子：作者只导出了review.md，没导出draft.md，你filter里写`+prompts/draft.md`也没用，draft.md不会被加载，因为作者根本就没把它放进箱子里。
+`createPackageRuntime()` 只激活 Enabled Resource：
 
-被filter关掉的资源不会消失，只是标记为enabled: false，上层可以看到"这个资源存在但是被用户关掉了"，不是"不存在"。
+| Resource | s12 如何处理 |
+| --- | --- |
+| Extension | 要求存在匹配的显式 `MiniExtensionSource` Factory，再载入 Extension Runner |
+| Skill | 把 Path 加入真实 Context Resource Turn |
+| Prompt | 加载 Catalog Metadata，只在调用 `invokePromptTemplate()` 时展开 Template |
+| Theme | 在 `selection.themePaths` 中报告 Enabled Path；本课没有 TUI 应用它 |
 
----
-
-## 第三层：默认目录约定，只在没有装箱单的时候生效
-
-如果整个包根本没有pi字段，连装箱单都没贴，这时候才会按默认目录来：
-- extensions/下的合法入口算扩展
-- skills/下的目录算skill
-- prompts/下的md文件算prompt模板
-- themes/下的json文件算主题
-
-这是兜底规则，只要有pi字段，这条规则就不生效。
-
----
-
-## 两个额外规则
-
-### 项目包要先过信任门
-项目本地安装的包，和项目自己的扩展、配置一样，要先过s11讲的trust门——用户不信任这个项目，项目里的包也不会加载。用户全局安装的包不受这个影响，因为是用户自己主动装的。
-
-### 作用域优先级：近的覆盖远的
-包分三个作用域：项目包（项目里的）、用户包（用户目录装的）、全局包。如果有同名的包，优先级是项目 > 用户 > 全局，近的覆盖远的。
-这样项目可以固定自己用的工作流版本，不会被用户全局装的同名包覆盖。
-
----
+只有 `projectTrusted` 为 true 时，Project Package 才进入 Resolution。同一 npm 或 Git Identity 同时出现时，Project Entry 会覆盖 User Entry。
 
 ## 先跑起来看看
 
-```sh
-npm run session:s12
+配置好课程 `.env` 后，从 `learn-pi-agent/` 运行：
+
+```bash
+npm run s12 -- "使用 read_file 检查 package.json，并总结本课依赖。"
 ```
 
-输出长这样：
-```text
-Extensions: 1
-Skills: 1
-Prompts: 1
-Themes: 1
+本节不安装 Package，只讲已经存在的 Package Resource 如何解析并配置真实 Runtime。CLI 传入空 Package List 与空 File Map，同时运行前面课程中的真实 Model、Session Tree、Extension Turn 与 Tool Loop。
+
+要观察 Package 行为，先使用 Host 已经拥有的 File Map 与 Package Entry 调用 `resolvePiPackages()`，再把同一组输入交给 `createPackageRuntime()`。返回的 `selection` 会展示哪些 Resource Path 被启用，Runtime 与 Session 则会展示这些 Resource 如何影响 Turn。
+
+## 代码怎么写的
+
+### 1. 解析 Package Source 与 Scope
+
+`resolvePackageSourcePath()` 会把配置 Source 映射到 Host 已经放好文件的位置：
+
+| Source | User Scope | Project Scope |
+| --- | --- | --- |
+| `npm:name` | `~/.pi/agent/npm/node_modules/name` | `.pi/npm/node_modules/name` |
+| Git Source | `~/.pi/agent/git/host/path` | `.pi/git/host/path` |
+| Relative Local Path | 相对 Agent Directory | 相对项目 `.pi/` |
+| Absolute Local File | 文件本身 | 文件本身 |
+
+Local File 会被视为单个 Extension；Directory 则继续执行 Package Rule。缺失 Root 会被跳过，因为 s12 不执行 Install 或 Fetch。
+
+Project Package 先参与处理，随后才是 User Package。`dedupePackageEntries()` 会跨 Scope 识别 npm 与 Git Source，因此 Project 版本获胜；Local Identity 则保留 Scope。
+
+### 2. 合并 Manifest、Convention 与 Filter
+
+精确规则取决于 Package Entry 的形式。
+
+对 String Entry 而言，只要 `pi` Manifest 存在，它就是 Resource Selection 的权威：缺失或为空的 Key 不导出该类型 Resource；没有 Manifest 时，才使用 `extensions/`、`skills/`、`prompts/` 与 `themes/` Convention。
+
+对带 Installer Filter 的 Object Entry：
+
+- Filter Key 缺失时，使用已存在的 Manifest Key，包括空 Array；若 Manifest Key 不存在，则由 Convention 提供 Candidate；
+- Filter Key 存在时，非空 Manifest Key 提供 Candidate；缺失或为空的 Manifest Key 会先回退到 Convention，再执行 Filter；
+- Include 与 `!` Pattern 先选择或排除 Candidate，再按顺序执行精确的 `+` 与 `-` Override；
+- Force-include 只能重新启用已知 Candidate，无法凭空创建 Candidate Set 之外的 Path。
+
+Resolver 会在 Result 中保留 Disabled Candidate。Runtime Activation 前，以 `getEnabledPaths()` 作为边界。
+
+### 3. 发现 Extension Entry，再要求显式 Factory
+
+Extension Discovery 不会把每个嵌套 `.ts` 或 `.js` 文件都当成 Extension。它只接收 Top-level File、Child Directory 的 `index.ts`/`index.js`，或该 Child Directory Manifest 中显式声明的 Entry。被 Entry import 的 Helper 仍然只是 Helper。
+
+Resolution 产出的是 Path，不是可执行 Module。`createPackageRuntime()` 会把每个 `extensionSources[].path` 映射到 Factory。Enabled Package Extension 没有匹配 Factory 时，构造立即失败：
+
+```ts
+const source = extensionByPath.get(normalizePath(path));
+if (!source) {
+  throw new Error("Missing extension factory for resolved package path: " + path);
+}
 ```
 
-这是正常情况，作者manifest四个类型各列了一个，所以四个都是1。
-这节课的内容全在"什么情况下它们不是1"里。
+显式 Factory Map 是本课的 Host Contract：它让执行资格可见，但不是 Sandbox。s12 不会动态 import 任意 TypeScript。
 
----
+### 4. 把 Enabled Resource 接入真实 Turn
+
+完成选择后，`createPackageRuntime()` 会组合 s10 已有的同一个 Runtime：
+
+```ts
+const prepared = await createPackageRuntime({
+  files,
+  userPackages: ["/packages/review"],
+  projectPackages: [],
+  projectTrusted: true,
+  extensionSources: [{ path: extensionPath, factory: reviewExtension }],
+  runtimeOptions,
+});
+
+await runPrintMode(prepared.runtime, "审查这次修改");
+```
+
+Enabled Extension 会注册真实 Tool 与 Hook；Enabled Skill 通过 s08 进入 System Prompt；Enabled Prompt File 会成为 `prepared.promptTemplates` 中的 Catalog Entry，普通 Turn 不会把 Template Body 注入 System Prompt。只有 `prepared.invokePromptTemplate(name, args)` 才会调用 s08 的 `formatPromptTemplateInvocation()`，把展开后的文本作为该 Turn 的 User Prompt 提交。在正常 Turn 中，Model Context 会包含 Skill 与 Tool，Package Tool 可以运行，真实 AgentMessage Session 也会记录 Tool Call 与 Tool Result。
+
+Theme 仍是 Presentation Resource。Enabled Path 可以从 `selection.themePaths` 观察，但本课没有 Theme Renderer。
 
 ## 动手试一试
 
-### 实验1：加个没在装箱单上的文件
-在prompts目录下加个draft.md，重跑，你会发现Prompts还是1——装箱单上没列draft.md，它就不会被导出，哪怕就在目录里。
+1. 给 String Package 添加 `pi` Manifest，但省略 `prompts`。再加入 Conventional Prompt File，确认它不会被导出。
+2. 把同一 Source 改为带显式 Prompt Filter 的 Object Form，观察什么时候 Convention 会成为 Candidate Set，什么时候 Filter 会禁用 Path。
+3. 在 Child Extension 的 `index.ts` 旁加入 `helper.ts`。`discoverExtensionEntries()` 应只选择 Entry Point。
+4. 解析一个 Enabled Extension，却不把它加入 `extensionSources`。构造应失败，而不是偷偷 import。
+5. 通过 `prepared.runtime` 提交一次普通 Prompt，再检查 Model 的 Tool List、System Prompt 与 AgentMessage Session。Extension 与 Skill 应影响该 Turn；Prompt Body 必须保持缺席，直到 `invokePromptTemplate()` 把它作为 User Input 提交。Theme 仍只是一份 Selection Data。
+6. 把 `projectTrusted` 设为 false，确认 User Package 保留、Project Package 消失。
 
-### 实验2：删掉装箱单vs删掉装箱单里的某一项
-把整个pi字段删掉，重跑，你会发现Prompts变成2——没有装箱单，就按默认目录扫，draft.md也被加载了。
-再把pi字段加回来，但是删掉prompts那一行，重跑，你会发现Prompts变成0——有装箱单但是没列prompts，就是没有，不会回退到默认目录。
-体会一下这两个情况的区别，这是最容易踩的坑。
+## 接入课程主线
 
-### 实验3：用filter捞作者没导出的文件
-把包配置改成object形式，filter写`prompts: ["+prompts/draft.md"]`，重跑，你会发现Prompts还是0——作者没导出draft.md，你写+号也捞不出来，filter只能筛小不能加大。
+| 边界 | s11 | s12 |
+| --- | --- | --- |
+| Trust | 决定 Project Input 是否参与 | 对整组 Project Package 执行 Gate |
+| Resource Path | 直接 Project Path | 从 Package Source 中选择的 Path |
+| Extension | Trusted Direct Extension Path | Enabled Package Path 加显式 Factory |
+| Skill 与 Prompt | Trusted Direct Path | 加载 Enabled Path；Prompt Text 只在显式调用时进入 Turn |
+| Theme | 未使用 | 解析并报告，但不渲染 |
+| Core 与 Session | 一个真实累计 Runtime | 保持不变 |
 
-跑完三个实验，你应该能回答下面检查点的问题。改完可以用`npm run test:s12`确认没破坏行为约定。
+## 对照 Pi 源码
 
----
+Pi 0.79.1 使用相同 Resolver Model：npm、Git 与 Local Source 指向 Package Root；`package.json#pi` 与 Convention Directory 产生 Resource Candidate；Filter 决定 Enabled State；Project Trust 控制 Project Package；Project Scope 赢得重复 Identity；`ResourceLoader` 消费 Enabled Path。
 
-## 本节课打下的地基
+真实 Pi 还会安装与更新 Package、动态加载 Extension Module、解析所有受支持的 Resource Type、报告 Diagnostic，并在 UI 中应用 Theme。s12 假设 File Map 已填充，使用显式 Factory Map，并把 Theme 保留为 Selection Data。
 
-s12我们实现了包机制，但是没有加任何新的运行时能力：
+两种实现都没有把 Package Root 当作 Containment Boundary。Manifest Entry 是 Resource Selection Instruction，不是 Sandbox Rule。加载前应审查 Package Content；需要强隔离时，应使用外部 Container、VM、micro-VM、Remote Sandbox 或 OS Policy。
 
-| 这节课立的约定 | 后面会怎么用 |
-|----------------|--------------|
-| 包只是分发单元，解析完还是四类已有资源 | 所有已有的加载逻辑不用改，包只是多了个来源 |
-| 作者的manifest是权威边界，没列的不导出 | 作者可以控制哪些是对外发布的，内部文件不会泄露 |
-| filter只能筛小不能加大，+号也不能加未导出的内容 | 用户可以定制启用哪些资源，但不能突破作者的导出范围 |
-| 只有没有pi字段的时候才回退到默认目录 | 不要想当然以为没写的类型会自动加载 |
-| 项目包要过trust门，作用域近的覆盖远的 | 项目可以固定自己的依赖，不受全局包影响 |
+固定源码映射见 [pi-source.zh.md](pi-source.zh.md)。
 
-**本课引入的核心原语**：`resolvePiPackages` / `PackageManifest` / `PackageFilter`
+## 下一课
 
----
-
-## 检查点
-
-学完这节课，你应该能脱口回答这几个问题：
-- 为什么包不能按目录全加载？权力划分的三层分别是什么？
-- manifest里没写prompts字段，和整个manifest不存在，行为有什么区别？
-- filter的+号能不能加作者没导出的文件？为什么？
-
----
-
-## 本节课小结
-
-这节课我们其实只讲了一个核心道理：
-> 包只是分发的盒子，不是新的魔法。盒子里有什么作者说了算，你可以选择不要什么，但不能要盒子里没有的东西。
-
-到这里，前12节需要的零件已经齐了：Agent循环、工具、事件流、会话树、上下文资源、扩展、运行模式、信任边界和包分发。但是零件齐了不代表机器能转，我们还没有把它们接成一条完整的请求链路。s13 不再增加新机制，只复用前12节的公开接口，组成一个确定且可离线运行的 mini Pi；s14 再保留同一条链路，接入可选的 OpenAI-compatible 真实 Provider。
-
-进入下一课：[s13 集成线束 —— 把前面12节课的零件接成一条完整链路](../s13_integrated_harness/README.zh.md)
+[第 13 课 · Integrated Harness](../s13_integrated_harness/) 会把 Project Trust、Direct 与 Packaged Resource、Extension、真实 Model、AgentMessage Session 与全部 Runtime Shell 组合成一个 Host-facing API。

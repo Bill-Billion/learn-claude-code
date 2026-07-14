@@ -1,230 +1,153 @@
-import type { ToolDefinition } from "../s02_tool_schema/code.ts";
-import { createDemoToolRegistry, listToolDefinitions } from "../s02_tool_schema/code.ts";
+import {
+  stream as streamModel,
+  type Api,
+  type AssistantMessage as PiAssistantMessage,
+  type AssistantMessageEvent,
+  type Context,
+  type Model,
+  type ProviderStreamOptions,
+  type ToolCall as PiToolCall,
+  type ToolResultMessage,
+} from "@earendil-works/pi-ai";
 
-export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+import { isMainModule, runPromptCli } from "../shared/cli.ts";
+import { loadCourseModel } from "../shared/model.ts";
+import {
+  createInitialState,
+  createUserMessage,
+  type AgentState,
+} from "../s01_agent_loop/code.ts";
+import {
+  createCourseToolRegistry,
+  createRegistryToolRuntime,
+  type ToolRegistry,
+} from "../s02_tool_schema/code.ts";
 
-export type TextContent = {
-  type: "text";
-  text: string;
+export type CollectAssistantStreamOptions = {
+  model: Model<Api>;
+  context: Context;
+  streamOptions?: ProviderStreamOptions;
+  onEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
 };
 
-export type ToolCall = {
-  type: "toolCall";
-  id: string;
-  name: string;
-  arguments: Record<string, unknown>;
+export type CollectedAssistantStream = {
+  events: AssistantMessageEvent[];
+  eventTypes: AssistantMessageEvent["type"][];
+  message: PiAssistantMessage;
 };
 
-export type AssistantMessage = {
-  role: "assistant";
-  content: (TextContent | ToolCall)[];
-  stopReason: StopReason;
-  timestamp: number;
-};
+export async function collectAssistantStream(
+  options: CollectAssistantStreamOptions,
+): Promise<CollectedAssistantStream> {
+  const events: AssistantMessageEvent[] = [];
+  let message: PiAssistantMessage | undefined;
 
-export type ProviderContext = {
-  messages: unknown[];
-  tools: ToolDefinition[];
-  systemPrompt?: string;
-};
-
-export type ProviderEvent =
-  | { type: "start"; partial: AssistantMessage }
-  | { type: "text_start"; contentIndex: number; partial: AssistantMessage }
-  | { type: "text_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
-  | { type: "text_end"; contentIndex: number; content: string; partial: AssistantMessage }
-  | { type: "toolcall_start"; contentIndex: number; partial: AssistantMessage }
-  | { type: "toolcall_delta"; contentIndex: number; delta: string; partial: AssistantMessage }
-  | { type: "toolcall_end"; contentIndex: number; toolCall: ToolCall; partial: AssistantMessage }
-  | { type: "done"; reason: Extract<StopReason, "stop" | "length" | "toolUse">; message: AssistantMessage }
-  | { type: "error"; reason: Extract<StopReason, "error" | "aborted">; error: AssistantMessage };
-
-export type EventProvider = {
-  stream(context: ProviderContext): AsyncIterable<ProviderEvent>;
-};
-
-export type CollectedProviderStream = {
-  events: ProviderEvent[];
-  eventTypes: string[];
-  message: AssistantMessage;
-  textByIndex: Map<number, string>;
-  toolCalls: ToolCall[];
-};
-
-function createAssistantMessage(): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    stopReason: "stop",
-    timestamp: Date.now(),
-  };
-}
-
-function cloneMessage(message: AssistantMessage): AssistantMessage {
-  return {
-    ...message,
-    content: message.content.map((block) => ({ ...block })),
-  };
-}
-
-export function createTextProvider(chunks: string[]): EventProvider {
-  return {
-    async *stream() {
-      const partial = createAssistantMessage();
-      partial.content.push({ type: "text", text: "" });
-
-      yield { type: "start", partial: cloneMessage(partial) };
-      yield { type: "text_start", contentIndex: 0, partial: cloneMessage(partial) };
-
-      for (const chunk of chunks) {
-        const block = partial.content[0] as TextContent;
-        block.text += chunk;
-        yield {
-          type: "text_delta",
-          contentIndex: 0,
-          delta: chunk,
-          partial: cloneMessage(partial),
-        };
-      }
-
-      const text = (partial.content[0] as TextContent).text;
-      yield { type: "text_end", contentIndex: 0, content: text, partial: cloneMessage(partial) };
-      yield { type: "done", reason: "stop", message: cloneMessage(partial) };
-    },
-  };
-}
-
-export function createToolCallProvider(name: string, args: Record<string, unknown>): EventProvider {
-  return {
-    async *stream(context) {
-      if (!context.tools.some((tool) => tool.name === name)) {
-        const error = createAssistantMessage();
-        error.stopReason = "error";
-        yield { type: "start", partial: cloneMessage(error) };
-        yield { type: "error", reason: "error", error };
-        return;
-      }
-
-      const partial = createAssistantMessage();
-      partial.stopReason = "toolUse";
-      partial.content.push({ type: "toolCall", id: "call_1", name, arguments: {} });
-
-      yield { type: "start", partial: cloneMessage(partial) };
-      yield { type: "toolcall_start", contentIndex: 0, partial: cloneMessage(partial) };
-
-      const block = partial.content[0] as ToolCall;
-      block.arguments = { ...args };
-      yield {
-        type: "toolcall_delta",
-        contentIndex: 0,
-        delta: JSON.stringify(args),
-        partial: cloneMessage(partial),
-      };
-      yield {
-        type: "toolcall_end",
-        contentIndex: 0,
-        toolCall: { ...block, arguments: { ...block.arguments } },
-        partial: cloneMessage(partial),
-      };
-      yield { type: "done", reason: "toolUse", message: cloneMessage(partial) };
-    },
-  };
-}
-
-export function createInterleavedProvider(): EventProvider {
-  return {
-    async *stream() {
-      const partial = createAssistantMessage();
-      partial.content.push({ type: "text", text: "" });
-      partial.content.push({ type: "text", text: "" });
-
-      yield { type: "start", partial: cloneMessage(partial) };
-      yield { type: "text_start", contentIndex: 0, partial: cloneMessage(partial) };
-
-      (partial.content[0] as TextContent).text += "first ";
-      yield { type: "text_delta", contentIndex: 0, delta: "first ", partial: cloneMessage(partial) };
-
-      yield { type: "text_start", contentIndex: 1, partial: cloneMessage(partial) };
-
-      (partial.content[1] as TextContent).text += "second ";
-      yield { type: "text_delta", contentIndex: 1, delta: "second ", partial: cloneMessage(partial) };
-
-      (partial.content[0] as TextContent).text += "block";
-      yield { type: "text_delta", contentIndex: 0, delta: "block", partial: cloneMessage(partial) };
-      yield { type: "text_end", contentIndex: 0, content: "first block", partial: cloneMessage(partial) };
-
-      (partial.content[1] as TextContent).text += "block";
-      yield { type: "text_delta", contentIndex: 1, delta: "block", partial: cloneMessage(partial) };
-      yield { type: "text_end", contentIndex: 1, content: "second block", partial: cloneMessage(partial) };
-
-      yield { type: "done", reason: "stop", message: cloneMessage(partial) };
-    },
-  };
-}
-
-export async function collectProviderStream(
-  provider: EventProvider,
-  context: ProviderContext,
-): Promise<CollectedProviderStream> {
-  const events: ProviderEvent[] = [];
-  const textByIndex = new Map<number, string>();
-  const toolCalls: ToolCall[] = [];
-  let message: AssistantMessage | undefined;
-
-  for await (const event of provider.stream(context)) {
+  for await (const event of streamModel(options.model, options.context, options.streamOptions)) {
     events.push(event);
-
-    if (event.type === "text_delta") {
-      textByIndex.set(event.contentIndex, (textByIndex.get(event.contentIndex) ?? "") + event.delta);
-    }
-    if (event.type === "toolcall_end") {
-      toolCalls.push(event.toolCall);
-    }
-    if (event.type === "done") {
-      message = event.message;
-    }
-    if (event.type === "error") {
-      message = event.error;
-    }
+    await options.onEvent?.(event);
+    if (event.type === "done") message = event.message;
+    if (event.type === "error") message = event.error;
   }
 
   if (!message) {
-    throw new Error("Provider stream ended without done or error event");
+    throw new Error("Model stream ended without a final assistant message");
   }
-
-  return {
-    events,
-    eventTypes: events.map((event) => event.type),
-    message,
-    textByIndex,
-    toolCalls,
-  };
+  return { events, eventTypes: events.map((event) => event.type), message };
 }
 
-export function readTextBlocks(message: AssistantMessage): string[] {
+export type RunStreamingAgentLoopOptions = {
+  model: Model<Api>;
+  prompt: string;
+  registry: ToolRegistry;
+  state?: AgentState;
+  systemPrompt?: string;
+  streamOptions?: ProviderStreamOptions;
+  maxTurns?: number;
+  onEvent?: (event: AssistantMessageEvent) => void | Promise<void>;
+};
+
+export type RunStreamingAgentLoopResult = {
+  state: AgentState;
+  finalMessage: PiAssistantMessage;
+  toolResults: ToolResultMessage[];
+  events: AssistantMessageEvent[];
+};
+
+export async function runStreamingAgentLoop(
+  options: RunStreamingAgentLoopOptions,
+): Promise<RunStreamingAgentLoopResult> {
+  const maxTurns = options.maxTurns ?? 8;
+  if (!Number.isSafeInteger(maxTurns) || maxTurns <= 0) {
+    throw new Error("maxTurns must be a positive safe integer");
+  }
+
+  const state = options.state ?? createInitialState();
+  const runtime = createRegistryToolRuntime(options.registry);
+  const toolResults: ToolResultMessage[] = [];
+  const events: AssistantMessageEvent[] = [];
+  state.messages.push(createUserMessage(options.prompt));
+
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const streamed = await collectAssistantStream({
+      model: options.model,
+      context: {
+        systemPrompt: options.systemPrompt,
+        messages: state.messages,
+        tools: runtime.tools,
+      },
+      streamOptions: options.streamOptions,
+      async onEvent(event) {
+        events.push(event);
+        await options.onEvent?.(event);
+      },
+    });
+    const assistantMessage = streamed.message;
+    state.messages.push(assistantMessage);
+
+    if (assistantMessage.stopReason === "error" || assistantMessage.stopReason === "aborted") {
+      throw new Error(assistantMessage.errorMessage ?? `Model stopped with ${assistantMessage.stopReason}`);
+    }
+
+    const toolCalls = assistantMessage.content.filter(
+      (block): block is PiToolCall => block.type === "toolCall",
+    );
+    if (toolCalls.length === 0) {
+      return { state, finalMessage: assistantMessage, toolResults, events };
+    }
+    for (const toolCall of toolCalls) {
+      const result = await runtime.execute(toolCall);
+      state.messages.push(result);
+      toolResults.push(result);
+    }
+  }
+
+  throw new Error(`Agent exceeded the maximum of ${maxTurns} model turn${maxTurns === 1 ? "" : "s"}`);
+}
+
+export function readTextBlocks(message: PiAssistantMessage): string[] {
   return message.content
-    .filter((block): block is TextContent => block.type === "text")
+    .filter((block): block is Extract<PiAssistantMessage["content"][number], { type: "text" }> => block.type === "text")
     .map((block) => block.text);
 }
 
-export async function runDemo(): Promise<void> {
-  const textResult = await collectProviderStream(createTextProvider(["Pi ", "streams ", "events."]), {
-    messages: [],
-    tools: [],
+async function runLiveCli(): Promise<void> {
+  const runtime = loadCourseModel();
+  const state = createInitialState();
+  const registry = createCourseToolRegistry(process.cwd());
+  await runPromptCli("s03 Provider Events", async (prompt) => {
+    await runStreamingAgentLoop({
+      ...runtime,
+      prompt,
+      state,
+      registry,
+      onEvent(event) {
+        if (event.type === "text_delta") process.stdout.write(event.delta);
+      },
+    });
+    process.stdout.write("\n");
   });
-  console.log(`Text events: ${textResult.eventTypes.join(" -> ")}`);
-  console.log(`Text: ${readTextBlocks(textResult.message).join("")}`);
-
-  const registry = createDemoToolRegistry();
-  const toolResult = await collectProviderStream(createToolCallProvider("read", { path: "README.md" }), {
-    messages: [],
-    tools: listToolDefinitions(registry),
-  });
-  console.log(`Tool events: ${toolResult.eventTypes.join(" -> ")}`);
-  console.log(`Stop reason: ${toolResult.message.stopReason}`);
-  console.log(`Tool call: ${toolResult.toolCalls[0]?.name} ${JSON.stringify(toolResult.toolCalls[0]?.arguments)}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  await runDemo();
+if (isMainModule(import.meta.url)) {
+  await runLiveCli();
 }

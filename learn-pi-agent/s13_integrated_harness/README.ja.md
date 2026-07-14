@@ -1,175 +1,147 @@
 # s13 · Integrated Harness
 
-[English](README.md) · [中文](README.zh.md) · 日本語
+[コーストップ](../README.ja.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s12](../s12_pi_package/README.ja.md) · [目次](../README.ja.md) · [s14 →](../s14_real_provider/README.ja.md)
-
-> ひとことで：s13 は新しい仕組みを書きません。前 12 節の公開インターフェースを、実行可能な 1 本のリクエスト連鎖につなぐだけです——つながるなら、境界は正しく引けていたということです。
->
-> Pi の中での位置：`pi-coding-agent` のプロダクト層オーケストレーション（agent-harness + resource loader + session + modes の合流点）に対応します。
-
-→ 統合は機能追加ではなく検収です：2 つの部品が互いの内部をまさぐらないと協調できないなら、境界の引き方が間違っています
-→ 連鎖全体に「グルー」は 3 箇所だけ：provider を包む adapter、hook と extension のフィールド対応付け、session への tagged JSON エンコード
-→ s10 で残した宿題をここで返します：本物の core が 4 つの外殻に刺さるのは、`prompt()/getState()` というインターフェースだけの力です
-
----
-
-## 問題
-
-s01 から s12 までで部品が 1 つずつ立ちました。tool loop は s05（tool hooks）、会話は s07（session tree）、リソースは s08（context resources）、拡張は s09（extension runtime）、外殻は s10（runtime modes）、読み込み境界は s11（trust）、配布は s12（package）。どの部品にも自前のテストはありますが、これらのインターフェースが互いに噛み合うことを証明する 1 本の連鎖はまだありません。
-
-harness の設計が一番こけやすいのがまさにここです。モジュール単体ではどれもきれいなのに、統合した途端、A が B の内部に手を突っ込まないと協調できないと分かる。そこで s13 は自分にルールを 1 つ課します：**adapter とオーケストレーションだけ。新しい実装は作らない**。tool loop は引き続き s05 が実行し、session は s07 が保存し、resource・extension・trust・package・mode はそれぞれ s08–s12 の公開インターフェースを再利用します。つながらない箇所には薄いグルーを 1 層だけ許し、しかもどのグルーも「なぜ元のインターフェースにこれがないのか」を説明できなければなりません。
-
-## 考え方
-
-1 回の `prompt()` はこの連鎖を通ります：
+> Pi の中での位置：Trust と Resource を解決し、一つの Agent Session Runtime を構築して、CLI と SDK Shell から公開する Assembly Layer です。
 
 ```text
-prompt
-  -> s11 trust:      resolveProjectTrusted() / loadProjectInputs()
-  -> s12 package:    resolvePiPackages() がリソースと extension のパスを算出
-  -> s09 extension:  loadMiniExtensions() + createExtensionTurnState()
-  -> s07 session:    user message を append し、現在のブランチを取得
-  -> グルー① adapter: provider に session branch と systemPrompt を注入
-  -> s05 tool loop:  runHookedToolLoop() がツールループを実行
-  -> グルー② 対応付け: s09 の tool_call handler を s05 の beforeToolCall に接続
-  -> グルー③ エンコード: assistant/toolResult を tagged JSON で s07 に書き戻す
-  -> s10 shell:      print / json / rpc / sdk が同じ runtime を消費
+files + trust policy + package entries + Extension factories
+  -> Project Trust
+  -> direct Resources + Package Resolver
+  -> Extension runner + Skills + Prompt Templates
+  -> one MiniCoreRuntime
+       +-> real Model and Tool loop
+       +-> one AgentMessage Session
+  -> serialized IntegratedHarnessRuntime
+  -> Print / JSON / RPC / SDK
 ```
 
-`createIntegratedHarnessRuntime()` は初期化時に trust、project inputs、package のリソース、extension factory を解決します。`prompt()` のたびに turn state を作り直すので、現在の session ブランチ、AGENTS.md、skill、prompt template、extension hook が同じ 1 ターンに入ります。
+## 問題：部品が個別に正しくても、組み立て順が正しいとは限らない
 
-この節で得られるのは、決定的でオフラインな教材用 harness です。provider もファイルもすべてメモリ上の fixture で、モデル API・ネットワーク・本物の shell・プロジェクトのファイルシステムには触れません。
+これまでの各レッスンは一つずつ境界を検証しました。利用できる Harness にするには、それらを正しい順序で組み立てる必要があります。
+
+Trust は Project Extension と Package の選択より先に解決します。Package Path は Extension Factory の Load より先です。Context、Skill、明示的に呼び出した Prompt Template は Tool Registry と同じ Turn に入ります。すべての Shell は一つの AgentMessage Session を共有し、二つの Caller がその Session を同時に変更してはいけません。
+
+Assembly Layer がどれかを再実装すると、コースの最後に互換性のない第二の Agent が生まれます。そこで s13 が追加するのは Orchestration と一つの Concurrency Rule だけで、新しい Model-Tool Loop ではありません。
+
+## 考え方：Host の依存関係を一つの構築入口へ集める
+
+`createIntegratedHarnessRuntime()` は Host が所有する Dependency と Configuration を受け取り、s01-s12 の Public API を接続します。
+
+| Host Input | 接続先 |
+| --- | --- |
+| `Model<Api>` と Stream Option | 実 s03-s06 Model Path |
+| Tool Registry と Active Tool Name | 実 Tool Loop |
+| `MiniSession<AgentMessage>` | 一つの累積 Session Tree |
+| Resource Source と Direct Path | Context、Skill、Prompt Template |
+| User/Project Package Entry | s12 Package Resolver |
+| Path-to-Factory Map | Direct と Packaged Extension |
+| Trust Policy と Store | s11 Project Trust |
+
+結果は `IntegratedHarnessRuntime` です。s10 の `MiniRuntime` Contract を実装し、確認用に `projectTrusted`、`projectInputs`、`packageResources` を公開し、明示的な Prompt Template Invocation も維持します。
 
 ## まず動かす
 
+コースの `.env` を設定し、`learn-pi-agent/` から実行します。
+
 ```bash
-npm run session:s13
+npm run s13 -- "read_file で package.json を確認し、どの Component が Integrated Session を共有するか説明してください。"
 ```
 
-出力：
+CLI は設定済みの実 Model、File System Context Resource Source、Session Tree、`read_file` Tool、Print Shell を使います。Model Output と Tool Choice は変わる場合がありますが、それらの動作はすべて `createIntegratedHarnessRuntime()` が構築する同じ Integrated Path を通ります。
 
-```text
-Session: s13-demo
-Final text: Integrated harness ready.
-Events: session -> agent_start -> message -> agent_end
-Stored messages: 2
+`PI_PROJECT_TRUST` の Default は `ask` です。この小さな CLI には Trust Selection UI も永続 Store もないため、Decision が必要な場合は保護対象の Project Input が無効のままです。Project を確認した後、`always` で有効化し、`never` で拒否できます。
+
+```bash
+PI_PROJECT_TRUST=always npm run s13 -- "Trusted な Project Resource を要約してください。"
 ```
 
-4 行はそれぞれ 4 つの部品から来ています。session id は s07 の session tree から、final text は s05 のツールループを通り抜けた結果、events は s10 外殻のイベント投影、stored messages は s07 に書き戻された記録の数です。連鎖は 1 本、出どころは 4 つ。
+コース Host は TypeScript を動的 import せず、Project Settings を Package Entry へ Parse しません。Trusted Direct Extension には Programmatic API から明示 Factory を渡す必要があり、なければ構築に失敗します。したがって Built-in CLI で Trust を直接有効化できるのは、選択される Project Input が未設定の Extension Factory を必要としない場合です。
 
 ## コードの中身
 
-### グルー①：provider の外側になぜもう 1 層 adapter があるのか
+### 1. Project Input を選ぶ前に Trust を解決する
 
-s05 のループが管理するのは、そのターンで新しく生まれた assistant と tool-result の message だけです。s07 は読まないし、s08 が生成する system prompt のことも知りません——これは s05 の境界であって、欠陥ではありません。s13 は provider を 1 層包みます：
+`createIntegratedHarnessRuntime()` は `prepareProjectTrust()` から始まります。Decision は三種類の保護対象 Source を制御します。
 
-```ts
-provider.stream({
-  ...loopContext,
-  messages: [...sessionPrefix, ...extensionMessages, ...context.messages],
-  systemPrompt,
-});
+- s11 が発見した Direct Project Skill と Prompt Template
+- `.pi/extensions` にある Direct Project Extension Entry Point
+- Host が渡した `projectPackages` List 全体
+
+User Extension、Skill、Prompt、Package Input は Project Trust と独立しています。Context Candidate File も Trust Gate の外にあり、s08 と s11 の Per-directory Precedence を使います。
+
+Decision は `runtime.projectTrusted` から確認でき、正確な Gated Path は `runtime.projectInputs` に Clone されます。
+
+### 2. Resource Path と明示 Extension Factory を Merge する
+
+Trusted Direct Project Extension Directory は s12 の Entry-point Discovery を通るため、Child `index.ts` は読み込めますが、`helper.ts` は第二の Extension になりません。
+
+`extensionFactories` は正規化した Path-to-Factory Map です。Direct Extension と Package が選択した Extension Path の両方に Factory を提供します。Selected Path に Factory がなければ Error になり、Harness は String Path を Source Code 実行の許可とは解釈しません。
+
+`createPackageRuntime()` は User Path、Trusted Project Path、Enabled Package Path を Merge します。Extension Factory は Runner、Skill は Context Resource、Prompt File は Template Catalog に入ります。通常の Turn の System Prompt に Template Body は含まれません。`runtime.invokePromptTemplate(name, args)` は選択した Template 一つだけを展開し、展開済み User Prompt を実 Turn の Queue に入れます。
+
+### 3. 一つの実 Model と AgentMessage Session を保つ
+
+組み立て後の Core は引き続き `MiniCoreRuntime` です。実 `runExtensionTurn()` Path を呼び、Context Resource を構築し、`before_agent_start` と Tool Hook を実行し、渡された Model を Stream し、Tool を Dispatch し、Lifecycle Event を発行して、完全な `AgentMessage` を Session へ追加します。
+
+Host が `session` を省略すると、s13 は Session Tree を作ります。Host が明示 Session を渡す場合、Tool を使う各 Turn は完全な Message を次の順序で追加します。
+
+```text
+user
+assistant(toolCall)
+toolResult
+assistant(final text)
 ```
 
-最初のリクエストは現在の session ブランチを見ます。ツール実行後、s05 が新しい message を `loopContext.messages` に入れるので、次の provider リクエストは履歴とこのターンの結果を同時に見ます。tool loop は相変わらず s05 の 1 つだけです。
+Context Instruction、Package Skill Metadata、明示 Prompt Invocation、Extension 登録 Tool、Base Tool はすべて同じ Session に影響します。Rich Message を Plain Text に潰す Adapter はありません。
 
-### グルー②：extension はどうやってツール実行を止めるのか
+### 4. Host Prompt を直列化して、すべての Shell を再利用する
 
-s09 の `tool_call` handler と s05 の `beforeToolCall` は、返り値の形がもともと一致しています。s13 がやるのはフィールドの対応付けだけです：
+`IntegratedHarnessRuntime.prompt()` は `promptQueue` に Work を Chain します。Concurrent Call は提出順に実行され、二つの Run が一つの Session を安定して読み書きできます。成功でも失敗でも Queue は次へ進むため、一つの Rejected Run が後続 Work を止めません。明示 Prompt Template Invocation も同じ Queue を使います。
 
-```ts
-beforeToolCall: ({ toolCall, args }) =>
-  runner.emitToolCall({ toolName: toolCall.name, input: args })
-```
+`getState()` と `subscribe()` は Core へ委譲するため、既存の s10 Helper を変換なしで再利用できます。
 
-handler が `{ block: true, reason }` を返すと、s05 はローカルツールを dispatch せず、代わりに `isError: true` の構造化された tool result を生成します。provider は次のターンでそれを読めます。2 つの節のインターフェースが 1 行でつながるのは、それぞれの章で同じ Pi のセマンティクス（`agent-loop.ts` の hook プロトコル）に沿って実装してきたからです。
-
-### グルー③：session はなぜ tagged JSON を保存するのか
-
-s07 の教材用 contract は message content を文字列に単純化していますが、s03–s05 の assistant / tool-result message は tool call id、引数、エラーフラグ、タイムスタンプも持っています。s13 は s05 の `message_end` イベントを購読し、完全な message を 1 件ずつプレフィックス付きの JSON 文字列にエンコードして即座に s07 へ書き込み、次のターンの provider context を組み立てるときにデコードします。s07 の API を広げる必要はなく、tool call のフィールドも失いません。ツールが実行済みで、その後の provider リクエストが失敗しても、完了済みの assistant と tool-result の記録は append-only な session に残り、監査できます。
-
-user message は普通のテキストのまま保存します。s10 の `MiniRunResult.messages` が投影するのは user とテキストを持つ assistant message だけで、完全な記録は s07 の session tree が正です。
-
-### trust と extension factory
-
-package の extension パスは s12 の resolver が決めますが、project package と `.pi/extensions` はさらに s11 の trust を通ります。`extensionFactories` はメモリ上の path-to-factory マップで、「すでに読み込み済みのモジュール」を表します：
-
-```ts
-extensionFactories: {
-  "/packages/review/extensions/review.ts": reviewFactory,
-}
-```
-
-resolver がある extension パスを選んだのに、マップに対応する factory がない場合、初期化は即座にエラーになります。教材実装は TypeScript の動的 import をせず、欠けたモジュールを黙って飛ばすこともしません。trusted な project の `.pi/extensions` は s12 のエントリ発見ルールを再利用します：トップレベルの `.ts`/`.js` がエントリ、サブディレクトリは `index.ts`/`index.js` かサブ manifest に列挙されたエントリだけを認め、隣にある helper module は factory マップに入りません。
+| Shell | Integrated Behavior |
+| --- | --- |
+| Print | 一つの Final Text Result を待つ |
+| JSON | Run 後に収集済み Event を Serialize |
+| RPC | 同じ Runtime で `prompt` と `get_state` を支援 |
+| SDK | Queued Turn の実行中に Live Event を受け取る |
 
 ## 手を動かす
 
-demo の provider は素のテキストを一言返すだけで、連鎖のツール部分は動いていません。`code.ts` 末尾の `demo()` を書き換えます：
-
-1. provider を s04 のツール呼び出し provider に差し替えます：
-
-   ```ts
-   import { createToolLoopProvider } from "../s04_evented_tool_loop/code.ts";
-   // ...
-   provider: createToolLoopProvider({
-     toolName: "read",
-     args: { path: "README.md" },
-     finalText: "Read the file through the integrated loop.",
-   }),
-   ```
-
-   `npm run session:s13` を再実行して、`Stored messages` が 2 からいくつになるかを見てください。増えた 1 件ずつは何でしょうか。s07 の視点で説明してみてください（ヒント：assistant の toolCall、tool result、最終回答が、それぞれ tagged JSON としてディスクに落ちます）。
-
-2. `demo()` の最後で、同じ runtime を s10 の外殻に渡します：
-
-   ```ts
-   import { runJsonMode } from "../s10_runtime_modes/code.ts";
-   // ...
-   console.log(await runJsonMode(runtime, "hello from the json shell"));
-   ```
-
-   2 回の prompt のあとで `runtime.getState().messageCount` を見てください——異なる外殻が駆動しているのは同じ 1 つの session 状態です。s10 の不変条件「mode shell は独立した agent 状態を持たない」が、本物の core の上で動いている姿です。
-
-3. `code.test.ts` の 4 本のエンドツーエンドテストは、そのまま使える 4 つの改造レシピです（package skill の全連鎖、extension によるツールのブロック、trust の拒否、4 つの外殻での runtime 共有）。何か足したくなったら、その fixture を demo に写して改造してください。
-
-書き換えたら `npm run test:s13` を実行して、連鎖が切れていないことを確認します。
+1. Extension Tool、Skill、Prompt Template を持つ User Package を構成します。通常の Turn が Tool と Skill は見ても、Prompt Body は見ないことを確認します。
+2. `invokePromptTemplate()` を呼び、最後の User Message を確認します。展開済み Text が一つの実 Queued Turn に入ります。
+3. User と Project Package を追加し、Trust を拒否します。User Resource は残り、Project Package と Direct Project Extension は消えます。
+4. Trusted Direct Extension Directory に `index.ts` と `helper.ts` を置き、Entry Point にだけ Factory を渡します。その Factory だけが Load されます。
+5. Print、JSON、RPC、SDK を順に呼びます。`getState().turns` と Session Message List が四回すべてを含むことを確認します。
+6. `Promise.all()` で二つの `prompt()` を同時に開始します。Run ID と Session Message は提出順を保ちます。
 
 ## 本線につなぐ
 
-s13 は本線そのものの合流なので、いつもの差分表は部品リストに替わります：
-
-| 部品 | 出どころ | 連鎖の中での位置 |
+| 境界 | これまでのレッスン | s13 の構成 |
 | --- | --- | --- |
-| ツール契約と registry | s02 | baseRegistry + extension ツールの統合 |
-| provider のイベントストリーム | s03 | adapter で包んで s05 が消費 |
-| ツールループとイベント順序 | s04/s05 | `runHookedToolLoop()` をそのまま実行 |
-| turn state のスナップショット | s06/s09 | `prompt()` のたびに再構築 |
-| session tree | s07 | user/assistant/toolResult を追記し、次ターンのブランチを供給 |
-| リソースの読み込み | s08 | AGENTS.md/skill/template が system prompt に入る |
-| extension runtime | s09 | hook・ツール・custom message をこのターンに接続 |
-| runtime modes | s10 | 4 つの外殻が同じ runtime を消費 |
-| trust | s11 | project の入力と extension を読み込むかを決定 |
-| package resolver | s12 | リソースと extension のパスを算出 |
+| Model と Tool Loop | s01-s05 | Hook と Event を持つ一つの実 Streamed Turn |
+| AgentMessage State | s06-s07 | 一つの累積 Session Tree |
+| Context と Resource | s08 | Context Candidate、Skill、明示 Prompt Invocation |
+| Extension | s09 | Direct と Package-selected の明示 Factory |
+| Runtime Shell | s10 | 一つの Shared Print/JSON/RPC/SDK Surface |
+| Project Trust | s11 | Protected Path の参加前に解決 |
+| Package | s12 | Enabled Path が同じ Core へ入る |
+| Host Concurrency | 以前は Owner なし | Shared Session を囲む順序付き Promise Queue |
 
 ## Pi ソースと照合
 
-ソースの対応関係は [pi-source.md](pi-source.md) にあります。まず `agent-harness.ts` が turn state を構築し、hook をつなぎ、message を保存する流れを見て、次に coding-agent の `resource-loader.ts`、`agent-session.ts`、extension runner がプロダクト層のオーケストレーションを仕上げる部分を見てください——本物の Pi の「グルー層」は、まさにこの数ファイルです。
+Pi 0.79.1 は `createAgentSession()`、`AgentSessionRuntime`、`ResourceLoader`、`ProjectTrustStore`、`DefaultPackageManager`、Extension Loader/Runner、`AgentHarness`、Session API を通して同種の Assembly を行います。CLI Mode と SDK Call は、その Session を囲む Shell です。
 
-この節で実装していないもの：context compaction、token budget、本物の provider、モジュールの動的 import、package install、ターミナル UI、hot reload、sandbox。`files`・provider・tool handler・extension factory はすべてメモリ上の fixture です。
+コースは構成を見える形、注入できる形に保ちます。作成済み Model、Tool Registry、File Source、Package Entry、Extension Factory を受け取ります。Pi はさらに Settings Parse、Model Discovery、Extension Module Load、Package Installation、UI Service、Reload、Compaction、より完全な Session Control を所有します。
 
-## 結び
+透明な Promise Queue はコース Host Policy です。Pi は Streaming 中の二回目の `prompt()` を暗黙に直列化せず、Caller が Steering または Follow-up Behavior を選びます。どちらも Active Session の意味を守りますが、Public Concurrency Contract は異なります。
 
-最初の 13 節の裏にあった選択はすべて「何を選んだか / 何を選ばなかったか / その代償」でできています。ここで 1 枚の表に回収します：
+固定版ソースとの対応は英語の [pi-source.md](pi-source.md) を参照してください。
 
-| 観点 | Pi の選択 | 選ばなかった代替 | 代償 |
-| --- | --- | --- | --- |
-| モデル接続 | 統一 provider プロトコル | 単一 SDK への固定 | モデルごとに adapter を 1 層書き、プロトコル自体の保守も必要 |
-| メッセージ構造 | `AgentMessage` と LLM message の分離 | 生の配列をそのまま送る | 変換が 1 層増え、デバッグ時にどの層にいるかを見分ける必要がある |
-| 出力インターフェース | イベントストリーム（stream） | 同期で文字列を返す | 呼び出し側は stream を消費する必要があり、`await` 1 行では結果を取れない |
-| 会話の保存 | append-only な session tree | 上書き可能な message 配列 | 履歴は不変、ブランチは明示的に管理、ストレージは増える一方 |
-| 能力の拡張 | extension / skill / package 優先 | 組み込みの plan mode / sub-agent | コア機能はエコシステム頼みで、新人はまず外層の仕組みを学ぶ必要がある |
-| セキュリティ境界 | trust と実行環境の分離 | 組み込み sandbox | 実行 sandbox は自分で用意する。trust は入力の読み込みだけを管理 |
-| 能力の配布 | package を配布単位に | core への能力のハードコード | manifest / resolver という工学が 1 層増えるが、配布できるなら見合う |
+## 完成したもの
 
-この表がこの講座の本線です。Pi core は小さく保つ。イベントは明瞭に。拡張は開かれたまま。隔離はプロセス内で解決したふりをしない。次の [s14](../s14_real_provider/README.ja.md) は、この integrated harness を保ったまま deterministic provider を実 OpenAI-compatible stream に置き換えます。
+最終 API は Harness の図だけではありません。実際のコース Model Path、Tool Execution、Event、AgentMessage Session、Context Resource、Extension、Trust Gate、Package Resolver、Prompt Template Invocation、四つの Runtime Shell が一つの実行経路で動きます。
+
+[コーストップ](../README.ja.md) に戻り、学習経路全体を振り返って、次に拡張する境界を選んでください。

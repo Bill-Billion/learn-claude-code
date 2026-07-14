@@ -1,15 +1,12 @@
-# Pi Source Map for s08
+# s08 against the Pi 0.79.1 source
 
-s08 corresponds to Pi's context resources.
+s08 maps to Pi's Resource Loader, Skill and Prompt Template parsers, and System Prompt construction.
 
 ```text
-resource loader
-  -> context files / skills / prompt templates
-  -> build system prompt
-  -> createTurnState()
+resource paths -> loaded resources -> system prompt / Harness resources -> TurnState
 ```
 
-## Files
+## Corresponding files
 
 - [`packages/coding-agent/src/core/resource-loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/resource-loader.ts)
 - [`packages/coding-agent/src/core/system-prompt.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/system-prompt.ts)
@@ -18,100 +15,48 @@ resource loader
 - [`packages/agent/src/harness/agent-harness.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/agent-harness.ts)
 - [`packages/agent/src/harness/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/types.ts)
 
-Specific anchors:
+## The mapping
 
-```text
-resource-loader.ts:61-77       finding AGENTS.md / CLAUDE.md in a directory
-resource-loader.ts:79-117      global + ancestor-directory order in loadProjectContextFiles()
-resource-loader.ts:261-283     getSkills() / getPrompts() / getAgentsFiles()
-resource-loader.ts:333-425     reload() parsing extensions, skills, prompts
-system-prompt.ts:8-25          BuildSystemPromptOptions
-system-prompt.ts:60-74         appending context files and skills under a custom prompt
-system-prompt.ts:153-166       appending context files and skills under the default prompt
-agent-harness.ts:331-362       createTurnState() reads resources and produces the systemPrompt
-agent-harness.ts:981-995       getResources() / setResources()
-harness/types.ts:46-78         Skill, PromptTemplate, AgentHarnessResources
-harness/types.ts:804-820       AgentHarnessOptions.resources and the systemPrompt callback
-```
-
-## Mapping
-
-| s08 | Pi |
+| s08 | Pi 0.79.1 |
 | --- | --- |
-| `MemoryFiles` | the local filesystem plus settings/package manager |
-| `loadContextResources()` | `DefaultResourceLoader.reload()` |
-| `loadProjectContextFiles()` | `loadProjectContextFiles()` |
-| `ContextSkill` | `Skill` |
+| `createFileSystemResourceSource()` | filesystem access inside `DefaultResourceLoader` |
+| `loadProjectContextFiles()` | project Context discovery in `resource-loader.ts` |
+| `ContextFile` | Agent file path and content |
+| `ContextSkill` | teaching combination of coding-agent Skill metadata and loaded body |
 | `ContextPromptTemplate` | `PromptTemplate` |
-| `formatSkillsForSystemPrompt()` | `formatSkillsForPrompt()` / `formatSkillsForSystemPrompt()` |
-| `buildContextSystemPrompt()` | `buildSystemPrompt()` |
-| `createContextResourceTurnState()` | `AgentHarness.createTurnState()` |
+| `formatPromptTemplateInvocation()` | Prompt Template argument substitution |
+| `buildContextSystemPrompt()` | the Context File and Skill portions of `buildSystemPrompt()` |
+| `prepareContextResources()` | loaded Resources feeding `AgentHarnessResources` and System Prompt |
+| `runContextResourceTurn()` | course composition into the existing Harness turn |
 
-## Why this section doesn't scan real directories
+## Context File order and provenance
 
-Real Pi pulls resources from many places:
+Pi checks the configured agent directory first, then ancestor directories from root toward the working directory. In each directory it chooses the first supported AGENTS or CLAUDE filename. The course follows the same order through a `ResourceSource`.
 
-```text
-~/.pi/agent/AGENTS.md
-AGENTS.md / CLAUDE.md in parent directories and the current directory
-~/.pi/agent/skills
-.pi/skills
-.agents/skills
-~/.pi/agent/prompts
-.pi/prompts
-pi package
-resource paths added dynamically by extensions
-temporary CLI paths
-```
+Both implementations keep the file path alongside its content and include that path in the `project_instructions` wrapper. The prompt can therefore distinguish global, workspace, and nearer project instructions.
 
-If s08 replicated all of these paths from the start, the reader would get dragged into file-scanning details. The teaching code simulates resource input with explicit paths instead, keeping only Pi's core boundary:
+## Skills and Prompt Templates
 
-```text
-context files go into the system prompt
-skills enter the system prompt as an index first
-prompt templates wait for explicit invocation
-the harness takes a resources snapshot every turn
-```
+Pi advertises Skills in the System Prompt only when the read Tool is available, because a Skill body is meant to be read from its file when relevant. The course also recognizes its teaching Tool name, `read_file`, and filters Skills marked `disable-model-invocation`.
 
-## An easy thing to mix up
+The course's `ContextSkill` carries the parsed body for inspection, but only Skill metadata enters `harnessResources`. Prompt Template replacement matches Pi's one-pass rule: placeholders inside substituted argument values are not expanded a second time.
 
-`AgentHarnessResources` has only two kinds:
+## Turn integration
 
-```text
-skills
-promptTemplates
-```
+Pi's Resource Loader owns discovery and reload; its result is passed into System Prompt construction and Harness Resources. `AgentHarness.createTurnState()` then snapshots those values with the selected Tools.
 
-Context files like `AGENTS.md` are stitched into the system prompt in the coding-agent outer layer — they are not a field of `AgentHarnessResources`.
+s08 uses the same ownership split. `prepareContextResources()` produces the prompt callback and Resources, while `runContextResourceTurn()` delegates model and Tool progression to the s06 Harness path.
 
-s08's `ContextResourceTurnState` returns an extra `contextFiles` only so the demo and tests can see them. In real Pi, context files reach `systemPrompt` through `buildSystemPrompt()`.
+## Course scope
 
-## What s08 doesn't do yet
+The real Resource Loader also resolves packages and settings, tracks diagnostics and source metadata, applies project trust, loads Extensions and Themes, merges additional paths, and supports reload.
 
-s08 does not implement any of this:
+The lesson keeps real filesystem reads for Context Files and accepts Skill and Prompt Template paths explicitly. A missing Skill description is an error in the course; Pi reports a diagnostic and skips the invalid Skill.
 
-```text
-project trust
-resource diagnostics
-settings manager
-package manager
-extension resources_discover
-theme loading
-real filesystem scanning
-full YAML frontmatter
-advanced prompt template placeholders (bash-style syntax like ${N:-default} and ${@:N})
-```
+## Suggested reading order
 
-The placeholder substitution itself is already aligned with Pi: a single pass, and `$1`, `$@`, `$ARGUMENTS` inside argument values are never expanded a second time (the comment at Pi's `prompt-templates.ts:67` states this property explicitly).
-
-Two behavioral differences to know: when a skill lacks a description, mini throws outright, while Pi logs a warning diagnostic and skips that skill, continuing to load (`skills.ts:290-307`); also, the coding-agent-level `Skill` type has no content field (`skills.ts:74-81` — bodies are read on demand by the model), only the harness-level `Skill` has content — mini's `ContextSkill` carries content but strips it before handing off to the harness.
-
-The rest gets covered separately later. s08 answers one question only: besides session messages, what project resources does a turn need?
-
-## Suggested reading path
-
-Start with `loadProjectContextFiles()` in `resource-loader.ts` to confirm the loading order of `AGENTS.md` and `CLAUDE.md`.
-
-Then read `system-prompt.ts`, and notice that skills are only appended to the prompt when the `read` tool is available.
-
-Finish with `createTurnState()` in `agent-harness.ts`. It doesn't scan files — it only reads the already-prepared resources and hands them to the system prompt callback.
+1. Start with `loadProjectContextFiles()` in `resource-loader.ts`.
+2. Read the Context File and Skill sections of `buildSystemPrompt()`.
+3. Follow Skill parsing and `formatSkillsForPrompt()` in `skills.ts`.
+4. Read Prompt Template parsing and argument substitution.
+5. Finish at `AgentHarness.createTurnState()` to see loaded Resources enter a Turn snapshot.

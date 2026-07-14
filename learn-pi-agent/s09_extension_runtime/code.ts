@@ -1,21 +1,33 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { isMainModule, runPromptCli } from "../shared/cli.ts";
+import { loadCourseModel } from "../shared/model.ts";
 import {
-  createDemoToolRegistry,
-  createToolRegistry,
+  createCourseToolRegistry,
+  extendToolRegistry,
+  listToolDefinitions,
   type RegisteredTool,
   type ToolRegistry,
 } from "../s02_tool_schema/code.ts";
-import { createDemoSession, type MiniModel } from "../s06_turn_state/code.ts";
+import type { ToolHooks } from "../s05_tool_hooks/code.ts";
 import {
-  createContextResourceTurnState,
-  type ContextResourceTurnState,
+  createMiniHarness,
+  runHarnessTurn,
+  type CustomMessage,
+  type MiniResources,
+  type RunHarnessTurnResult,
+} from "../s06_turn_state/code.ts";
+import { createSessionTree } from "../s07_session_tree/code.ts";
+import {
+  createFileSystemResourceSource,
+  prepareContextResources,
+  type ContextResources,
   type CreateContextResourceTurnStateOptions,
 } from "../s08_context_resources/code.ts";
 
-export type MiniCustomMessage = {
-  customType: string;
-  content: string;
-  display: boolean;
-  details?: unknown;
+export type ExtensionCustomMessage = Omit<CustomMessage, "role" | "timestamp"> & {
+  timestamp?: number;
 };
 
 export type BeforeAgentStartEvent = {
@@ -29,7 +41,7 @@ export type BeforeAgentStartEvent = {
 
 export type BeforeAgentStartResult = {
   systemPrompt?: string;
-  message?: MiniCustomMessage;
+  message?: ExtensionCustomMessage;
 };
 
 export type ResourcesDiscoverEvent = {
@@ -69,10 +81,25 @@ export type MiniCommand = {
   handler(args: string, ctx: MiniExtensionContext): Promise<void> | void;
 };
 
+type BeforeAgentStartHandler = (
+  event: BeforeAgentStartEvent,
+  ctx: MiniExtensionContext,
+) => BeforeAgentStartResult | Promise<BeforeAgentStartResult | void> | void;
+
+type ResourcesDiscoverHandler = (
+  event: ResourcesDiscoverEvent,
+  ctx: MiniExtensionContext,
+) => ResourcesDiscoverResult | Promise<ResourcesDiscoverResult | void> | void;
+
+type ToolCallHandler = (
+  event: ToolCallEvent,
+  ctx: MiniExtensionContext,
+) => ToolCallResult | Promise<ToolCallResult | void> | void;
+
 export type MiniExtensionAPI = {
-  on(event: "before_agent_start", handler: (event: BeforeAgentStartEvent, ctx: MiniExtensionContext) => BeforeAgentStartResult | Promise<BeforeAgentStartResult | void> | void): void;
-  on(event: "resources_discover", handler: (event: ResourcesDiscoverEvent, ctx: MiniExtensionContext) => ResourcesDiscoverResult | Promise<ResourcesDiscoverResult | void> | void): void;
-  on(event: "tool_call", handler: (event: ToolCallEvent, ctx: MiniExtensionContext) => ToolCallResult | Promise<ToolCallResult | void> | void): void;
+  on(event: "before_agent_start", handler: BeforeAgentStartHandler): void;
+  on(event: "resources_discover", handler: ResourcesDiscoverHandler): void;
+  on(event: "tool_call", handler: ToolCallHandler): void;
   registerTool(tool: RegisteredTool): void;
   registerCommand(name: string, command: Omit<MiniCommand, "name">): void;
 };
@@ -94,14 +121,36 @@ export type CommandRunResult = {
   notifications: string[];
 };
 
-export type ExtensionTurnState = ContextResourceTurnState & {
-  beforeAgentStartMessages: MiniCustomMessage[];
+export type CreateExtensionTurnStateOptions = Omit<CreateContextResourceTurnStateOptions, "registry"> & {
+  runner: MiniExtensionRunner;
+  registry: ToolRegistry;
+  prompt?: string;
+};
+
+export type ExtensionTurnState = Awaited<ReturnType<ReturnType<typeof createMiniHarness>["createTurnState"]>> & {
+  contextFiles: ContextResources["contextFiles"];
+  contextResources: ContextResources;
+  discoveredResources: DiscoveredResourcePaths;
+  beforeAgentStartMessages: CustomMessage[];
+};
+
+export type RunExtensionTurnOptions = CreateExtensionTurnStateOptions & {
+  prompt: string;
+  hooks?: ToolHooks;
+  maxTurns?: number;
+  onEvent?: Parameters<typeof runHarnessTurn>[0]["onEvent"];
+};
+
+export type RunExtensionTurnResult = RunHarnessTurnResult & {
+  contextResources: ContextResources;
+  discoveredResources: DiscoveredResourcePaths;
+  beforeAgentStartMessages: CustomMessage[];
 };
 
 type HandlerMap = {
-  before_agent_start: Array<(event: BeforeAgentStartEvent, ctx: MiniExtensionContext) => BeforeAgentStartResult | Promise<BeforeAgentStartResult | void> | void>;
-  resources_discover: Array<(event: ResourcesDiscoverEvent, ctx: MiniExtensionContext) => ResourcesDiscoverResult | Promise<ResourcesDiscoverResult | void> | void>;
-  tool_call: Array<(event: ToolCallEvent, ctx: MiniExtensionContext) => ToolCallResult | Promise<ToolCallResult | void> | void>;
+  before_agent_start: BeforeAgentStartHandler[];
+  resources_discover: ResourcesDiscoverHandler[];
+  tool_call: ToolCallHandler[];
 };
 
 type LoadedExtension = {
@@ -111,22 +160,31 @@ type LoadedExtension = {
   commands: MiniCommand[];
 };
 
+type PreparedExtensionTurn = {
+  registry: ToolRegistry;
+  contextResources: ContextResources;
+  harnessResources: MiniResources;
+  systemPrompt: string;
+  discoveredResources: DiscoveredResourcePaths;
+  beforeAgentStartMessages: CustomMessage[];
+};
+
 export async function loadMiniExtensions(sources: MiniExtensionSource[]): Promise<MiniExtensionRunner> {
   const extensions: LoadedExtension[] = [];
+  const toolNames = new Set<string>();
+  const commandNames = new Set<string>();
 
   for (const source of sources) {
-    const extension: LoadedExtension = {
-      path: source.path,
-      handlers: {
-        before_agent_start: [],
-        resources_discover: [],
-        tool_call: [],
-      },
-      tools: [],
-      commands: [],
-    };
-
+    const extension = createEmptyExtension(source.path);
     await source.factory(createExtensionApi(extension));
+    for (const tool of extension.tools) {
+      if (toolNames.has(tool.name)) throw new Error(`Duplicate extension tool: ${tool.name}`);
+      toolNames.add(tool.name);
+    }
+    for (const command of extension.commands) {
+      if (commandNames.has(command.name)) throw new Error(`Duplicate extension command: ${command.name}`);
+      commandNames.add(command.name);
+    }
     extensions.push(extension);
   }
 
@@ -145,15 +203,12 @@ export class MiniExtensionRunner {
   }
 
   getCommands(): MiniCommand[] {
-    return this.extensions.flatMap((extension) => extension.commands.map((command) => ({ ...command })));
+    return this.extensions.flatMap((extension) => extension.commands.map(cloneCommand));
   }
 
   async runCommand(name: string, args = ""): Promise<CommandRunResult> {
     const command = this.getCommands().find((candidate) => candidate.name === name);
-    if (!command) {
-      throw new Error(`Unknown command: ${name}`);
-    }
-
+    if (!command) throw new Error(`Unknown command: ${name}`);
     const ui = createMiniUi();
     await command.handler(args, createContext(ui, ""));
     return { notifications: [...ui.notifications] };
@@ -161,102 +216,214 @@ export class MiniExtensionRunner {
 
   async emitBeforeAgentStart(event: BeforeAgentStartEvent): Promise<{
     systemPrompt: string;
-    messages: MiniCustomMessage[];
+    messages: CustomMessage[];
   }> {
     let currentSystemPrompt = event.systemPrompt;
-    const messages: MiniCustomMessage[] = [];
+    const messages: CustomMessage[] = [];
 
     for (const extension of this.extensions) {
       for (const handler of extension.handlers.before_agent_start) {
-        const ui = createMiniUi();
         const result = await handler(
           { ...event, systemPrompt: currentSystemPrompt },
-          createContext(ui, currentSystemPrompt),
+          createContext(createMiniUi(), currentSystemPrompt),
         );
-
-        if (result?.message) {
-          messages.push({ ...result.message });
-        }
-        if (result?.systemPrompt !== undefined) {
-          currentSystemPrompt = result.systemPrompt;
-        }
+        if (result?.message) messages.push(materializeCustomMessage(result.message));
+        if (result?.systemPrompt !== undefined) currentSystemPrompt = result.systemPrompt;
       }
     }
-
-    return {
-      systemPrompt: currentSystemPrompt,
-      messages,
-    };
+    return { systemPrompt: currentSystemPrompt, messages };
   }
 
-  async emitResourcesDiscover(cwd: string, reason: ResourcesDiscoverEvent["reason"]): Promise<DiscoveredResourcePaths> {
+  async emitResourcesDiscover(
+    cwd: string,
+    reason: ResourcesDiscoverEvent["reason"],
+  ): Promise<DiscoveredResourcePaths> {
     const discovered: DiscoveredResourcePaths = {
       skillPaths: [],
       promptPaths: [],
       themePaths: [],
     };
-
     for (const extension of this.extensions) {
       for (const handler of extension.handlers.resources_discover) {
         const result = await handler({ cwd, reason }, createContext(createMiniUi(), ""));
-        for (const path of result?.skillPaths ?? []) {
-          discovered.skillPaths.push({ path, extensionPath: extension.path });
-        }
-        for (const path of result?.promptPaths ?? []) {
-          discovered.promptPaths.push({ path, extensionPath: extension.path });
-        }
-        for (const path of result?.themePaths ?? []) {
-          discovered.themePaths.push({ path, extensionPath: extension.path });
-        }
+        appendDiscovered(discovered.skillPaths, result?.skillPaths, extension.path);
+        appendDiscovered(discovered.promptPaths, result?.promptPaths, extension.path);
+        appendDiscovered(discovered.themePaths, result?.themePaths, extension.path);
       }
     }
-
     return discovered;
   }
 
   async emitToolCall(event: ToolCallEvent): Promise<ToolCallResult | undefined> {
     for (const extension of this.extensions) {
       for (const handler of extension.handlers.tool_call) {
-        const result = await handler(event, createContext(createMiniUi(), ""));
-        if (result?.block) {
-          return { block: true, reason: result.reason };
-        }
+        const result = await handler(cloneData(event), createContext(createMiniUi(), ""));
+        if (result?.block) return { block: true, reason: result.reason };
       }
     }
-
     return undefined;
   }
 }
 
 export function mergeExtensionTools(baseRegistry: ToolRegistry, runner: MiniExtensionRunner): ToolRegistry {
-  return createToolRegistry([...baseRegistry.tools.map(cloneTool), ...runner.getTools()]);
+  const baseNames = new Set(listToolDefinitions(baseRegistry).map((tool) => tool.name));
+  for (const tool of runner.getTools()) {
+    if (baseNames.has(tool.name)) {
+      throw new Error(`Extension tool conflicts with existing tool: ${tool.name}`);
+    }
+  }
+  return extendToolRegistry(baseRegistry, runner.getTools());
+}
+
+export function createExtensionToolHooks(runner: MiniExtensionRunner): ToolHooks {
+  return {
+    async beforeToolCall(context) {
+      const result = await runner.emitToolCall({
+        toolName: context.toolCall.name,
+        input: cloneData(context.args),
+      });
+      return result?.block
+        ? { block: true, reason: result.reason || "Tool execution was blocked by an extension" }
+        : undefined;
+    },
+  };
 }
 
 export async function createExtensionTurnState(
-  options: Omit<CreateContextResourceTurnStateOptions, "registry"> & {
-    runner: MiniExtensionRunner;
-    registry: ToolRegistry;
-    prompt?: string;
-  },
+  options: CreateExtensionTurnStateOptions,
 ): Promise<ExtensionTurnState> {
-  const discovered = await options.runner.emitResourcesDiscover(options.cwd, "startup");
-  const registry = mergeExtensionTools(options.registry, options.runner);
-  const turnState = await createContextResourceTurnState({
-    ...options,
-    registry,
-    skillFiles: [...(options.skillFiles ?? []), ...discovered.skillPaths.map((entry) => entry.path)],
-    promptTemplateFiles: [...(options.promptTemplateFiles ?? []), ...discovered.promptPaths.map((entry) => entry.path)],
-  });
-  const beforeAgentStart = await options.runner.emitBeforeAgentStart({
-    prompt: options.prompt ?? "",
-    systemPrompt: turnState.systemPrompt,
-    systemPromptOptions: { cwd: options.cwd },
-  });
-
+  const prepared = await prepareExtensionTurn(options);
+  await persistBeforeAgentStartMessages(options, prepared.beforeAgentStartMessages);
+  const turnState = await createPreparedHarness(options, prepared).createTurnState();
   return {
     ...turnState,
-    systemPrompt: beforeAgentStart.systemPrompt,
-    beforeAgentStartMessages: beforeAgentStart.messages,
+    contextFiles: cloneData(prepared.contextResources.contextFiles),
+    contextResources: cloneData(prepared.contextResources),
+    discoveredResources: cloneData(prepared.discoveredResources),
+    beforeAgentStartMessages: prepared.beforeAgentStartMessages.map((message) => cloneData(message)),
+  };
+}
+
+export async function runExtensionTurn(
+  options: RunExtensionTurnOptions,
+): Promise<RunExtensionTurnResult> {
+  validateMaxTurns(options.maxTurns);
+  const prepared = await prepareExtensionTurn(options);
+  await persistBeforeAgentStartMessages(options, prepared.beforeAgentStartMessages);
+  const result = await runHarnessTurn({
+    session: options.session,
+    model: options.model,
+    registry: prepared.registry,
+    activeToolNames: options.activeToolNames,
+    resources: prepared.harnessResources,
+    systemPrompt: prepared.systemPrompt,
+    streamOptions: options.streamOptions,
+    transformContext: options.transformContext,
+    prompt: options.prompt,
+    hooks: combineToolHooks(createExtensionToolHooks(options.runner), options.hooks),
+    maxTurns: options.maxTurns,
+    onEvent: options.onEvent,
+  });
+  return {
+    ...result,
+    contextResources: cloneData(prepared.contextResources),
+    discoveredResources: cloneData(prepared.discoveredResources),
+    beforeAgentStartMessages: prepared.beforeAgentStartMessages.map((message) => cloneData(message)),
+  };
+}
+
+async function prepareExtensionTurn(
+  options: CreateExtensionTurnStateOptions,
+): Promise<PreparedExtensionTurn> {
+  const discoveredResources = await options.runner.emitResourcesDiscover(options.cwd, "startup");
+  const registry = mergeExtensionTools(options.registry, options.runner);
+  const resourceOptions = {
+    ...options,
+    registry,
+    skillFiles: [
+      ...(options.skillFiles ?? []),
+      ...discoveredResources.skillPaths.map((entry) => entry.path),
+    ],
+    promptTemplateFiles: [
+      ...(options.promptTemplateFiles ?? []),
+      ...discoveredResources.promptPaths.map((entry) => entry.path),
+    ],
+  };
+  const preparedResources = await prepareContextResources(resourceOptions);
+  const baseTurnState = await createMiniHarness({
+    session: options.session,
+    model: options.model,
+    registry,
+    activeToolNames: options.activeToolNames,
+    resources: preparedResources.harnessResources,
+    systemPrompt: preparedResources.systemPrompt,
+    streamOptions: options.streamOptions,
+    transformContext: options.transformContext,
+  }).createTurnState();
+  const before = await options.runner.emitBeforeAgentStart({
+    prompt: options.prompt ?? "",
+    systemPrompt: baseTurnState.systemPrompt,
+    systemPromptOptions: { cwd: options.cwd },
+  });
+  return {
+    registry,
+    contextResources: preparedResources.contextResources,
+    harnessResources: preparedResources.harnessResources,
+    systemPrompt: before.systemPrompt,
+    discoveredResources,
+    beforeAgentStartMessages: before.messages,
+  };
+}
+
+function createPreparedHarness(
+  options: CreateExtensionTurnStateOptions,
+  prepared: PreparedExtensionTurn,
+) {
+  return createMiniHarness({
+    session: options.session,
+    model: options.model,
+    registry: prepared.registry,
+    activeToolNames: options.activeToolNames,
+    resources: prepared.harnessResources,
+    systemPrompt: prepared.systemPrompt,
+    streamOptions: options.streamOptions,
+    transformContext: options.transformContext,
+  });
+}
+
+async function persistBeforeAgentStartMessages(
+  options: CreateExtensionTurnStateOptions,
+  messages: CustomMessage[],
+): Promise<void> {
+  for (const message of messages) await options.session.appendMessage(message);
+}
+
+function combineToolHooks(extensionHooks: ToolHooks, callerHooks?: ToolHooks): ToolHooks {
+  return {
+    async beforeToolCall(context) {
+      const callerResult = await callerHooks?.beforeToolCall?.(context);
+      if (callerResult?.block) return callerResult;
+      const effectiveArgs = callerResult?.arguments ?? context.args;
+      const extensionResult = await extensionHooks.beforeToolCall?.({
+        ...context,
+        args: effectiveArgs,
+        toolCall: callerResult?.arguments
+          ? { ...context.toolCall, arguments: effectiveArgs }
+          : context.toolCall,
+      });
+      if (extensionResult?.block) return extensionResult;
+      return callerResult;
+    },
+    afterToolCall: callerHooks?.afterToolCall,
+  };
+}
+
+function createEmptyExtension(path: string): LoadedExtension {
+  return {
+    path,
+    handlers: { before_agent_start: [], resources_discover: [], tool_call: [] },
+    tools: [],
+    commands: [],
   };
 }
 
@@ -277,19 +444,14 @@ function createExtensionApi(extension: LoadedExtension): MiniExtensionAPI {
 function createMiniUi(): MiniUi {
   return {
     notifications: [],
-    notify(message: string) {
+    notify(message) {
       this.notifications.push(message);
     },
   };
 }
 
 function createContext(ui: MiniUi, systemPrompt: string): MiniExtensionContext {
-  return {
-    ui,
-    getSystemPrompt() {
-      return systemPrompt;
-    },
-  };
+  return { ui, getSystemPrompt: () => systemPrompt };
 }
 
 function cloneExtension(extension: LoadedExtension): LoadedExtension {
@@ -301,82 +463,98 @@ function cloneExtension(extension: LoadedExtension): LoadedExtension {
       tool_call: [...extension.handlers.tool_call],
     },
     tools: extension.tools.map(cloneTool),
-    commands: extension.commands.map((command) => ({ ...command })),
+    commands: extension.commands.map(cloneCommand),
   };
 }
 
 function cloneTool(tool: RegisteredTool): RegisteredTool {
+  return { ...tool, parameters: cloneData(tool.parameters) };
+}
+
+function cloneCommand(command: MiniCommand): MiniCommand {
+  return { ...command };
+}
+
+function materializeCustomMessage(message: ExtensionCustomMessage): CustomMessage {
   return {
-    ...tool,
-    parameters: {
-      ...tool.parameters,
-      properties: { ...tool.parameters.properties },
-      required: tool.parameters.required ? [...tool.parameters.required] : undefined,
-    },
+    ...cloneData(message),
+    role: "custom",
+    timestamp: message.timestamp ?? Date.now(),
   };
 }
 
-export async function runDemo(): Promise<void> {
-  const runner = await loadMiniExtensions([
-    {
-      path: "review-helper.ts",
-      factory(pi) {
-        pi.registerTool({
-          name: "note",
-          label: "note",
-          description: "Write a short note.",
-          parameters: {
-            type: "object",
-            properties: {
-              text: { type: "string" },
-            },
-            required: ["text"],
-          },
-          handler(input) {
-            return { toolName: "note", content: `note: ${String(input.text)}` };
-          },
-        });
-
-        pi.registerCommand("hello", {
-          description: "Show a greeting.",
-          handler(args, ctx) {
-            ctx.ui.notify(`hello ${args || "world"}`);
-          },
-        });
-
-        pi.on("before_agent_start", (event) => {
-          return { systemPrompt: `${event.systemPrompt}\nExtension note: keep answers short.` };
-        });
-
-        pi.on("tool_call", (event) => {
-          if (event.toolName === "bash" && String(event.input.command).includes("rm -rf")) {
-            return { block: true, reason: "Dangerous shell command" };
-          }
-        });
-      },
-    },
-  ]);
-
-  const turnState = await createExtensionTurnState({
-    runner,
-    files: {
-      "/work/pi/AGENTS.md": "Project rule: verify before reporting.",
-    },
-    cwd: "/work/pi",
-    agentDir: "/home/me/.pi/agent",
-    session: createDemoSession("demo-session", [{ role: "user", content: "Use extension tools." }]),
-    model: { provider: "demo", id: "demo-model" } satisfies MiniModel,
-    registry: createDemoToolRegistry(),
-  });
-  const commandResult = await runner.runCommand("hello", "Pi");
-  const blocked = await runner.emitToolCall({ toolName: "bash", input: { command: "rm -rf tmp" } });
-
-  console.log(`Tools: ${turnState.activeTools.map((tool) => tool.name).join(", ")}`);
-  console.log(`Command notification: ${commandResult.notifications.join(", ")}`);
-  console.log(`System prompt has extension note: ${turnState.systemPrompt.includes("Extension note")}`);
-  console.log(`Blocked bash: ${blocked?.reason}`);
+function appendDiscovered(
+  target: Array<{ path: string; extensionPath: string }>,
+  paths: string[] | undefined,
+  extensionPath: string,
+): void {
+  for (const path of paths ?? []) target.push({ path, extensionPath });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  await runDemo();
+function validateMaxTurns(maxTurns: number | undefined): void {
+  if (maxTurns !== undefined && (!Number.isSafeInteger(maxTurns) || maxTurns <= 0)) {
+    throw new Error("maxTurns must be a positive safe integer");
+  }
+}
+
+function cloneData<T>(value: T, seen = new WeakMap<object, object>()): T {
+  if (value === null || typeof value !== "object") return value;
+  const object = value as object;
+  const existing = seen.get(object);
+  if (existing) return existing as T;
+  const clone: object = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+  seen.set(object, clone);
+  for (const key of Reflect.ownKeys(object)) {
+    const descriptor = Object.getOwnPropertyDescriptor(object, key);
+    if (!descriptor) continue;
+    if ("value" in descriptor) descriptor.value = cloneData(descriptor.value, seen);
+    Object.defineProperty(clone, key, descriptor);
+  }
+  return clone as T;
+}
+
+async function runLiveCli(): Promise<void> {
+  const runtime = loadCourseModel();
+  const cwd = process.cwd();
+  const runner = await loadMiniExtensions([{
+    path: "built-in-note-extension",
+    factory(pi) {
+      pi.registerTool({
+        name: "note",
+        description: "Record a short note in the tool result.",
+        parameters: {
+          type: "object",
+          properties: { text: { type: "string", description: "Note text" } },
+          required: ["text"],
+        },
+        handler(input) {
+          return { toolName: "note", content: `note: ${String(input.text)}` };
+        },
+      });
+    },
+  }]);
+  const session = createSessionTree({ cwd });
+  const source = createFileSystemResourceSource();
+  const agentDir = process.env.PI_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+  await runPromptCli("s09 Extension Runtime", async (prompt) => {
+    const result = await runExtensionTurn({
+      runner,
+      source,
+      cwd,
+      agentDir,
+      session,
+      model: runtime.model,
+      registry: createCourseToolRegistry(cwd),
+      streamOptions: runtime.streamOptions,
+      prompt,
+    });
+    return result.finalMessage.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+  });
+}
+
+if (isMainModule(import.meta.url)) {
+  await runLiveCli();
 }

@@ -1,192 +1,122 @@
-# 第10课 运行模式——同一套内核，接不同的外壳用在不同场景
+# 第 10 课 · Runtime Modes
 
-[English](README.md) · 中文 · [日本語](README.ja.md)
+[课程首页](../README.zh.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s09](../s09_extension_runtime/README.zh.md) · [目录](../README.zh.md) · [s11 →](../s11_trust_execution_env/README.zh.md)
+> 在 Pi 中的位置：围绕同一个 Agent Session Runtime 的 Interactive、Print/JSON、RPC 与 SDK Shell。
 
-到s09为止，我们的内核已经很完整了，但你有没有发现一个问题：这堆东西到现在只有测试和demo在直接调用函数，还没有一个真正能用的入口。
-而且入口的需求还不一样：
-- 人要在终端里聊天，需要交互式的界面
-- 脚本要一次性问个问题拿答案，需要简单的输入输出
-- CI/CD要打日志、接管道，需要结构化的JSON输出
-- 别的程序要对接，需要RPC协议
-- 其他Node程序要内嵌，需要直接调用API
+```text
+                         +-> interactive
+one MiniCoreRuntime -----+-> print (text or JSON)
+one Session              +-> RPC
+                         +-> SDK
+```
 
-很多人第一反应是：这还不简单？每个场景写一套Agent不就行了？终端写一个，脚本写一个，RPC写一个，SDK写一个。
-这个思路做出来的东西，用不了多久就会崩。
+## 先搞懂：为什么不能为每种入口各写一套 Agent
 
----
+s09 已经有真实 Model-Tool Loop、Session Tree、Context Resource 与 Extension。产品仍需要多种入口：人在 Interactive Terminal 中使用；脚本只要一次结果；其他进程需要 Command；应用程序则需要 API。
 
-## 先搞懂：每个场景写一套Agent为什么不行？
+若为每种入口分别创建 Agent，Message History 与配置就会分裂。RPC 发出的 Prompt 不会存在于 Interactive Session 中，每次新增 Tool 或 Extension 行为也必须实现多遍。
 
-第一，**状态会裂**。四套入口四套历史，很快就会出现"RPC里问过的话，终端里看不到"的问题——明明是同一个Agent，换个入口就失忆了。
-第二，**功能要写四遍**。以后加会话恢复、切换模型、分支会话，每个入口都得改一遍，漏改一个就是行为不一致，维护成本爆炸。
-第三，**扩展要适配四次**。第三方扩展写出来，要给四个入口各适配一遍，没人愿意干。
+## 思路：四种 Shell 共享一个 Core 与一个 Session
 
-正确的设计你每天都在用：**一台主机，接不同的外设**。
-你的电脑主机里存着所有文件、跑着所有程序，你接显示器是电脑，接投影仪也是电脑，接串口终端还是电脑——换外设不会丢文件，不会让程序变，外设本身也不存任何东西，只是不同的输入输出方式而已。
+s10 把四类 Shell 放在同一个 `MiniCoreRuntime` 与同一个 Session 周围：
 
-Pi的运行模式就是这个思路：内核永远只有一套，所有状态、历史、逻辑都在内核里，不同的运行模式只是套在内核外面的不同外壳，只负责输入输出，不存任何状态。
+| Shell | 输入 | 输出 |
+| --- | --- | --- |
+| Interactive | 一组 Terminal-style Prompt | Transcript |
+| Print | 一条 Prompt | 最终文本或 JSONL Lifecycle Event |
+| RPC | `prompt` 与 `get_state` Command | 可关联的 Response Object |
+| SDK | 直接 Method Call | Result Object、State 与 Event Callback |
 
----
+Shell Contract 保持精简：
 
-## 内核只暴露两个方法，外壳只认接口不认人
-
-要让外壳可以随便换，内核和外壳之间的接口必须足够小。Pi的内核对外只暴露两个方法：
 ```ts
-interface MiniRuntime {
-  // 问一句话，返回结果和事件
+export interface MiniRuntime {
   prompt(prompt: string): Promise<MiniRunResult>;
-  // 获取当前状态（历史消息数、轮次等）
   getState(): MiniRuntimeState;
+  subscribe(listener: (event: MiniRuntimeEvent) => void): () => void;
 }
 ```
 
-就这两个方法，没别的了。不管什么外壳，只要拿到实现了这两个方法的对象，就能工作，根本不管你里面是真的Agent循环还是个echo测试桩。
-
-一共有五种外壳（其实是四种模式，json是print模式的一个输出分支）：
-
-| 外壳 | 给谁用 | 输入 | 输出 |
-|------|--------|------|------|
-| interactive | 人在终端聊天 | 终端输入 | 对话文本流 |
-| print | 脚本一次性问答 | 一句prompt | 最终回答文本 |
-| json | 管道、日志、CI | 一句prompt | JSONL格式的事件流 |
-| rpc | 其他进程对接 | JSONL命令 | JSONL响应 |
-| sdk | Node/TS程序内嵌 | 方法调用 | 返回值+事件订阅 |
-
-每个外壳都非常薄，薄到什么程度？print模式总共就三行代码：
-```ts
-async function runPrintMode(runtime, prompt) {
-  const result = await runtime.prompt(prompt);
-  return result.finalText;
-}
-```
-json模式和print模式只差一行，就是把结果换成事件流的JSONL输出——所以说json不是独立的模式，只是print模式的另一个输出格式而已。
-
-所有外壳都不存任何状态，不维护任何历史，它们做的事情只有三件：
-1. 把输入转成prompt()调用
-2. 把内核返回的结果转成对应格式的输出
-3. 转发事件
-
-过手不过夜，所有状态全在内核里。你换外壳，就像换显示器，主机里的东西一点不会变。
-
----
-
-## 重要：这节课的内核是个假的，故意的
-
-你可能注意到了，这节课的core是个简单的echo桩，收到什么就返回"mini pi: xxx"，根本没import前面九节课的任何代码。
-这不是偷懒，是故意的。
-我们这节课要证明的是"外壳和内核是完全解耦的"，这个结论只依赖接口，不依赖内核具体实现。就像你测试USB接口好不好用，插个U盘试就行，不用插个真硬盘。只要接口对，不管内核是什么实现，外壳都能跑。
-s13我们会把前面九节课写的真内核接进来，到时候这五个外壳一行代码都不用改，直接就能用——这就是接口设计对了的好处。
-
----
-
-## 每个外壳的特点
-
-### interactive：终端交互
-就是我们平时在终端用Pi的样子，读用户输入，传给内核，把回答打印到终端，循环往复。真实Pi的interactive模式有编辑器、快捷键、分支选择器这些UI，但本质还是一样的：把终端输入给内核，把内核输出打出来，不存任何状态。
-
-### print：一次性问答
-给脚本用的，就问一句话，拿最终答案，完事。比如你在shell里写`pi "这个文件是干嘛的"`，用的就是print模式，拿到答案就退出，不进交互。
-
-### json：事件流输出
-和print模式逻辑完全一样，只是不输出最终文本，而是把内核产生的所有事件逐行序列化成JSONL输出。这个模式给管道、CI、日志系统用，下游程序可以自己从事件流里筛选需要的信息，比如只看最终回答、只看工具调用、只看错误。
-
-### rpc：进程间调用
-给其他程序对接用的，标准输入输出走JSONL协议，支持多个命令：prompt提问、get_state查状态，以后还可以加abort中断、fork分支、set_model换模型等等。外部程序发带id的命令，内核返回带相同id的响应，和HTTP的请求响应模型差不多。
-
-### sdk：程序内嵌
-给Node/TS程序内嵌用的，最薄的一层——直接把runtime对象包一下，加个事件订阅，程序直接调用方法就行，不需要走进程间协议。你要自己写个IDE插件、写个GUI客户端，用SDK最方便。
-
----
+`createMiniCoreRuntime()` 是 Async Factory，因为它会先 Hydrate Session Metadata 与 Active Message Context。随后 `MiniCoreRuntime.prompt()` 调用 s09 的 `runExtensionTurn()`，捕获并发布真实 Agent Event，刷新 Session Snapshot，再记录成功的 Run Result。所有 Shell 都委托给这个 Object。
 
 ## 先跑起来看看
 
-```sh
-npm run session:s10
+配置好课程 `.env` 后，从 `learn-pi-agent/` 运行：
+
+```bash
+npm run s10
 ```
 
-输出长这样：
-```text
-Print: mini pi: hello print
-JSON event types: session, agent_start, message, agent_end
-RPC turns: 2
+也可以通过 CLI 的 Print Shell 直接发送一次 Prompt：
+
+```bash
+npm run s10 -- "使用 read_file 检查 package.json，并报告 pi-ai 版本。"
 ```
 
-注意这三行用的是同一个内核实例：print跑了一轮，json跑了一轮，最后rpc查状态的时候turns是2，不是1——因为三个外壳用的是同一个core，状态是共享的，换外壳不会丢历史。
-就像你用显示器看了两页文档，拔了显示器插投影仪，文档还是在那一页，不会从头开始。
+模型回答与 Tool Call 可能变化。稳定路径与 s09 相同：真实 Model、Extension Turn、Active `read_file` 和 Session Persistence。s10 只改变调用方如何进入 Runtime、如何消费 Result。
 
----
+## 代码怎么写的
+
+### 1. 把累计 State 留在同一个真实 Core 中
+
+调用方首先需要等待 `createMiniCoreRuntime()`。Factory 会读取 Session Metadata 与 Active Context，因此 Resumed Session 在发送新 Prompt 前，就能报告 Session ID、Message、最新 Assistant Text 与已有 User-Prompt Count。
+
+`MiniCoreRuntime.prompt()` 会先递增单调的 Prompt-attempt Counter，再委托给 `runExtensionTurn()`。它通过 `onEvent` 收集每个 `AgentEvent`，并在 Turn 运行期间把 Event Clone 发送给当前 Subscriber。成功后，它刷新 Session Snapshot，再保存一份克隆后的 `MiniRunResult`：
+
+```ts
+const runtime = await createMiniCoreRuntime(options);
+const result = await runtime.prompt(prompt);
+
+console.log(result.runId);
+console.log(runtime.getState());
+```
+
+Turn 失败时，Runtime 仍会刷新 Loop 已经持久化的 Message，再重新抛出原始 Error。`getState().turns` 统计 Prompt Attempt，而不只统计成功 Result；即使 Branch 或 Compaction 让 Active Context 变短，它也不会倒退。`getPrompts()` 包含通过该 Runtime Instance 提交的 Attempt，包括失败项；`getRuns()` 只包含真正产生 `MiniRunResult` 的 Attempt。
+
+### 2. 把 Text 与 JSON 当作两种 Print 输出
+
+`runPrintMode()` 等待 `runtime.prompt()`，再返回 `finalText`。`runJsonMode()` 也会先等待完整 Prompt 完成，然后把捕获的 Lifecycle Event 序列化成 JSONL。
+
+因此，本课 JSON Helper 是 Run 结束后的序列化，不是实时 Event Stream。真实 Pi 的 JSON 分支会在 Prompt 前订阅，并在 Event 到达时立即写出。
+
+### 3. 把 RPC Command 转成同一组 Method Call
+
+`runRpcMode()` 支持 `prompt` 与 `get_state`。它会保留可选 Command ID，让其他进程关联 Response。
+
+教学版 RPC 的 `prompt` Response 会等待 Turn 完成，成功时包含完整 `MiniRunResult`。Model、Tool Loop 或 Event Observer 失败时，`runRpcMode()` 会捕获 Rejection，并用同一关联 Response Shape 返回 `success: false` 与 Error String。真实 Pi Protocol 会把 Preflight Acknowledgement 与异步发出的 Session Event 分开，并支持更多 Command。
+
+### 4. 让 SDK 与 Interactive Wrapper 保持轻薄
+
+`runInteractiveMode()` 按顺序把 Prompt 交给同一个 Runtime，再格式化 Transcript。它不是 TUI；Editor State、Key Binding 和 Rendering 不属于本课。
+
+`createSdkSession()` 通过委托同一个 Core 来暴露 `prompt()`、`getState()` 与 `subscribe()`。`MiniCoreRuntime.subscribe()` 会在底层 Turn 仍在运行时，从 `onEvent` 接收克隆后的 Event，并早于 `prompt()` 完成。它是 Live Subscription，而不是对 `result.events` 的事后回放。Unsubscribe 会让 Listener 不再接收后续 Event。
 
 ## 动手试一试
 
-### 实验1：自己写个shout内核
-自己实现一个MiniRuntime接口，收到什么都转成大写返回：
-```ts
-const shout = {
-  async prompt(prompt) {
-    const finalText = prompt.toUpperCase();
-    return {
-      sessionId: "shout",
-      runId: "shout:1",
-      finalText,
-      events: [{ type: "agent_end", finalText }],
-      messages: [{role:"user", content:prompt}, {role:"assistant", content:finalText}],
-    };
-  },
-  getState() {
-    return { sessionId: "shout", turns: 1, messageCount: 2 };
-  }
-};
-console.log(await runPrintMode(shout, "hello shout"));
-```
-重跑你会看到输出"HELLO SHOUT"——这个shout对象和我们写的MiniCoreRuntime没有任何继承关系，只是恰好有那两个方法，print模式就认它。
+1. 预先向 Session 写入一组 User/Assistant Message，等待 `createMiniCoreRuntime()`，再在发送新 Prompt 前检查 State。
+2. 依次调用 Print、JSON、RPC 与 SDK。把单调 `getState().turns`、`getPrompts()` 与只包含成功项的 `getRuns()` 对比。
+3. 通过 `createSdkSession()` 订阅，并在 Callback 内检查 `getRuns().length`。Live Event 会在当前成功 Run 存储之前到达。
+4. 让一次 RPC Prompt 失败，再发送另一个 Prompt。第一次 Response 应为 `success: false`；刷新后的 Session 应保留已持久化 Message；第二次 Run ID 应使用下一个 Attempt Number。
 
-### 实验2：把shout接到其他外壳上
-把shout分别传给json、rpc、interactive模式，你会发现所有外壳都正常工作，一行代码都不用改。
-这就是接口的力量：外壳只认方法，不认人。
+## 接入课程主线
 
-### 实验3：用jq消费json模式的输出
-把json模式的输出直接打到stdout，用jq过滤出message事件的内容：
-```sh
-node s10_runtime_modes/code.ts --demo | jq -r 'select(.type == "message") | .content'
-```
-你会拿到干净的回答文本，不需要做任何解析——事件流天生就是机器可读的。
+| 边界 | s09 | s10 |
+| --- | --- | --- |
+| Core 执行 | `runExtensionTurn()` | 包装为 `MiniCoreRuntime.prompt()` |
+| Session | 提供给一次 Turn | 在每次 Shell Call 间共享 |
+| Event | 一次 Turn 中的 Callback | 按 Run 捕获，并实时发布给 SDK Subscriber |
+| 文本输出 | 调用方读取 Final Message | Print 与 Interactive 负责格式化 |
+| 机器输出 | 只有 Result Object | JSONL、RPC Response 或 SDK Object |
+| State Hydration | 调用方已经持有 Session | Async Factory 读取 Metadata 与 Active Context |
+| Attempt State | 一次一个 Turn | 单调 Attempt 加只含成功项的 Run Result |
 
-跑完三个实验，你应该能回答下面检查点的问题。改完可以用`npm run test:s10`确认没破坏行为约定。
+## 对照 Pi 源码
 
----
+Shared Runtime、Session Hydration、Mode Dispatch、Print Text/JSON 分支、RPC Response Layer 与 SDK Session API 都对应 Pi 0.79.1。课程 SDK Subscription 与 Pi Agent Session Subscription 一样会实时接收 Event。课程仍在 Prompt 完成后批量提供 JSON Output，RPC `prompt` 也会等待完整 Run 或返回 Failure Response；Pi 会单独确认 Prompt Preflight，JSON 与 RPC Session Event 则可在工作期间继续传递。
 
-## 本节课打下的地基
+固定源码映射见 [pi-source.zh.md](pi-source.zh.md)。
 
-s10我们把内核和外壳彻底解耦，同一套内核可以用在任意场景：
+## 下一课
 
-| 这节课立的约定 | 后面会怎么用 |
-|----------------|--------------|
-| 内核只暴露prompt()和getState()两个方法，外壳只认接口 | 内核怎么升级都不影响外壳，第三方可以自己写外壳 |
-| 所有外壳无状态，状态全在内核 | 换入口不会丢历史，功能只需要在内核实现一次 |
-| 五种外壳覆盖所有使用场景：交互、脚本、管道、RPC、内嵌 | 终端、CI、编辑器插件、其他程序对接都能用 |
-| json是print模式的输出分支，不是独立模式 | 文本输出和结构化输出共享逻辑，行为一致 |
-| 外壳和内核完全解耦，只要接口对就能插 | s13接真内核的时候外壳一行不用改 |
-
-**本课引入的核心原语**：`MiniRuntime` / `runInteractiveMode` / `runPrintMode` / `runJsonMode` / `runRpcMode` / `createSdkSession`
-
----
-
-## 检查点
-
-学完这节课，你应该能脱口回答这几个问题：
-- 为什么不能每个场景写一套Agent？多套入口会有什么问题？
-- 外壳为什么不能存状态？所有状态都在内核里有什么好处？
-- 这节课为什么要用一个echo假内核，不直接用前面写的真内核？
-
----
-
-## 本节课小结
-
-这节课我们其实只讲了一个核心道理：
-> 核心逻辑永远只有一套，不同场景只是不同的输入输出外壳，不要为了不同的输入输出重复写核心逻辑。
-
-看起来只是写了几个薄的包装函数，实际上这是Pi能同时支持终端、CI、编辑器、第三方集成的关键——核心永远稳定，外壳可以随便加，随便换。现在入口的问题解决了，但还有个安全问题：clone下来的陌生项目里有.pi目录，有扩展、有配置，启动的时候要不要加载？加载了会不会有危险？下节课我们就来讲信任和执行环境的边界。
-
-进入下一课：[s11 信任与执行环境 —— 信不信任项目，和能不能执行危险命令是两回事](../s11_trust_execution_env/README.zh.md)
+[第 11 课 · Project Trust](../s11_project_trust/) 会在这些 Runtime Shell 启动前决定哪些项目本地输入可以加载。它是 Loading Gate，不是 Permission System 或 Sandbox。

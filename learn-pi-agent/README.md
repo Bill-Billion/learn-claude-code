@@ -1,32 +1,32 @@
 # Learn Pi Agent -- Build a Small, Extensible Agent Harness
 
-English | [中文](README.zh.md) | [日本語](README.ja.md)
+[English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
 ## The Model Decides. The Harness Makes Decisions Operable.
 
-An LLM supplies the judgment: read a situation, choose whether to answer or use a tool, inspect the result, and decide what comes next. An agent harness supplies the operating conditions: messages, tools, events, session state, extensions, trust boundaries, and runtime shells.
+An LLM supplies judgment. It reads the situation, chooses whether to answer or use a tool, examines the result, and decides what comes next. An agent harness supplies the conditions that make that judgment usable: messages, tools, events, session state, extensions, trust boundaries, and runtime shells.
 
-This course rebuilds those conditions from scratch, using [Pi](https://github.com/earendil-works/pi) as the design specimen. Pi is valuable here because it keeps the kernel small and pushes product workflow outward. Instead of hiding the loop behind a framework, it makes the boundary between model intelligence and harness mechanics unusually easy to inspect.
+This course uses [Pi](https://github.com/earendil-works/pi) as a design reference and rebuilds those conditions from the ground up. Pi keeps its kernel small and leaves product-specific workflows outside the loop. That makes it a useful system for studying where model intelligence ends and harness engineering begins.
 
 ```text
 model judgment
-     |
-     v
+      |
+      v
 messages -> provider events -> tool loop -> tool results -> messages
-                |                |
-                v                v
-          session state     hooks / extensions
-                \                /
-                 runtime + trust
+                 |              |
+                 v              v
+             turn state     hooks / extensions
+                  \             /
+                   runtime + trust
 ```
 
-After 14 lessons, you will have a mini Pi with a replaceable provider, streamed text and tool calls, an evented tool loop, hookable execution, branchable sessions, loadable context, extensions, trust controls, package discovery, four runtime shells, and one optional real-model capstone.
+After 13 lessons, you will have a mini Pi with a real model-tool loop, normalized provider events, lifecycle-aware tool execution, branchable sessions, on-demand context, extensions, trust controls, package discovery, and four runtime modes. The first lesson already calls a real model and lets it use a safe, read-only tool; every later lesson develops that same path.
 
-This is not a guide to using the Pi CLI, and it is not a line-by-line tour of its source. It is a harness-engineering course: each lesson isolates one design decision, implements the smallest version that exposes the decision, and then traces that version back to pinned Pi source.
+This is not a Pi CLI usage guide or a line-by-line source tour. Each lesson isolates one design decision, builds the smallest implementation that makes it visible, and maps it back to pinned Pi source.
 
 ## Why Pi Is Worth Rebuilding
 
-Pi separates three concerns that agent products often blur:
+Pi separates three responsibilities that agent products often mix together:
 
 ```text
 pi-ai            normalizes models, messages, tools, and provider streams
@@ -34,39 +34,37 @@ pi-agent-core    owns message state, the agent loop, and lifecycle events
 pi-coding-agent  adds sessions, resources, extensions, packages, trust, and shells
 ```
 
-Its product stance follows from that split: keep the core general, and let extensions and external environments own workflow. Sub-agents, planning, permission UI, todo systems, and MCP do not need to be hard-coded into the loop. They can be composed around it.
+That separation carries a product opinion: keep the core general and put workflows in extensions or the surrounding environment. Subagents, planning, permission prompts, todo systems, and MCP do not need to be hard-coded into the loop. They can be composed around it.
 
-The lesson is not "copy Pi." The lesson is to recognize which concerns belong in a model adapter, which belong in the loop, and which should stay outside both.
+The lesson is not to copy Pi. It is to identify what belongs in a model adapter, what belongs in the loop, and what should remain outside both.
 
-## Fourteen Lessons, Fourteen Invariants
+## Thirteen Lessons, Thirteen Invariants
 
-> **s01** *"The loop is the agent's heartbeat"* - append the model response, inspect the stop reason, and continue only when action is required.
+> **s01** *"A tool result becomes the model's next evidence"* - a real model can request `read_file`, the harness executes it, and the model continues with the result.
 >
-> **s02** *"A tool is a public contract plus a private handler"* - the model sees JSON Schema; only the harness sees executable code.
+> **s02** *"A tool has a public contract and a private handler"* - the model sees JSON Schema; only the harness sees executable code.
 >
-> **s03** *"Stream state, not just text"* - text and tool calls arrive as events that preserve partial assistant state.
+> **s03** *"Stream state, not just text"* - text and tool calls arrive as events that preserve the partially assembled assistant message.
 >
-> **s04** *"A tool result is the next model input"* - execution closes one turn and gives the model evidence for the next.
+> **s04** *"Tool execution has a lifecycle"* - a call, its result, and the next model turn remain observable as separate events.
 >
-> **s05** *"Policy belongs around execution, not inside tools"* - hooks can block, rewrite, or terminate without contaminating handlers.
+> **s05** *"Policy belongs around execution, not inside every tool"* - hooks can block, rewrite, or finish a call without contaminating its handler.
 >
-> **s06** *"A turn is a snapshot, not a bag of globals"* - messages, tools, resources, model, and system prompt meet in one explicit state.
+> **s06** *"A turn is a snapshot, not a bag of globals"* - messages, tools, resources, model, and system prompt become one explicit state.
 >
-> **s07** *"History becomes useful when it can branch"* - append-only entries and parent ids preserve alternatives instead of overwriting them.
+> **s07** *"History is useful when it can branch"* - append-only entries and parent IDs preserve alternatives without rewriting the past.
 >
 > **s08** *"Context is selected, not dumped"* - project instructions, skills, and prompt templates enter only through a resource boundary.
 >
-> **s09** *"Keep the kernel small; let extensions own workflow"* - events, tools, commands, and custom messages plug into stable interfaces.
+> **s09** *"Keep the kernel small; let extensions own workflows"* - events, tools, commands, and custom messages attach through stable interfaces.
 >
-> **s10** *"One runtime, many shells"* - interactive, print/JSON, RPC, and SDK modes share the same session state.
+> **s10** *"One runtime, several shells"* - interactive, print/JSON, RPC, and SDK modes share the same session state.
 >
-> **s11** *"Trust controls loading; isolation controls damage"* - deciding what may enter a process is different from sandboxing what it may do.
+> **s11** *"Project trust controls loading, not execution"* - project settings, extensions, prompts, and packages are gated; a sandbox, when needed, stays outside Pi.
 >
-> **s12** *"Capabilities travel as packages"* - manifests, conventions, filters, and scope turn local resources into distributable units.
+> **s12** *"Capabilities travel as packages"* - manifests, conventions, filters, and scopes turn local resources into distributable units.
 >
-> **s13** *"Integration tests the boundaries"* - if modules connect only by reaching into internals, their public contracts were drawn wrong.
->
-> **s14** *"Offline proves mechanics; live traffic proves the loop"* - an OpenAI-compatible stream lets a real model choose a tool, read its result, and answer.
+> **s13** *"Integration tests the boundaries"* - the complete harness runs on the same real provider path without reaching through earlier modules' private state.
 
 ## Core Pattern
 
@@ -84,95 +82,80 @@ while (true) {
 }
 ```
 
-The loop remains recognizable from s01 to s14. Later lessons change the quality of its inputs, outputs, persistence, and boundaries. They do not replace model judgment with a scripted workflow.
+The loop remains recognizable from s01 to s13. Later lessons improve its inputs, outputs, persistence, and boundaries. They do not replace model judgment with a scripted workflow.
 
-## Offline First, Live by Choice
+## A Real Provider from s01
 
-There are two deliberately separate learning environments:
-
-| Track | Lessons | Network or API key | What it proves |
-| --- | --- | --- | --- |
-| Mechanism track | s01-s13 and every automated test | Not required | Event order, tool dispatch, session state, trust, packages, and integration are deterministic and reproducible |
-| Live capstone | s14 `session:s14` only | Required | A real model can stream text, assemble tool-call deltas, consume a tool result, and continue the s13 loop |
-
-The s14 tests do not call the network. They feed byte-split `ReadableStream` fixtures into Node's native `fetch` interfaces, including 401, 429, timeout/abort, malformed or incomplete SSE, oversized responses, and fragmented tool arguments. CI therefore remains offline and credential-free.
+`npm run s01` through `npm run s13` call an OpenAI-compatible provider. The wording of the answer and the model's tool choices can vary between runs. Follow the stable structure instead: a user message enters, provider events describe the response, tool calls pass through the harness, and tool results return to the model.
 
 ## Quick Start
 
-Requirements: Node.js 25 or newer. There are no production dependencies.
+You need Node.js 22.19 or newer.
 
 ```bash
-git clone https://github.com/Bill-Billion/learn-claude-code.git learn-agent-harness
+git clone https://github.com/Bill-Billion/learn-agent-harness.git
 cd learn-agent-harness/learn-pi-agent
-npm ci
-
-npm run session:s01
-npm run test:s01
-npm run check
-```
-
-`npm run check` runs TypeScript type checking and the complete offline test suite.
-
-### Run the Real-Model Capstone
-
-s14 uses the OpenAI-compatible Chat Completions endpoint and Node's native `fetch`. Your endpoint must support streaming and function/tool calls.
-
-```bash
+npm install
 cp .env.example .env
-# Edit .env: set OPENAI_API_KEY and OPENAI_MODEL.
-# Keep OPENAI_BASE_URL, or replace it with another compatible /v1 base URL.
+# Edit .env and set OPENAI_API_KEY.
 
-npm run test:s14
-npm run session:s14 -- "Read README.md and explain the course in three points"
+npm run s01
 ```
 
-| Variable | Required | Meaning |
+`OPENAI_MODEL` defaults to `gpt-4o-mini`. `OPENAI_BASE_URL` defaults to the official OpenAI API. A typical run follows this shape, although the exact text and tool choice may differ:
+
+```text
+user -> model tool call -> read_file result -> model answer
+```
+
+Continue with `npm run s02` through `npm run s13`. Each command runs that lesson on the same real provider path.
+
+| Environment variable | Required | Meaning |
 | --- | --- | --- |
 | `OPENAI_API_KEY` | Yes | Credential accepted by the selected endpoint |
-| `OPENAI_MODEL` | Yes | A chat-completions model available from that endpoint |
-| `OPENAI_BASE_URL` | No | Defaults to `https://api.openai.com/v1` |
+| `OPENAI_MODEL` | No | Chat Completions model; defaults to `gpt-4o-mini` |
+| `OPENAI_BASE_URL` | No | OpenAI-compatible base URL; defaults to `https://api.openai.com/v1` |
 
-The live demo exposes one real tool, `read_course_file`, confined to this course directory. It resolves symlinks, rejects hidden or non-regular files, and reads at most 50,000 bytes of valid UTF-8, so the model cannot read the local `.env` or turn an unbounded local file into context. The key stays in `.env`, which the repository ignores. The adapter performs no automatic retry: authentication failures, rate limits, network failures, aborts, and protocol errors remain visible so the capstone teaches the boundary instead of hiding it.
+s01 gives the model one read-only `read_file` tool scoped to the course workspace. It cannot run shell commands or read outside that root. Keep the API key in `.env`, which is excluded from version control.
 
 ## Learning Path
 
 ```text
-Phase 1: Speak the protocol
+Phase 1: Establish the protocol
   s01 Agent Loop -> s02 Tool Schema -> s03 Provider Events
 
-Phase 2: Run trustworthy turns
+Phase 2: Run an observable turn
   s04 Evented Tool Loop -> s05 Tool Hooks -> s06 Turn State
 
-Phase 3: Grow a coding-agent product
+Phase 3: Grow into a coding-agent product
   s07 Session Tree -> s08 Context Resources -> s09 Extension Runtime
 
-Phase 4: Add shells and boundaries
-  s10 Runtime Modes -> s11 Trust & Execution Env -> s12 Pi Package
+Phase 4: Add shells and loading boundaries
+  s10 Runtime Modes -> s11 Project Trust -> s12 Pi Package
 
-Phase 5: Close both loops
-  s13 Integrated Harness -> s14 Real Provider
+Phase 5: Integrate the harness
+  s13 Integrated Harness
 ```
 
-Read in order on the first pass. Later lessons import earlier exports, so the dependency chain is part of the teaching: you can see whether an interface survives contact with the next requirement.
+Read the lessons in order on the first pass. Later chapters import earlier public exports directly. That dependency is part of the teaching: it shows whether an interface survives the next requirement.
 
 ## All Chapters
 
-| Chapter | Topic | What changes |
+| Chapter | Theme | What it adds |
 | --- | --- | --- |
-| [s01](s01_agent_loop/) | Agent Loop | `messages`, provider, and `stopReason` form the smallest loop |
-| [s02](s02_tool_schema/) | Tool Schema | model-visible definitions separate from local handlers |
-| [s03](s03_provider_events/) | Provider Events | text and tool-call deltas become one event protocol |
-| [s04](s04_evented_tool_loop/) | Evented Tool Loop | tool calls execute and return structured results |
-| [s05](s05_tool_hooks/) | Tool Hooks | before/after policies surround dispatch |
-| [s06](s06_turn_state/) | Harness Turn State | session, resources, tools, model, and prompt form a snapshot |
-| [s07](s07_session_tree/) | Session Tree | append-only JSONL history gains branches |
-| [s08](s08_context_resources/) | Context Resources | instructions, skills, prompts, and active tools are discovered |
-| [s09](s09_extension_runtime/) | Extension Runtime | extensions register hooks, tools, commands, and messages |
-| [s10](s10_runtime_modes/) | Runtime Modes | print/JSON, RPC, SDK, and interactive shells share one core |
-| [s11](s11_trust_execution_env/) | Trust and Execution Environment | input trust stays distinct from execution isolation |
-| [s12](s12_pi_package/) | Pi Package | resources resolve through manifest, convention, filter, and scope |
-| [s13](s13_integrated_harness/) | Integrated Harness | the first 12 public interfaces become one offline request chain |
-| [s14](s14_real_provider/) | Real Provider | Chat Completions SSE drives the same chain with a real model |
+| [s01](s01_agent_loop/) | Agent Loop | A real model calls a safe read-only tool and continues with its result |
+| [s02](s02_tool_schema/) | Tool Schema | Model-visible definitions stay separate from local handlers |
+| [s03](s03_provider_events/) | Provider Events | Text and tool-call deltas become one normalized event protocol |
+| [s04](s04_evented_tool_loop/) | Evented Tool Loop | Tool calls, results, and model continuation emit lifecycle events |
+| [s05](s05_tool_hooks/) | Tool Hooks | Before/after policy wraps dispatch |
+| [s06](s06_turn_state/) | Harness Turn State | Session, resources, tools, model, and prompt form a snapshot |
+| [s07](s07_session_tree/) | Session Tree | Append-only JSONL history gains branches |
+| [s08](s08_context_resources/) | Context Resources | Instructions, skills, prompts, and active tools are discovered |
+| [s09](s09_extension_runtime/) | Extension Runtime | Extensions register hooks, tools, commands, and messages |
+| [s10](s10_runtime_modes/) | Runtime Modes | Print/JSON, RPC, SDK, and interactive shells share one core |
+| [s11](s11_project_trust/) | Project Trust | Gate project-controlled inputs without claiming to sandbox execution |
+| [s12](s12_pi_package/) | Pi Package | Resources resolve through manifests, conventions, filters, and scopes |
+| [s13](s13_integrated_harness/) | Integrated Harness | The first 12 lessons compose on the same real provider path |
 
 ## How to Study Each Lesson
 
@@ -183,19 +166,19 @@ sNN_topic/
   README.md        complete English lesson
   README.zh.md     complete Chinese lesson
   README.ja.md     complete Japanese lesson
-  code.ts          minimal runnable implementation
+  code.ts          smallest runnable implementation
   code.test.ts     behavioral invariants and edge cases
-  pi-source.md     pinned Pi source cross-reference
-  pi-source.zh.md  Chinese source cross-reference
+  pi-source.md     pinned Pi source comparison
+  pi-source.zh.md  Chinese source comparison
 ```
 
-Follow the narrative in order: problem, idea, run it first, code walk-through, exercises, main-line wiring, source comparison, and the next lesson. Run the example before reading every function. Then change one invariant and use the test to discover what depends on it.
+Run `npm run sNN` before reading every function. Observe the model-tool path and the events or state introduced by that chapter. Then change a prompt, tool, or boundary, run the lesson again, and compare it with the next implementation.
 
 ## Source Grounding and Scope
 
-All source-trace links are pinned to [`earendil-works/pi` commit `2f5066d7`](https://github.com/earendil-works/pi/tree/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/), corresponding to the 0.79.1 source snapshot used when the course was written. The zero-to-one teaching structure also credits [`shareAI-lab/claw0` commit `0090e863`](https://github.com/shareAI-lab/claw0/tree/0090e863bd90aaebc79d244223cc2acc7c284eaf/). No local reference clone is required.
+All source-tracing links are pinned to [`earendil-works/pi` commit `2f5066d7`](https://github.com/earendil-works/pi/tree/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/), the Pi 0.79.1 snapshot used while writing the course. The from-zero teaching structure also credits [`shareAI-lab/claw0` commit `0090e863`](https://github.com/shareAI-lab/claw0/tree/0090e863bd90aaebc79d244223cc2acc7c284eaf/). You do not need a local reference clone.
 
-The course intentionally does not implement a terminal UI, dynamic extension imports, package installation, context compaction, hot reload, multimodal messages, provider usage accounting, automatic retries, or a process/container sandbox. s14 implements one OpenAI-compatible adapter directly so the protocol translation stays visible; production systems should normally use a maintained provider library and a broader conformance suite.
+The runnable lessons depend on `@earendil-works/pi-ai` 0.79.1 for the real provider and model protocol, leaving the course free to focus on harness behavior. The course intentionally omits a terminal UI, dynamic extension imports, package installation, automatic compaction triggers, cut-point selection, summary generation, hot reload, multimodal messages, automatic retries, and a process or container sandbox. It is a harness-engineering course, not a complete Pi CLI reimplementation.
 
 ## Project Structure
 
@@ -204,23 +187,23 @@ learn-pi-agent/
   README.md / README.zh.md / README.ja.md
   .env.example
   package.json
+  shared/
   s01_agent_loop/
   ...
   s13_integrated_harness/
-  s14_real_provider/
 ```
 
 ## What You Should Be Able to Explain at the End
 
-- Why streamed provider events carry richer invariants than a completed string.
-- Why tool schemas, handlers, hooks, and execution environments are separate boundaries.
-- How an append-only branchable session changes recovery and auditability.
+- Why streaming provider events carry more invariants than a final string.
+- Why a tool schema, handler, hook, and project-trust decision are separate boundaries.
+- How append-only, branchable sessions change recovery and auditability.
 - Why project trust is not a sandbox.
-- Why runtime modes should own presentation but not agent state.
-- How the same s13 loop works with deterministic fixtures and a real s14 provider.
+- Why a runtime mode should own presentation, not agent state.
+- How one real provider path survives all 13 layers.
 
-The goal is not merely to make the demo answer. It is to be able to point at every boundary between model, provider, loop, tool, session, and shell, and explain what would break if that boundary moved.
+The goal is to point to each boundary among the model, provider, loop, tools, sessions, and shells, then explain what would break if that boundary moved.
 
-The repository is licensed under the root [MIT License](../LICENSE).
+This course uses the repository's root [MIT License](../LICENSE).
 
-**Keep the kernel small. Keep the events legible. Let the model decide, and make every harness boundary explicit.**
+**Keep the kernel small and the events legible. Let the model decide; make every harness boundary explicit.**

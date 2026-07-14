@@ -1,102 +1,83 @@
-# Pi Source Map for s10
+# s10 against the Pi 0.79.1 source
 
-s10 maps to Pi's runtime mode layer.
+s10 maps four access shells onto one cumulative Agent Session runtime.
 
 ```text
-create AgentSessionRuntime
-  -> app mode dispatch
-  -> interactive / print / json / rpc / sdk
-  -> same AgentSession and event stream
+AgentSessionRuntime
+  -> Interactive
+  -> Print: text or JSON
+  -> RPC
+  -> SDK AgentSession API
 ```
 
-## Mapped files
+## Corresponding files
 
 - [`packages/coding-agent/src/main.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/main.ts)
 - [`packages/coding-agent/src/core/agent-session-runtime.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session-runtime.ts)
 - [`packages/coding-agent/src/core/sdk.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/sdk.ts)
+- [`packages/coding-agent/src/modes/interactive/interactive-mode.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/modes/interactive/interactive-mode.ts)
 - [`packages/coding-agent/src/modes/print-mode.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/modes/print-mode.ts)
 - [`packages/coding-agent/src/modes/rpc/rpc-mode.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/modes/rpc/rpc-mode.ts)
 - [`packages/coding-agent/docs/json.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/json.md)
 - [`packages/coding-agent/docs/rpc.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/rpc.md)
 - [`packages/coding-agent/docs/sdk.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/sdk.md)
 
-Specific anchors:
+## The mapping
 
-```text
-README.md:20-24                  Pi's positioning and the four runtime modes
-README.md:536-539                the CLI mode table
-main.ts:98-109                   resolveAppMode()
-main.ts:577-705                  createRuntime and AgentSessionRuntime creation
-main.ts:767-804                  appMode dispatch to rpc / interactive / print-json
-agent-session-runtime.ts:67-74   AgentSessionRuntime holds the current session and cwd-bound services
-agent-session-runtime.ts:400-424 createAgentSessionRuntime()
-print-mode.ts:32-45              runPrintMode() receives the AgentSessionRuntime
-print-mode.ts:71-108             print/json mode rebinds the session and subscribes to events
-print-mode.ts:111-127            calling session.prompt()
-print-mode.ts:129-145            text mode prints the last assistant text
-rpc-mode.ts:312-360              RPC mode binds the extension UI context and subscribes to session events
-rpc-mode.ts:390-411              the prompt command calls session.prompt()
-rpc-mode.ts:442-457              get_state reads state from the same session
-sdk.ts:166-184                   createAgentSession() builds the base objects a session needs
-docs/sdk.md:16-38                SDK quick start: subscribe + prompt
-docs/sdk.md:70-118               the AgentSession API shape
-```
-
-## Mapping
-
-| s10 | Pi |
+| s10 | Pi 0.79.1 |
 | --- | --- |
-| `MiniCoreRuntime` | a minimal fusion of `AgentSession` + `AgentSessionRuntime` |
-| `MiniCoreRuntime.prompt()` | `AgentSession.prompt()` |
-| `MiniRuntimeEvent` | `AgentSessionEvent` / `AgentEvent` |
-| `runPrintMode()` | the text branch of `modes/print-mode.ts` |
-| `runJsonMode()` | the json branch of `modes/print-mode.ts` |
-| `runRpcMode()` | `modes/rpc/rpc-mode.ts` |
-| `createSdkSession()` | using `session` directly after `createAgentSession()` |
-| `runInteractiveMode()` | a bare-bones shadow of `InteractiveMode.run()` |
+| `MiniCoreRuntime` | a teaching facade over the shared Agent Session runtime |
+| one supplied Session | the current Session owned by `AgentSessionRuntime` |
+| async `createMiniCoreRuntime()` | constructing a Session host from existing metadata and Context |
+| monotonic `promptCount` | course attempt state that does not shrink with active Context |
+| `getPrompts()` / `getRuns()` | submitted attempts in this host / successful result snapshots |
+| `runInteractiveMode()` | `InteractiveMode` |
+| `runPrintMode()` | text branch of `runPrintMode()` |
+| `runJsonMode()` | JSON branch of `runPrintMode()` |
+| `runRpcMode()` | the command/response core of RPC mode |
+| `createSdkSession()` | the direct Agent Session API created by `createAgentSession()` |
+| `MiniRuntime.getState()` | the teaching subset of Session state exposed to shells |
+| `MiniRuntime.subscribe()` | the live Agent Session Event subscription |
+| captured `AgentEvent[]` | the per-Run snapshot of the existing Event protocol |
 
-## What s10 simplifies
+## One runtime and Session
 
-Real Pi's runtime modes carry a lot more engineering detail:
+Pi's `main.ts` resolves the application mode after constructing the services and Runtime factory needed to create the current Agent Session. Interactive, Print/JSON, and RPC receive that shared Runtime host instead of constructing separate Agent loops.
 
-```text
-real stdin/stdout JSONL framing
-the TUI editor and keyboard shortcuts
-extension UI context
-resubscribing to events after session replacement
-stdout backpressure
-signal cleanup
-model / thinking level / scoped model controls
-RPC commands like steer, follow_up, abort, fork, switch_session
-the RPC prompt-accepted response separated from the subsequent event stream
-```
+The SDK is the programmatic entry: `createAgentSession()` builds the same kinds of Model, Session Manager, Resource Loader, Tools, and Extensions without a CLI presentation layer. s10 puts all four access styles behind one small `MiniRuntime` interface so their shared state is directly testable.
 
-s10 implements none of these. It keeps a single invariant:
+The course factory first reads Session metadata and active Context, so resumed Messages are visible before a Prompt. Its `turns` value is a teaching host's monotonic Prompt-attempt count initialized from existing User Messages. Run IDs use that counter even if branch navigation or compaction later shortens the active Context. Failed attempts remain in `getPrompts()` but enter `getRuns()` only when they produce a Result.
 
-```text
-mode shells own no agent state of their own
-```
+## Shell behavior
 
-The event vocabulary is simplified too: the mini uses four event kinds — `session / agent_start / message / agent_end`. Of these, `message` doesn't exist in Pi (Pi has `message_start / message_update / message_end`), and `session` corresponds to the session header that JSON mode writes out first (`print-mode.ts:112-117`), which is not an event. s13 wires these shells back onto the real event stream from s04/s05.
+Pi's Print mode has two output branches. Text reads the final Assistant Message after prompting; JSON subscribes to the Session and writes the Session header and Events. RPC subscribes to the same Session while translating JSON commands such as `prompt` and `get_state`.
 
-As long as the invariant holds, shells can be added or removed freely. print can be short, interactive can be elaborate, RPC can be machine-friendly, SDK can embed in an application. What they share is one session/runtime.
+The course exposes Print text and JSON as separate helpers, and its RPC command table contains only `prompt` and `get_state`. Interactive returns a transcript instead of implementing Pi's terminal UI. The SDK wrapper delegates `subscribe()` to the Core, so callbacks receive Events while `prompt()` is still running.
 
-## How it connects to earlier units
+Course RPC waits for the whole Prompt. A rejection becomes a correlated `success: false` response, after the Core attempts to refresh any Session Messages already persisted by the failed Turn. Pi RPC instead emits its authoritative Prompt response after preflight and lets Session Events continue independently.
+
+## Event timing differences
+
+Two machine-facing helpers keep intentionally simpler timing:
 
 ```text
-s03 Provider Events      JSON mode emits events
-s06 Turn State           a runtime prompt turn uses one state snapshot
-s07 Session Tree         the runtime owns continuing and switching the current session
-s08 Context Resources    the runtime loads cwd-bound resources at creation
-s09 Extension Runtime    each mode binds extensions according to its own UI capability
+course JSON: await prompt -> serialize captured Events
+course SDK:  subscribe -> receive live Events while prompt runs
+course RPC:  await prompt -> return full Run result or failure response
 ```
 
-This is also one of Pi's important design points: the shells may differ, but core state and the event protocol stay as uniform as possible.
+The course SDK now matches Pi's live Agent Session subscription. The course JSON helper is still post-completion serialization, while Pi's Print JSON branch subscribes before prompting. The course RPC `prompt` waits for a full Run result or catches the rejection; Pi RPC acknowledges a Prompt after preflight while Session Events continue independently.
+
+## Course scope
+
+The real runtime also supports Session replacement, resume, fork, tree navigation, steering, follow-up, abort, model and thinking-level changes, Extension UI binding, signal handling, output backpressure, and many RPC commands.
+
+s10 keeps the real s09 model-tool path and Session persistence, but narrows presentation to four shell families and a small cumulative state object. Its Prompt-attempt counter and successful-only Run snapshots are course observability fields, not a copy of Pi's complete Session state model. It introduces no second Agent core.
 
 ## Suggested reading order
 
-Start with `resolveAppMode()` and the final dispatch in `main.ts`. You can see that CLI flags only decide the entry shape — they don't spin up a separate agent.
-
-Then read `print-mode.ts`. text and JSON live in the same function; the difference boils down to text taking the last answer while JSON subscribes to events and prints them line by line.
-
-Finish with `rpc-mode.ts` and `docs/sdk.md`. RPC suits non-Node processes and cross-process integration; the SDK suits TypeScript programs embedding directly. Similar goals, different boundaries.
+1. Read `resolveAppMode()` and the final dispatch in `main.ts`.
+2. Read `runPrintMode()`, comparing its text and JSON branches.
+3. Follow RPC `rebindSession()`, Session subscription, `prompt`, and `get_state`.
+4. Read `createAgentSession()` in `sdk.ts`.
+5. Compare those boundaries with `MiniCoreRuntime` and the four lesson shell families.

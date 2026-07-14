@@ -1,88 +1,56 @@
-# s02 against the Pi source
+# s02 against the Pi 0.79.1 source
 
-s02 only covers the static shape of a tool:
+s02 separates the `pi-ai` tool contract from the agent-side execution object.
 
 ```text
-tool name
-tool schema
-handler
-registry
+Tool schema -> provider
+Tool handler -> agent runtime
 ```
 
 ## Corresponding files
 
 - [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts)
+- [`packages/ai/src/utils/validation.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/utils/validation.ts)
 - [`packages/ai/src/providers/anthropic.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/providers/anthropic.ts)
+- [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts)
 - [`packages/coding-agent/src/core/tools/index.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/tools/index.ts)
 - [`packages/coding-agent/src/core/tools/read.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/tools/read.ts)
-- [`packages/coding-agent/src/core/tools/bash.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/tools/bash.ts)
-- [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts)
-
-Specific anchors:
-
-```text
-ai/src/types.ts:338-342               Tool (only name / description / parameters)
-ai/src/providers/anthropic.ts:1187-1203  convertTools(): serialization keeps only these three fields
-tools/index.ts: ToolName / allToolNames
-tools/index.ts: createTool()
-agent/src/types.ts:361-384            AgentTool (the runtime object carrying label and execute)
-```
 
 ## The mapping
 
-| s02 | Pi |
+| s02 | Pi 0.79.1 |
 | --- | --- |
-| `ToolDefinition` | pi-ai's `Tool` (the model-visible contract: only name / description / parameters) |
-| `RegisteredTool` | `AgentTool` (the runtime object; `label` and `execute()` both live on this side) |
+| `ToolDefinition` converted by `toPiTool()` | `pi-ai` `Tool`: `name`, `description`, `parameters` |
+| `RegisteredTool` | a teaching-sized analogue of `AgentTool` |
 | `RegisteredTool.handler` | `AgentTool.execute()` |
-| `createDemoToolRegistry()` | `createCodingTools()` / `createAllTools()` |
-| `listToolDefinitions()` | the provider serialization layer, e.g. anthropic's `convertTools()` |
-| `dispatchTool()` | maps to `executeToolCalls()` only from s04 on |
+| `createToolRegistry()` | the construction boundary represented by coding-agent tool factories |
+| `listToolDefinitions()` | the provider-facing tool list; provider adapters serialize the same three fields |
+| `validateToolCall()` | the actual `pi-ai` helper used directly by `dispatchTool()` |
+| `dispatchTool()` | the name lookup, validation, and execution portion of Pi's tool path |
+| `createCourseToolRegistry()` | one course-scoped `read_file` tool backed by s01's safe reader |
 
-One mapping that's easy to get wrong: coding-agent also has a type called `ToolDefinition` (returned by `createCodingToolDefinitions()`), but that one is the **full runtime definition carrying `execute()`, `promptSnippet`, and `renderCall`** — a different thing from s02's model-visible contract with the handler stripped off. In Pi, the step that actually keeps only name/description/parameters is the provider-side `convertTools()`.
+Pi's coding-agent also declares a type named `ToolDefinition`. That type is a richer runtime definition carrying fields such as execution and rendering behavior. It is not the same as this lesson's deliberately model-visible `ToolDefinition`. At the provider boundary, the transferable contract is still the `pi-ai` `Tool` shape.
 
-## The real tool set in Pi
+## What the model-facing API exposes
 
-The tool names currently built into Pi's coding-agent:
-
-```text
-read
-bash
-edit
-write
-grep
-find
-ls
-```
-
-s02 implements only `read` and `bash`. `read` reads no file, and `bash` executes no command. That keeps the relationship between schema and handler easy to see first.
-
-## Differences from Pi
-
-In Pi, `label` is a UI display field (the comment at `agent/src/types.ts:362-363` says "Human-readable label for UI display"), and provider serialization never sends it. That's why s02 keeps `label` on the `RegisteredTool` side, and `listToolDefinitions()` strips it off together with `handler`.
-
-Pi's `AgentTool` looks more like this:
+The course stores `{ schema, handler }` entries in a private `WeakMap` and exposes schemas through `listToolDefinitions()`. Pi uses richer runtime objects rather than this exact Registry implementation, but the ownership boundary is the same:
 
 ```text
-name
-label
-description
-parameters
-prepareArguments?
-execute(toolCallId, params, signal, onUpdate)
-executionMode?
+provider side: name, description, parameters
+agent side: label, execute/handler, policy and runtime details
 ```
 
-s02 doesn't have any of these yet:
+`validateToolCall()` is not a course reimplementation. It comes from `@earendil-works/pi-ai` 0.79.1 and validates the Tool Call against the selected Tool's TypeBox schema. `dispatchTool()` delegates to it directly before invoking the private Handler.
 
-```text
-TypeBox schema
-full type validation
-toolCallId
-AbortSignal
-onUpdate
-parallel / sequential executionMode
-beforeToolCall / afterToolCall
-```
+## What s02 simplifies
 
-They arrive step by step in later lessons. s02 answers exactly one question: how a tool goes from a schema to an entry in a callable function table.
+Pi's `AgentTool` supports more execution context, including a Tool Call ID, `AbortSignal`, progress updates, optional argument preparation, richer result details, and execution modes. s02 keeps only what is needed to make the public/private split visible.
+
+The course registry contains one real, read-only `read_file` tool. It does not introduce shell execution or the full coding-agent tool set.
+
+## Suggested reading order
+
+1. Start with `Tool` in [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts).
+2. Read `validateToolCall()` in [`packages/ai/src/utils/validation.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/utils/validation.ts).
+3. Inspect the provider conversion in [`packages/ai/src/providers/anthropic.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/providers/anthropic.ts) to see the transferable fields.
+4. Compare `AgentTool` in [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts) with the read tool and tool factories under coding-agent.

@@ -1,161 +1,147 @@
-# 第13课 集成线束——零件接得通，才说明边界画对了
+# 第 13 课 · Integrated Harness
 
-[English](README.md) · 中文 · [日本語](README.ja.md)
+[课程首页](../README.zh.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s12](../s12_pi_package/README.zh.md) · [目录](../README.zh.md) · [s14 →](../s14_real_provider/README.zh.md)
-
-写过项目的人都懂这个场景：每个模块单独测都好好的，一到集成那天全崩了——A要B的内部字段，B假设C先初始化，改来改去模块之间的边界全糊了，最后变成一坨谁也不敢动的屎山。
-
-到s12为止，前12节课的零件已经全部写完了：工具循环、会话树、上下文资源、扩展、运行模式、信任边界、包分发，每个模块都有自己的测试，都能单独跑。但是没人保证过：这些模块真的能拼到一起吗？
-
-很多人集成的时候图省事，哪里接不上就改哪里：给会话树加个字段、给工具循环开个后门、把模块内部变量导出来用。这条路一步都不能走。
-第一，改一处就毁一处边界，前面12节课辛辛苦苦立起来的"每个模块只管自己的事"，集成一天就全塌了。
-第二，出了问题你根本分不清是模块本身错了还是你集成的时候改坏了。
-
-所以s13给自己立了一条死规矩：**不写任何新机制，不修改任何前面模块的内部实现，只做适配和编排。哪里接不上，只允许加一层薄胶水，而且必须说清楚为什么原接口没有这个东西。**
-如果接不上，说明前面的边界画错了，回去改边界，不要在集成的时候打补丁。
-
----
-
-## 集成就像攒电脑：主板不修改零件，只提供插槽
-
-攒过电脑的人都懂：CPU、内存、硬盘、显卡，每个零件单独测都是好的，把它们拼到一起靠的是主板。主板不修改任何零件，它只提供标准插槽和走线，零件插对了就能点亮。如果哪个零件需要你焊线才能装上，那不是主板的问题，是这个零件的接口做坏了。
-
-s13的`createIntegratedHarnessRuntime()`就是这块主板。一次用户请求，走完整条链路：
+> 在 Pi 中的位置：解析 Trust 与 Resource、构造一个 Agent Session Runtime，再通过 CLI 与 SDK Shell 暴露它的 Assembly Layer。
 
 ```text
-用户prompt进来
-  → s11 信任判断：要不要加载项目的配置和扩展
-  → s12 包解析：算出要加载的扩展、skill、prompt路径
-  → s09 加载扩展：创建扩展运行时，构建turn state
-  → s07 会话树：把用户消息加进去，取当前分支的历史
-  → 【胶水1】provider适配器：把会话历史、systemPrompt注入给模型provider
-  → s05 工具循环：正常执行，该调工具调工具，该返回返回
-  → 【胶水2】钩子映射：把s09扩展的tool_call事件，一行映射到s05的beforeToolCall钩子
-  → 【胶水3】编码存储：把带工具调用的消息编码成带前缀的JSON，存回s07会话树
-  → s10 运行外壳：interactive/print/json/rpc/sdk消费结果
+files + trust policy + package entries + Extension factories
+  -> Project Trust
+  -> direct Resources + Package Resolver
+  -> Extension runner + Skills + Prompt Templates
+  -> one MiniCoreRuntime
+       +-> real Model and Tool loop
+       +-> one AgentMessage Session
+  -> serialized IntegratedHarnessRuntime
+  -> Print / JSON / RPC / SDK
 ```
 
-数一下，十几个环节，真正新写的只有三行胶水，其他全是前面12节课的原封不动的代码。这就对了——好的集成本来就应该没什么新代码，都是走线。
+## 先搞懂：零件分别正确，不代表组合顺序正确
 
----
+前面的每一课都单独证明了一条边界。Integrated Harness 必须按正确顺序组合它们。
 
-## 三行胶水，每行都讲得清道理
+Trust 必须先于 Project Extension 与 Package Selection；Package Path 必须先于 Extension Factory Loading；Context、Skill 与显式调用的 Prompt Template 必须和 Tool Registry 进入同一个 Turn；所有 Shell 必须共享一份 AgentMessage Session；两个调用方不能同时修改这份 Session。
 
-我们一个个说这三行胶水为什么存在，为什么不能改原模块。
+若 Assembly Layer 重新实现了其中任何一部分，课程最后就会出现第二套不兼容的 Agent。因此 s13 只增加 Orchestration 与一条 Concurrency Rule，不增加新的 Model-Tool Loop。
 
-### 胶水1：Provider适配器
-s05的工具循环自己不会去会话树里拿历史，也不知道systemPrompt是什么——它只管这一轮产生的新消息，历史和systemPrompt是调用方传给它的。这不是缺陷，这是s05边界干净的证明：它不需要知道会话存在，也不需要知道systemPrompt怎么来的，你给它什么它用什么。
-所以我们只需要在调用s05循环的时候，把s07取出来的历史、s08拼好的systemPrompt、扩展注入的消息一起传给provider就行，不需要改s05一个字。
+## 思路：让 Host 依赖通过一个构造入口汇合
 
-### 胶水2：扩展钩子映射
-s09扩展的tool_call事件，返回值格式和s05的beforeToolCall钩子本来就是一样的——都是`{block: true, reason: xxx}`就拦截，否则放行。所以这层胶水薄到只有一行：
-```ts
-beforeToolCall: ({toolCall, args}) => runner.emitToolCall({toolName: toolCall.name, input: args})
-```
-把参数转一下，直接把扩展的事件发射结果返回给s05的钩子就行。
-为什么能一行接上？因为我们写s05和s09的时候，本来就是按Pi的统一语义设计的，插槽尺寸对得上，插进去就好用。
+`createIntegratedHarnessRuntime()` 接收 Host 拥有的 Dependency 与 Configuration，再连接 s01-s12 的公开 API：
 
-### 胶水3：会话存储编码
-这里有个真正的接口错位：s07的会话树教学版把消息内容简化成了字符串，但是s03-s05的消息是带结构的——toolCall有id、有参数，toolResult有isError标记，这些东西字符串存不下。
-怎么办？给s07加字段支持结构化消息？不行，违反我们的死规矩，不能改前面的模块。
-解决方法很简单：在集成这一层，把结构化消息编码成带特殊前缀的JSON字符串，存到s07里；取历史的时候，看到这个前缀就解码回结构化消息。s07的API一毫米都没动，结构化信息一个字段都没丢。
-这层胶水还有个额外好处：哪怕工具执行完了，后面模型调用失败了，已经执行完的工具调用和结果也已经存在会话树里了，不会丢，可以审计。
+| Host Input | 进入哪里 |
+| --- | --- |
+| `Model<Api>` 与 Stream Option | 真实 s03-s06 Model Path |
+| Tool Registry 与 Active Tool Name | 真实 Tool Loop |
+| `MiniSession<AgentMessage>` | 一份累计 Session Tree |
+| Resource Source 与 Direct Path | Context、Skill 与 Prompt Template |
+| User/Project Package Entry | s12 Package Resolver |
+| Path-to-Factory Map | Direct 与 Packaged Extension |
+| Trust Policy 与 Store | s11 Project Trust |
 
----
-
-## 其他的全是原零件，一个字没改
-
-除了这三行胶水，其他地方全是直接调用前面模块的公开接口：
-- 信任判断直接调s11的resolveProjectTrusted
-- 包解析直接调s12的resolvePiPackages
-- 扩展加载直接调s09的loadMiniExtensions
-- 会话操作直接调s07的appendMessage、buildContext
-- 工具循环直接调s05的runHookedToolLoop
-- 外壳直接用s10的那五个run函数，连s10我们故意留的echo假core都不用改——因为我们的真core实现了s10要求的prompt()和getState()两个方法，外壳直接就能用。
-
-这就是接口设计的力量：s10写外壳的时候，我们甚至还没写真core，但是只要接口对，插上去就能跑。
-
----
+Result 是 `IntegratedHarnessRuntime`。它实现 s10 `MiniRuntime` Contract，暴露 `projectTrusted`、`projectInputs` 与 `packageResources` 供检查，并保留显式 Prompt Template Invocation。
 
 ## 先跑起来看看
 
-```sh
-npm run session:s13
+配置好课程 `.env` 后，从 `learn-pi-agent/` 运行：
+
+```bash
+npm run s13 -- "使用 read_file 检查 package.json，再说明哪些组件共享 Integrated Session。"
 ```
 
-输出长这样：
+CLI 使用已配置的真实 Model、Filesystem Context Resource Source、Session Tree、`read_file` Tool 与 Print Shell。Model Output 与 Tool Choice 可能变化；所有这些行为都经过 `createIntegratedHarnessRuntime()` 构造的同一条 Integrated Path。
+
+`PI_PROJECT_TRUST` 默认为 `ask`。这个精简 CLI 没有 Trust Selection UI 或持久化 Store，因此需要 Decision 时，受保护的 Project Input 会保持关闭。审查项目后，`always` 可启用它们，`never` 会拒绝它们：
+
+```bash
+PI_PROJECT_TRUST=always npm run s13 -- "总结受信任的项目 Resource。"
+```
+
+课程 Host 不会动态 import TypeScript，也不会把 Project Settings 解析成 Package Entry。Trusted Direct Extension 必须由 Programmatic API 提供显式 Factory，否则构造会失败。因此，只有当选中的 Project Input 不依赖尚未配置的 Extension Factory 时，内置 CLI 才适合直接启用 Trust。
+
+## 代码怎么写的
+
+### 1. 在选择 Project Input 前解析 Trust
+
+`createIntegratedHarnessRuntime()` 从 `prepareProjectTrust()` 开始。Decision 控制三类受保护 Source：
+
+- s11 发现的 Direct Project Skill 与 Prompt Template；
+- `.pi/extensions` 下的 Direct Project Extension Entry Point；
+- Host 传入的整个 `projectPackages` List。
+
+User Extension、Skill、Prompt 与 Package Input 不受 Project Trust 影响。Context Candidate File 也始终位于 Trust Gate 之外，使用 s08 与 s11 的 Per-directory Precedence。
+
+Decision 可从 `runtime.projectTrusted` 读取，准确的 Gated Path 则被克隆到 `runtime.projectInputs`。
+
+### 2. 用显式 Extension Factory 合并 Resource Path
+
+Trusted Direct Project Extension Directory 会经过 s12 Entry-point Discovery，因此 Child `index.ts` 可以加载，而 `helper.ts` 不会被当成第二个 Extension。
+
+`extensionFactories` 是规范化的 Path-to-Factory Map，同时为 Direct Extension 与 Package 选中的 Extension Path 提供 Factory。Selected Path 缺失 Factory 时会报错；Harness 不会把 String Path 解释成执行 Source Code 的许可。
+
+`createPackageRuntime()` 会合并 User Path、Trusted Project Path 与 Enabled Package Path。Extension Factory 进入 Runner，Skill 进入 Context Resource，Prompt File 进入 Template Catalog。普通 Turn 的 System Prompt 不包含 Template Body；`runtime.invokePromptTemplate(name, args)` 只展开一个选中的 Template，并把展开后的 User Prompt 排入真实 Turn。
+
+### 3. 保持一个真实 Model 与 AgentMessage Session
+
+组合后的 Core 仍然是 `MiniCoreRuntime`。它调用真实 `runExtensionTurn()` Path：构造 Context Resource，运行 `before_agent_start` 与 Tool Hook，流式调用传入的 Model，分发 Tool，发出 Lifecycle Event，再把完整 `AgentMessage` 追加到传入的 Session。
+
+若 Host 没有提供 `session`，s13 会创建 Session Tree。若 Host 显式传入 Session，每个使用 Tool 的 Turn 都会按以下顺序追加完整 Message：
+
 ```text
-Session: s13-demo
-Final text: Integrated harness ready.
-Events: session -> agent_start -> message -> agent_end
-Stored messages: 2
+user
+assistant(toolCall)
+toolResult
+assistant(final text)
 ```
 
-四行输出，四个零件都点亮了：
-- session id来自s07的会话树
-- final text走完了s05的完整工具循环
-- events是s10外壳输出的事件流
-- stored messages是写回s07的消息数
+Context Instruction、Package Skill Metadata、显式 Prompt Invocation、Extension 注册的 Tool 与 Base Tool 都影响同一份 Session。没有 Adapter 把 Rich Message 压平成 Plain Text。
 
-就像电脑开机自检，灯一个接一个亮了，说明链路通了。
+### 4. 串行化 Host Prompt，再复用全部 Shell
 
----
+`IntegratedHarnessRuntime.prompt()` 通过 `promptQueue` 链接 Work。Concurrent Call 会按提交顺序执行，因此两个 Run 都能稳定地读取并更新同一 Session。无论成功还是失败，Queue 都会继续结算，单个 Rejected Run 不会阻塞后续 Work。显式 Prompt Template Invocation 也使用同一 Queue。
+
+`getState()` 与 `subscribe()` 会委托给 Core，因此无需 Translation 就能复用现有 s10 Helper：
+
+| Shell | Integrated Behavior |
+| --- | --- |
+| Print | 等待一次 Final Text Result |
+| JSON | Run 结束后序列化已捕获 Event |
+| RPC | 在同一个 Runtime 上支持 `prompt` 与 `get_state` |
+| SDK | Queued Turn 运行期间实时接收 Event |
 
 ## 动手试一试
 
-### 实验1：点亮工具调用链路
-把provider换成会调用工具的版本，重跑。
-你会看到存储的消息从2条变成4条：用户消息、模型的toolCall、工具结果、模型最终回答，后三条都是以tagged JSON形式存到s07里的——胶水3在正常工作。
+1. 组合一个带 Extension Tool、Skill 与 Prompt Template 的 User Package。确认普通 Turn 能看到 Tool 与 Skill，但看不到 Prompt Body。
+2. 调用 `invokePromptTemplate()` 并检查最后一条 User Message。展开文本应进入一个真实 Queued Turn。
+3. 同时加入 User 与 Project Package，再拒绝 Trust。User Resource 应保留，Project Package 与 Direct Project Extension 应消失。
+4. 在 Trusted Direct Extension Directory 中加入 `index.ts` 与 `helper.ts`，只为 Entry Point 提供 Factory，确认只有该 Factory 加载。
+5. 依次调用 Print、JSON、RPC 与 SDK。`getState().turns` 与 Session Message List 应包含全部四次调用。
+6. 用 `Promise.all()` 同时启动两次 `prompt()`。Run ID 与 Session Message 应保持提交顺序。
 
-### 实验2：换个外壳
-同一个runtime实例，传给runJsonMode跑一下。
-你会看到json模式正常输出事件流，两次提问之后getState()里的消息数在增长——不同外壳用的是同一个core、同一个会话，s10的"外壳无状态"约定在真core上兑现了。
+## 接入课程主线
 
-### 实验3：让扩展拦截工具
-加个tool_call扩展，拦截read工具，重跑。
-你会看到工具被拦截，拦截原因包成错误的toolResult给模型，模型下一轮能看到这个错误——胶水2在正常工作，扩展的钩子确实接到了工具循环里。
+| 边界 | 前面课程 | s13 的组合 |
+| --- | --- | --- |
+| Model 与 Tool Loop | s01-s05 | 一次带 Hook 与 Event 的真实 Streamed Turn |
+| AgentMessage State | s06-s07 | 一份累计 Session Tree |
+| Context 与 Resource | s08 | Context Candidate、Skill、显式 Prompt Invocation |
+| Extension | s09 | Direct 与 Package-selected 显式 Factory |
+| Runtime Shell | s10 | 一套 Shared Print/JSON/RPC/SDK Surface |
+| Project Trust | s11 | 在 Protected Path 参与前解析 |
+| Package | s12 | Enabled Path 进入同一个 Core |
+| Host Concurrency | 前面没有 Owner | Shared Session 外的一条有序 Promise Queue |
 
-跑完三个实验，你应该能回答下面检查点的问题。改完可以用`npm run test:s13`确认整条链路没断。
+## 对照 Pi 源码
 
----
+Pi 0.79.1 通过 `createAgentSession()`、`AgentSessionRuntime`、`ResourceLoader`、`ProjectTrustStore`、`DefaultPackageManager`、Extension Loader/Runner、`AgentHarness` 与 Session API 完成同类 Assembly。CLI Mode 与 SDK Call 都是该 Session 周围的 Shell。
 
-## Pi的核心设计取舍
+课程把组合保持为可见、可注入的代码。它接收已经创建好的 Model、Tool Registry、File Source、Package Entry 与 Extension Factory。Pi 还负责 Settings Parsing、Model Discovery、Extension Module Loading、Package Installation、UI Service、Reload、Compaction 与更完整的 Session Control。
 
-到这里，mini Pi 的离线机制主线已经集成完成。回头看，Pi 的设计选择可以总结成这张表：
+透明 Promise Queue 是课程 Host Policy。Pi 不会在 Streaming 期间静默地把第二次 `prompt()` 串行化；调用方需要选择 Steering 或 Follow-up Behavior。两种设计都在保护 Active Session 的含义，但 Public Concurrency Contract 不同。
 
-| 维度 | Pi的选择 | 没选的替代方案 | 代价 |
-|------|----------|----------------|------|
-| 模型接入 | 统一provider协议 | 绑死单一模型SDK | 每个模型要写适配层，协议要维护 |
-| 消息结构 | 内部消息和发给模型的消息分层 | 直接发原始消息数组 | 多一层转换，调试要分层看 |
-| 输出方式 | 事件流（stream） | 同步返回完整字符串 | 调用方要消费流，不能一行await拿结果 |
-| 会话存储 | append-only会话树 | 可覆盖的消息数组 | 历史不可修改，分支要显式管理，存储只增不减 |
-| 能力扩展 | 扩展/包优先，内核不内置工作流 | 内置plan mode、子Agent、todo | 核心功能靠生态扩展，新人要先学扩展机制 |
-| 安全边界 | 信任和执行环境分离 | 内置进程内沙箱 | 真隔离要自己配Docker/VM，信任只管输入加载 |
-| 能力分发 | 包作为分发单元 | 硬编码能力到内核 | 多了manifest和resolver一层工程，但有分发就值 |
+固定源码映射见 [pi-source.zh.md](pi-source.zh.md)。
 
-这台"小电脑"能一次点亮，靠的不是s13的胶水写得有多聪明，而是前面每一节课都把自己的插槽磨对了尺寸——每个模块只做自己的事，边界清晰，接口稳定，拼起来自然就通了。
+## 你已经完成了什么
 
----
+最终 API 不是 Harness 的示意图。它把真实课程 Model Path、Tool Execution、Event、AgentMessage Session、Context Resource、Extension、Trust Gate、Package Resolver、Prompt Template Invocation 与四种 Runtime Shell 放到同一条可运行路径中。
 
-## 检查点
-
-学完这节课，你应该能脱口回答这几个问题：
-- 集成的时候为什么不能改前面模块的内部实现？接不上应该怎么办？
-- 三行胶水分别解决什么问题？为什么不能通过修改原模块解决？
-- 为什么说s10的外壳不用改就能用在真core上？
-
----
-
-## 离线主线总结
-
-恭喜你，到这里你已经从零写完了一个可确定复现的 mini Pi，理解了 Pi 从核心循环到扩展、安全和分发的关键设计。
-
-这门课真正想教你的不是怎么写一个Agent，而是怎么设计一个能长大的系统：
-- 核心保持小巧，只提供机制，不提供策略
-- 每个模块边界清晰，只做一件事，不越界
-- 扩展能力开放，但是不把工作流硬编码进内核
-- 安全上不假装安全，不做给人虚假安全感的半吊子沙箱
-- 所有设计选择都有代价，想清楚你要什么、愿意放弃什么
-
-下一节 [s14](../s14_real_provider/README.zh.md) 会保留这条集成链，只把确定性 provider 换成真实的 OpenAI-compatible stream。你会亲眼看到模型选择工具、读取工具结果，再继续回答；离线测试仍然不访问网络。
+回到[课程首页](../README.zh.md)，复习完整学习路线，再选择一条边界继续扩展。

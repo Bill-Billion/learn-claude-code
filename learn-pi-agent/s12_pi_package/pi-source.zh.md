@@ -1,125 +1,89 @@
-# s12 的 Pi 源码对照
+# s12 的 Pi 0.79.1 源码对照
 
-s12 对应 Pi 的 package resolver。
-
-本节对照的是仓库内固定的 `@earendil-works/pi-coding-agent` 0.79.1，git commit `2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210`。
+s12 重建 Package Resolver，并把它的 Enabled Output 接入真实课程 Runtime。
 
 ```text
-package source
+configured package source
   -> installed package root
-  -> pi manifest or conventional directories
-  -> extensions / skills / prompts / themes
-  -> ResourceLoader
+  -> manifest / conventions / filters
+  -> enabled resource paths
+  -> Resource and Extension loading
 ```
 
 ## 对应文件
 
-- [`packages/coding-agent/README.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/README.md)
 - [`packages/coding-agent/docs/packages.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/packages.md)
+- [`packages/coding-agent/docs/security.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/security.md)
 - [`packages/coding-agent/src/core/package-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/package-manager.ts)
-- [`packages/coding-agent/src/core/settings-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/settings-manager.ts)
 - [`packages/coding-agent/src/core/resource-loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/resource-loader.ts)
-
-具体锚点：
-
-```text
-README.md:402-449                 Pi Packages 总览、安装命令和 manifest 示例
-README.md:491-501                 为什么很多 workflow 交给 extension / skill / package
-docs/packages.md:18-48            install / remove / update / temporary -e
-docs/packages.md:50-112           npm、git、local path 三类 source
-docs/packages.md:114-131          package.json 的 pi manifest
-docs/packages.md:154-163          conventional directories
-docs/packages.md:165-186          dependencies / peerDependencies / bundledDependencies
-docs/packages.md:188-210          package filtering
-package-manager.ts:147-153        PiManifest
-package-manager.ts:179-188        PackageFilter 和 RESOURCE_TYPES
-package-manager.ts:534-630        extension 顶层文件、子目录 index / manifest 入口发现
-package-manager.ts:632-761        filter 的 minimatch 候选、skill directory identity、+/- 顺序
-package-manager.ts:885-921        resolve() 收集 project/user packages、local entries 和 auto resources
-package-manager.ts:1209-1266      resolvePackageSources()
-package-manager.ts:1270-1295      local path source：文件当单 extension，目录按 package 规则解析
-package-manager.ts:1645-1667      dedupePackages()，项目 package 覆盖全局 package
-package-manager.ts:1678-1682      项目 package storage 需要 projectTrusted
-package-manager.ts:2030-2073      collectPackageResources()
-package-manager.ts:2076-2096      collectDefaultResources()
-package-manager.ts:2098-2122      applyPackageFilter()
-package-manager.ts:2129-2148      manifest 和 conventional directories 的文件集合
-package-manager.ts:2151-2164      readPiManifest()
-package-manager.ts:2186-2200      manifest glob 同时展开文件和目录
-package-manager.ts:2392-2408      glob 命中目录后按资源类型继续发现入口
-test/package-manager.test.ts:1950-2051 multi-file extension 不把 helper 当独立入口的回归测试
-                                  （在 packages/coding-agent/test/ 下，不在 src/core/）
-package-manager.ts:2226-2390      addAutoDiscoveredResources()，project resources 受 trust 控制
-package-manager.ts:2450-2470      toResolvedPaths()
-settings-manager.ts:911-921       packages / setPackages / setProjectPackages
-resource-loader.ts:333-343        reload 时先 resolveProjectTrust，再 packageManager.resolve()
-```
+- [`packages/coding-agent/src/core/extensions/loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/extensions/loader.ts)
+- [`packages/coding-agent/src/core/prompt-templates.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/prompt-templates.ts)
+- [`packages/coding-agent/src/core/agent-session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session.ts)
 
 ## 对应关系
 
-| s12 | Pi |
+| s12 | Pi 0.79.1 |
 | --- | --- |
-| `createPackageManifest()` | `package.json` 的 `pi` manifest |
-| `PackageEntry` | `PackageSource` 的 string / object filter |
-| `resolvePiPackages()` | `DefaultPackageManager.resolve()` 的最小版 |
-| `collectPackageResourceFiles()` | `collectPackageResources()` / `collectDefaultResources()` / `collectManifestFiles()` |
-| `collectAutoExtensionEntries()` | `collectAutoExtensionEntries()` / `resolveExtensionEntries()` |
-| `matchesPattern()` / `matchesExactPath()` | `matchesAnyPattern()` / `matchesAnyExactPattern()` |
-| `applyPatterns()` | `applyPatterns()`，依次 include / exclude / force-include / force-exclude |
-| `projectTrusted` | `SettingsManager.isProjectTrusted()` |
-| `metadata.scope` | `PathMetadata.scope` |
-| `enabled` | `ResolvedResource.enabled` |
+| `PiManifest` 与 `createPackageManifest()` | Package `package.json` 中的 `pi` Field |
+| `PackageEntry` | String 与 Object-filter Package Source |
+| `resolvePiPackages()` | `DefaultPackageManager.resolve()` 中的 Package Source 与 Resource Path 部分 |
+| `discoverExtensionEntries()` | `collectAutoExtensionEntries()` 与 `resolveExtensionEntries()` |
+| `applyPatterns()` | Include、Exclude、Force-include 与 Force-exclude Filter |
+| `projectTrusted` | Package Manager 的 `SettingsManager.isProjectTrusted()` Gate |
+| `ResolvedResource.metadata` 与 `enabled` | Pi 的 Resolved Path Metadata 与 Enabled State |
+| 显式 `extensionSources` | Pi Extension Loader 完成后已加载的 Extension Module |
+| `promptTemplates` 与 `invokePromptTemplate()` | 已加载 Prompt Template 与显式 `expandPromptTemplate()` Invocation |
+| `selection.themePaths` | Pi Resource Loader 与 UI 消费的 Enabled Theme Path |
 
-## 本节采用的简化
+## Package Selection 优先级
 
-真实 Pi 的 package manager 做了很多工程活：
+Pi 会把 npm、Git 与 Local Source 解析到已安装 Root。Local File 是单个 Extension，Local Directory 继续执行 Package Rule。本课用 `MiniFiles` 表示这些 Root，不执行 Installation 或 Update。
 
-```text
-npm install / git clone / git fetch
-pinned npm version 和 git ref
-offline mode
-dependency install
-settings.json 持久化
-progress event
-ignore 文件和 symlink 处理
-路径 canonicalize 和 cloud sync ignore
-package update check
-资源 precedence 排序和 name collision 诊断
-```
+两种实现保留以下主规则：
 
-s12 没有实现这些。它只保留 resolver 主线：
+1. Project Package 只在 Project Trust 通过后加入。
+2. 相同 npm 或 Git Identity 会去重，Project Scope 获胜。
+3. String Package 存在 `pi` Manifest 时，把它作为 Selection Contract；省略的 Resource Key 不会 Fallback。
+4. 没有 Manifest 时，发现 Conventional Resource Directory。
+5. Object-form Filter 按 Manifest 与 Fallback Rule 选择并启用 Candidate。
 
-```text
-package root
-  -> string form: manifest authoritative, otherwise convention
-  -> object form: filtered default or filtered candidates
-  -> extension entry discovery
-  -> resource list
-```
+本课让 Local Identity 保留 Scope，而 Pi 根据 Resolved Path 生成 Identity。这是实现差异，不会增加新的 Resource 类型。
 
-这里特意保留了 0.79.1 的几个细节：string form 遇到现有 `pi` manifest 时，省略的资源 key 不回退；object-form filter 才按 `collectDefaultResources()` / `collectManifestFiles()` 的规则选择 manifest 或约定目录。extension 目录也只发现顶层 `.ts` / `.js` 和显式子入口，不递归加载 helper；manifest glob 命中目录时会继续做入口发现。
+## Resource Discovery 与 Filtering
 
-filter 匹配使用 Node 内置的 `node:path.posix.matchesGlob()`（v22.5 起提供）表达与上游 minimatch 相同的 globstar 等路径语义，并像 Pi 一样分别检查 relative path、basename、absolute path 和 skill 父目录候选。这样不需要给教学项目增加运行时依赖。
+Pi 发现的是 Extension Entry Point，不会递归地把每个 Source File 都当成 Extension。Top-level `.ts`/`.js`、Child `index.ts`/`index.js` 与显式 Manifest Entry 可以加载；嵌套 Helper 不会变成独立 Extension。
 
-还有一处 local path 的 identity 差异：mini 对本地路径按 `local:${scope}:${source}` 保留（同一路径可在两个 scope 各留一份），真实 Pi 的 identity 是 resolved absolute path（`docs/packages.md:227`、`package-manager.ts:1634-1638`），同一绝对路径跨 scope 会去重且 project 赢。两者的可观察结果恰好等价（先到先得 + project 排前），但机制不同。
+对所有 Resource Type，Filter 都只作用于 Candidate Set。Include/Exclude Glob 先执行，精确 `+`/`-` Override 随后执行。Skill Filter 还会匹配 `SKILL.md` 的 Parent Directory Identity。s12 使用 Node `path.posix.matchesGlob()` 代替 Pi 的 Matching Library，但保留测试覆盖的 Candidate 行为。
 
-这是初学者最需要先抓住的部分。真实安装和更新流程可以之后再看，不适合放进第一轮课程。
+`+` Override 无法引入从未成为 Candidate 的 Path。这只是 Resolver Rule，不是 Containment。Pi 会直接解析 Manifest Entry，包括 `..` Segment，并不强制 Result 留在 `packageRoot` 之下；课程的规范化 Join 同样不承诺 Package-root Isolation。
 
-## 和前几节的关系
+## 从 Enabled Path 到真实 Turn
 
-```text
-s08 Context Resources    package 最终产物还是 skills、prompts、themes
-s09 Extension Runtime    package 可以带 extensions
-s11 Trust Env            project package 只有 trust 后才进入资源解析
-s12 Pi Package           把外层能力打包成可安装的分发单元
-```
+Pi 的 `ResourceLoader` 接收 Enabled Package Path，随后加载 Extension Module、Skill、Prompt Template 与 Theme。s12 把 Host Boundary 显式化：
 
-Pi package 的价值在于不用 fork Pi 就能分发 workflow。这个点也是整门课的收束：Pi core 保持小，外层能力通过资源、extension 和 package 往外长。
+- 每个 Enabled Extension Path 都必须匹配 `extensionSources` 中提供的 Factory；
+- Enabled Skill Path 进入真实 s08 Context Resource Flow；
+- Enabled Prompt Path 被解析成 `promptTemplates`；
+- `invokePromptTemplate()` 展开一个选定 Template，再把它作为 User Prompt 提交；
+- Enabled Theme Path 会返回，但不会渲染。
+
+普通 Turn 绝不会在 System Prompt 中收到全部 Prompt Template Body。这与 Pi 一致：`AgentSession.prompt()` 只在显式调用 Named Slash Prompt 时，通过 `expandPromptTemplate()` 展开该 Template。
+
+显式 Factory Map 代替 Pi 的动态 Extension Module Loader。Factory 缺失时构造失败，不会静默 import Source Code。
+
+## 课程范围
+
+真实 Package Manager 还负责 Installation、Update、Settings Persistence、Dependency Handling、Diagnostic，以及更多 Source 之间的 Resource Precedence。本课从已填充的 File Map 开始，只实现解释哪些 Path 生效所需的 Resolution Rule。
+
+真实 Pi 也会解析并应用 Theme，而 s12 只报告 `themePaths`。选择结束后，课程使用真实 Model、Tool Loop、Extension Runner 与 AgentMessage Session；Package Layer 不会替换 Agent Core。
+
+Package Resolution 不提供 Path 或 Execution Isolation。Project Trust 决定 Project Package 是否可以加载，但它不是 Sandbox。Package Extension 拥有进程权限。强隔离应由外部 Container、VM、micro-VM、Remote Sandbox 或 OS Policy 提供。
 
 ## 建议读法
 
-先读 `docs/packages.md` 的 Creating a Pi Package 和 Package Structure。那里能看到 package 作者需要写什么。
-
-再看 `package-manager.ts` 的 `collectPackageResources()` 和 `applyPackageFilter()`。这两段说明 manifest、约定目录和 settings filter 如何合并。
-
-最后看 `resolve()` 和 `dedupePackages()`。这里能看到 project/user scope 的顺序，以及为什么项目 package 可以覆盖全局 package。
+1. 先读 `docs/packages.md` 的 Package Sources、Creating a Pi Package、Package Structure 与 Package Filtering。
+2. 跟踪 `package-manager.ts` 中的 `resolvePackageSources()` 与 `dedupePackages()`。
+3. 阅读 `collectPackageResources()`、`collectDefaultResources()` 与 `collectManifestFiles()`。
+4. 继续看 Extension Entry Discovery 与 `applyPatterns()`。
+5. 沿 Enabled Path 进入 `ResourceLoader.reload()` 与 `extensions/loader.ts`。
+6. 最后阅读 `loadPromptTemplates()`、`expandPromptTemplate()`，以及 `AgentSession.prompt()` 中的显式展开分支。

@@ -1,193 +1,126 @@
 # s02 · Tool Schema
 
-English · [中文](README.zh.md) · [日本語](README.ja.md)
+[Course home](../README.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s01](../s01_agent_loop/README.md) · [Contents](../README.md) · [s03 →](../s03_provider_events/README.md)
+> Where this sits in Pi: the boundary between the model-visible `Tool` contract in `pi-ai` and the executable tool object held by the agent runtime.
 
-> In one sentence: a tool is a contract the model reads first, and locally executable code second — the two sides are joined at registration and split apart before anything goes to the provider.
->
-> Where this sits in Pi: the boundary between the `Tool` contract in `@earendil-works/pi-ai` and the agent-side `AgentTool` runtime object.
-
-→ `ToolDefinition` has exactly three fields — name / description / parameters — and that's everything the model gets to see
-→ label and handler both live on the `RegisteredTool` side: one is a UI display field, the other a local function, and the provider gets neither
-→ The stripping happens in one function, `listToolDefinitions()` — the registry is a local runtime asset; the provider payload can only be a serializable contract
-→ `dispatchTool()` is a table lookup plus required-field and primitive-type checks; between the model asking for a tool and the tool actually running sits all of s04
-
----
+```text
+model sees: name + description + parameters
+harness keeps: schema + handler
+```
 
 ## The problem
 
-In the s01 demo the assistant already announced it wanted to call a tool, but the system had no such thing as a "tool" — the model didn't know what tools were available, and there was no local function that could be called.
+s01 proves the full model-tool-model loop, but its one tool runtime still stores public schemas and executable handlers together. That arrangement becomes hard to reason about as the tool set grows.
 
-The easiest mistake when adding tools is to start with the tool loop: the reader gets hit with schemas, handlers, toolCalls, toolResults, error handling, and event streams all at once. That's not how Pi mixes these concepts. In Pi, a tool splits into two sides first:
-
-```text
-The side the model sees: name / description / parameters
-The side local code uses: execute or handler
-```
-
-The model only needs to know what the tool does and what its parameters look like. It can't get the local function, and it shouldn't know how the tool reads files or runs shell commands internally. s02 covers this boundary and nothing else.
+The model needs a serializable contract. The harness needs a function it can invoke. Sending the runtime object to a provider risks exposing fields that do not belong in the model contract, while keeping only a schema leaves nothing local to execute.
 
 ## The idea
 
-Pin the two sides down with two types, then land the boundary in one function:
+Represent each tool in two forms and make the conversion explicit:
 
-| Field | Lives in | Visible to the model? |
-|------|--------|-------------|
-| `name` / `description` / `parameters` | `ToolDefinition` | Yes — this is the contract itself |
-| `label` | `RegisteredTool` | No — UI display only |
-| `handler` | `RegisteredTool` | No — local function |
+```text
+RegisteredTool
+  ├── ToolDefinition: name, description, parameters
+  └── ToolHandler: executable local function
 
-At registration the two sides live together (`RegisteredTool = ToolDefinition & { label, handler }`); before anything goes to the provider, `listToolDefinitions()` strips label and handler off in one move.
+ToolRegistry
+  ├── listToolDefinitions() -> Tool[] for the model
+  └── dispatchTool()        -> validated local execution
+```
 
-This lesson executes no tools. `dispatchTool()` only demonstrates the other half of the boundary: local code can find the handler back by name.
+The registry is the boundary. Providers receive schema copies; local dispatch finds a private handler by name.
 
 ## Run it first
 
-```sh
-npm run session:s02
+From `learn-pi-agent/`, with the course `.env` configured:
+
+```bash
+npm run s02
 ```
 
-Output:
+Or make the tool requirement explicit in one request:
 
-```text
-Tools visible to the provider:
-- read: Read a file by path. The s02 demo does not touch the filesystem.
-- bash: Describe a shell command. The s02 demo does not execute it.
-Dispatch result: read: README.md
+```bash
+npm run s02 -- "Use read_file to read README.md and name the five learning phases."
 ```
 
-The `read` here reads no file, and the `bash` opens no shell. They exist to prove two things: the provider can see the tool schemas, and local code can find a handler by tool name.
+The answer can vary between runs. The stable behavior is that the model receives a `read_file` schema, emits a Tool Call, and the registry dispatches the private Handler before the result returns to the model.
 
 ## How the code works
 
-Four steps.
+### 1. Describe the two sides of a tool
 
-**Step 1**: write the two sides as two types. `ToolDefinition` is the model-visible contract:
-
-```ts
-export type ToolDefinition = {
-  name: string;
-  description: string;
-  parameters: ToolParameters;
-};
-```
-
-`RegisteredTool` stacks two local fields on top of the contract:
+`ToolDefinition` contains only `name`, `description`, and `parameters`. `RegisteredTool` adds the local `handler` and an optional UI `label`.
 
 ```ts
 export type RegisteredTool = ToolDefinition & {
-  label: string;
+  label?: string;
   handler: ToolHandler;
 };
 ```
 
-`label` is the display name for the terminal UI. Pi's `AgentTool` carries it too, and provider serialization never sends it — it belongs to the same side as the handler and only means something locally. As for the parameter schema, Pi's real code uses TypeBox, because the schema has to serialize, adapt to different providers, and validate at runtime; the teaching version starts with a tiny subset of JSON schema.
+This course type is converted to the official `pi-ai` `Tool` before a model call.
 
-**Step 2**: registration. `createToolRegistry()` checks for duplicate names before accepting the tool array:
+### 2. Build the registry's canonical entries
+
+`createToolRegistry()` rejects duplicate names, converts every definition to a `pi-ai` schema, and stores `{ schema, handler }` entries in a private `WeakMap`. Code using the registry does not receive the Handler through the model-facing API.
+
+### 3. List only model-visible definitions
+
+`listToolDefinitions()` returns fresh objects with exactly three fields:
 
 ```ts
-export function createToolRegistry(tools: RegisteredTool[]): ToolRegistry {
-  const seen = new Set<string>();
-
-  for (const tool of tools) {
-    if (seen.has(tool.name)) {
-      throw new Error(`Duplicate tool: ${tool.name}`);
-    }
-    seen.add(tool.name);
-  }
-
-  return { tools };
+{
+  name: schema.name,
+  description: schema.description,
+  parameters: schema.parameters,
 }
 ```
 
-Every later lookup is keyed by name — when the model makes a call, all it reports is the name. If two tools share a name, dispatch turns into a coin flip, so registration throws right away and catches the problem at the earliest possible point.
+The separation is deliberate. It does not rely on JSON serialization accidentally dropping functions.
 
-**Step 3**: stripping. Before anything goes to the provider, `listToolDefinitions()` lets only the contract through:
+### 4. Validate before local dispatch
 
-```ts
-export function listToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
-  return registry.tools.map(({ handler: _handler, label: _label, ...definition }) => ({
-    ...definition,
-    parameters: {
-      ...definition.parameters,
-      properties: { ...definition.parameters.properties },
-      required: definition.parameters.required ? [...definition.parameters.required] : undefined,
-    },
-  }));
-}
-```
+`dispatchTool()` looks up the canonical entry, rejects unknown names, and creates a `ToolCall`. It delegates argument validation directly to `pi-ai` `validateToolCall()`. The Handler runs only after that official validator succeeds.
 
-The destructuring drops handler and label together, and what's left is exactly the three fields of `ToolDefinition`; `parameters` gets copied one level deeper, so the return value and the registry can't affect each other. The model only ever sees this serializable contract, and the local function stays on the runtime side for good. This is the first boundary in Pi's tool system — s04's execution and s05's hooks are both built on top of it.
+`createRegistryToolRuntime()` adapts this boundary back to s01's loop. Dispatch failures become error `ToolResultMessage` values, so the model receives the failure and can continue.
 
-**Step 4**: local code finds the handler back by name.
+### 5. Keep the real loop unchanged
+
+`createCourseToolRegistry()` registers the same safe `read_file` capability from s01. `runToolRegistryAgentLoop()` passes a registry-backed Tool Runtime into `runAgentLoop()`:
 
 ```ts
-export async function dispatchTool(
-  registry: ToolRegistry,
-  name: string,
-  input: Record<string, unknown>,
-): Promise<ToolResult> {
-  const tool = registry.tools.find((candidate) => candidate.name === name);
-  if (!tool) {
-    throw new Error(`Unknown tool: ${name}`);
-  }
-
-  validateInput(tool, input);
-  return tool.handler(input);
-}
+return runAgentLoop({
+  ...agentOptions,
+  toolRuntime: createRegistryToolRuntime(registry),
+});
 ```
 
-The `validateInput()` in the middle implements the tiny schema subset defined by this lesson: required fields must be present, and declared `string`, `number`, or `boolean` values must have that runtime type. Pi uses TypeBox for full JSON Schema validation; this teaching version intentionally stops before arrays, nested objects, unions, formats, and additional-property rules:
-
-```ts
-function validateInput(tool: ToolDefinition, input: Record<string, unknown>): void {
-  for (const key of tool.parameters.required ?? []) {
-    if (!(key in input)) {
-      throw new Error(`Missing required parameter: ${key}`);
-    }
-  }
-
-  for (const [key, property] of Object.entries(tool.parameters.properties)) {
-    if (!(key in input)) continue;
-    const value = input[key];
-    const hasExpectedType = typeof value === property.type
-      && (property.type !== "number" || Number.isFinite(value));
-    if (!hasExpectedType) {
-      throw new Error(`Invalid parameter type: ${key} must be ${property.type}`);
-    }
-  }
-}
-```
-
-dispatch is just a name lookup for the handler — it's not Pi's tool loop yet. The real Pi emits `tool_execution_start`, `tool_execution_update`, and `tool_execution_end` around tool execution, and also runs `beforeToolCall` and `afterToolCall`.
+The model-tool-model path stays intact. Only ownership of schemas and handlers changes.
 
 ## Try it yourself
 
-1. Add a `console.log(JSON.stringify(registry.tools[0]))` inside `runDemo()` and compare it with the contents of `definitions`. You'll see the handler vanish silently (functions never survive JSON anyway) while the label leaks through untouched — which is exactly why you can't count on serialization to do the stripping for you; the boundary has to be written out explicitly.
-2. Add a third tool `write` to `createDemoToolRegistry()` with two required parameters, `path` and `content`. Run `npm run session:s02` and confirm it shows up in the "Tools visible to the provider" list; then deliberately leave out `content` when calling `dispatchTool`, and watch `validateInput` throw `Missing required parameter: content`.
-3. Rename `bash` to `read` as well and run the demo: `createToolRegistry()` throws `Duplicate tool: read` before any tool gets used.
-
-When you're done, run `npm run test:s02` to confirm you haven't broken this lesson's behavior contract.
+1. Add a second read-only tool to `createCourseToolRegistry()`. Give it a distinct name and a Handler that returns a fixed course fact, then ask the model to use it.
+2. Register two tools with the same name and observe the immediate `Duplicate tool` error. The conflict is rejected before any model call.
+3. Call `dispatchTool()` with an unknown name or a non-string `path`. Compare the lookup error with the schema-validation error, then trace how `createRegistryToolRuntime()` turns either one into an error Tool Result.
 
 ## Wiring into the main line
 
-| Component | Previous lesson | This lesson |
+| Boundary | s01 | s02 |
 | --- | --- | --- |
-| Tool contract | None — the assistant said it wanted a tool, but the system had no concept of one | `ToolDefinition`: name / description / parameters |
-| Local executable side | None | `RegisteredTool` carries label and handler; `dispatchTool()` calls by name |
-| Model/local boundary | Not needed — the provider only received messages | `listToolDefinitions()` strips handler and label, letting only the serializable contract through |
-
-s03's `ProviderContext.tools` holds exactly this contract list, and s04's tool loop then uses `dispatchTool()` to route the model's toolCall back into local execution.
+| Model-visible tools | `ToolRuntime.tools` | `listToolDefinitions(registry)` |
+| Executable code | Inline Tool Runtime | Private registry Handler |
+| Validation | `validateToolCall()` inside `read_file` runtime | Centralized in `dispatchTool()` |
+| Loop entry | `runAgentLoop()` | `runToolRegistryAgentLoop()` |
+| Live capability | Safe `read_file` | The same safe `read_file` through the registry |
 
 ## Against the Pi source
 
-Read [pi-source.md](pi-source.md) after finishing this lesson.
+The public schema uses the same `Tool` shape and `validateToolCall()` entry as `@earendil-works/pi-ai` 0.79.1. The registry side is a small analogue of Pi's richer `AgentTool` runtime objects and coding-tool construction.
 
-The mapping in one sentence: `ToolDefinition` corresponds to pi-ai's `Tool`, and `RegisteredTool` to the agent package's `AgentTool` — in Pi, label and `execute()` also live on the runtime side; the step that actually keeps only name / description / parameters is the provider-side serialization, e.g. `convertTools()` in the anthropic provider. Note that coding-agent also has a type named `ToolDefinition`, which is not the same thing as s02's — pi-source has the disambiguation.
+See [pi-source.md](pi-source.md) for the pinned source mapping and the two different `ToolDefinition` names used inside Pi.
 
 ## Next up
 
-The model can now see the tool contracts, but s01's `provider.complete()` still returns the whole assistant message in one shot. A real model generates token by token — text and tool-call arguments both come out in fragments.
-
-[s03 Provider Events](../s03_provider_events/README.md): Pi breaks "the model is generating" into a stream of events — the assistant can emit a toolCall inside the stream, but the local handler still never runs; execution happens in s04.
+[s03 · Provider Events](../s03_provider_events/) keeps the registry and replaces the completed-response surface with the official `pi-ai` event stream.

@@ -1,193 +1,126 @@
 # s02 · Tool Schema
 
-[English](README.md) · [中文](README.zh.md) · 日本語
+[コーストップ](../README.ja.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[← s01](../s01_agent_loop/README.ja.md) · [目次](../README.ja.md) · [s03 →](../s03_provider_events/README.ja.md)
-
-> ひとことで：ツールはまずモデルに見せる契約であり、その次にローカルで実行できるコードです——登録時に両面を 1 つに束ね、provider に送る前に剥がします。
->
-> Pi の中での位置：`@earendil-works/pi-ai` の `Tool` 契約と、agent 側の `AgentTool` ランタイムオブジェクトの間の境界。
-
-→ `ToolDefinition` のフィールドは name / description / parameters の 3 つだけ。モデルに見えるのはこれがすべてです
-→ label と handler はどちらも `RegisteredTool` 側に住んでいます：一方は UI 表示用のフィールド、もう一方はローカル関数で、provider はどちらも受け取りません
-→ 剥がす処理は `listToolDefinitions()` という 1 つの関数に集約されています——レジストリはローカルのランタイム資産で、provider に渡す payload はシリアライズ可能な契約だけです
-→ `dispatchTool()` はテーブル参照に加え、必須フィールドと基本型を検査します。モデルが「ツールを呼びたい」と言うことと、ツールが実際に実行されることの間には、s04 がまるごと挟まっています
-
----
-
-## 問題
-
-s01 のデモでは assistant がすでに「ツールを呼びたい」と言っていましたが、システムの中に「ツール」というものはまだ存在しませんでした——モデルはどんなツールが使えるか知らず、ローカルにも呼び出せる関数が 1 つもありません。
-
-ツールを足すときに一番やりがちな間違いは、いきなり tool loop から書き始めることです：読者は schema、handler、toolCall、toolResult、エラー処理、イベントストリームに同時にぶつかることになります。Pi は概念をそんなふうに混ぜていません。Pi ではツールをまず両面に分けます：
+> Pi の中での位置：`pi-ai` でモデルに見せる `Tool` 契約と、Agent Runtime が保持する実行可能なツールオブジェクトの境界です。
 
 ```text
-モデルに見せる面：name / description / parameters
-ローカルで使う面：execute または handler
+モデルが見る：name + description + parameters
+Harness が保持：schema + handler
 ```
 
-モデルが知る必要があるのは、このツールが何をできるか、パラメータがどんな形か、それだけです。ローカル関数を手に入れることはできませんし、ツールが内部でどうファイルを読み、どう shell を叩くかを知るべきでもありません。s02 で扱うのはこの境界だけです。
+## 問題：ローカル関数をそのままモデルへ渡せない
 
-## 考え方
+s01 でモデルとツールの往復は完成しましたが、一つの Tool Runtime に公開 Schema と実行可能な Handler が同居しています。ツールが増えるほど、この構造では境界を把握しにくくなります。
 
-2 つの型で両面を固定し、1 つの関数で境界を実装します：
+モデルに必要なのはシリアライズ可能な契約で、Harness に必要なのは呼び出せる関数です。Runtime Object 全体を Provider へ渡すと、モデル契約に含めるべきでないフィールドが漏れる可能性があります。Schema だけを残すと、今度はローカルで実行するものがありません。
 
-| フィールド | どこに住むか | モデルに見えるか |
-|------|--------|-------------|
-| `name` / `description` / `parameters` | `ToolDefinition` | 見える。これが契約の本体 |
-| `label` | `RegisteredTool` | 見えない。UI 表示用 |
-| `handler` | `RegisteredTool` | 見えない。ローカル関数 |
+## 考え方：ツールの二つの形を明示的に分ける
 
-登録時には両面を 1 つにまとめ（`RegisteredTool = ToolDefinition & { label, handler }`）、provider に送る前に `listToolDefinitions()` が label と handler をまとめて剥がします。
+各ツールを二つの形で表し、変換を明示します。
 
-この節ではツールを実行しません。`dispatchTool()` が示すのは境界のもう半分——ローカルは名前から handler を引き戻せる、ということだけです。
+```text
+RegisteredTool
+  ├── ToolDefinition：name、description、parameters
+  └── ToolHandler：ローカルの実行関数
+
+ToolRegistry
+  ├── listToolDefinitions() -> モデル用の Tool[]
+  └── dispatchTool()        -> 検証後のローカル実行
+```
+
+Registry が境界になります。Provider は Schema のコピーを受け取り、ローカルの振り分け処理は名前から非公開 Handler を探します。
 
 ## まず動かす
 
-```sh
-npm run session:s02
+コースの `.env` を設定し、`learn-pi-agent/` から実行します。
+
+```bash
+npm run s02
 ```
 
-出力：
+1 回の依頼でツールの使用を明示することもできます。
 
-```text
-Tools visible to the provider:
-- read: Read a file by path. The s02 demo does not touch the filesystem.
-- bash: Describe a shell command. The s02 demo does not execute it.
-Dispatch result: read: README.md
+```bash
+npm run s02 -- "read_file で README.md を読み、五つの学習フェーズを挙げてください。"
 ```
 
-ここの `read` はファイルを読んでいませんし、`bash` は shell を起動していません。証明しているのは 2 つだけです：provider にはツールの schema が見えること、そしてローカルコードはツール名から handler を見つけられること。
+回答は実行ごとに変わる場合があります。安定しているのは、モデルが `read_file` Schema を受け取り、Tool Call を出し、Registry が非公開 Handler を実行してから結果をモデルへ返すことです。
 
 ## コードの中身
 
-4 ステップです。
+### 1. ツールの二つの側面を記述する
 
-**ステップ 1**：両面を 2 つの型として書く。`ToolDefinition` はモデルに見える契約です：
-
-```ts
-export type ToolDefinition = {
-  name: string;
-  description: string;
-  parameters: ToolParameters;
-};
-```
-
-`RegisteredTool` は契約の上にローカル用フィールドを 2 つ重ねます：
+`ToolDefinition` は `name`、`description`、`parameters` だけを持ちます。`RegisteredTool` は、ローカルの `handler` と任意の UI `label` を加えます。
 
 ```ts
 export type RegisteredTool = ToolDefinition & {
-  label: string;
+  label?: string;
   handler: ToolHandler;
 };
 ```
 
-`label` はターミナル UI に表示する名前です。Pi の `AgentTool` も持っていますが、provider へのシリアライズでは送られません——handler と同じ側に属していて、ローカルでだけ意味を持ちます。パラメータ schema については、Pi の実コードは TypeBox で書かれています。schema はシリアライズでき、複数の provider に適合し、ランタイム検証もできる必要があるからです。教材版ではまず、ごく小さな JSON schema のサブセットを使います。
+モデルを呼ぶ前に、このコース型を正式な `pi-ai` の `Tool` へ変換します。
 
-**ステップ 2**：登録。`createToolRegistry()` はツール配列を受け取る前に名前の重複を検査します：
+### 2. Registry の主 Entry を作る
+
+`createToolRegistry()` は名前の重複を拒否し、各定義を `pi-ai` Schema へ変換し、非公開の `WeakMap` に `{ schema, handler }` Entry を保存します。モデル側 API から Registry を使うコードには Handler を渡しません。
+
+### 3. モデルに見せる定義だけを列挙する
+
+`listToolDefinitions()` は、三つのフィールドだけを持つ新しいオブジェクトを返します。
 
 ```ts
-export function createToolRegistry(tools: RegisteredTool[]): ToolRegistry {
-  const seen = new Set<string>();
-
-  for (const tool of tools) {
-    if (seen.has(tool.name)) {
-      throw new Error(`Duplicate tool: ${tool.name}`);
-    }
-    seen.add(tool.name);
-  }
-
-  return { tools };
+{
+  name: schema.name,
+  description: schema.description,
+  parameters: schema.parameters,
 }
 ```
 
-以降のすべての検索は name をキーにします——モデルが呼び出しを発行するとき、伝えてくるのは名前だけです。2 つのツールが同名なら dispatch はくじ引きになってしまうので、登録時に即座に throw して、いちばん早い地点で問題を止めます。
+この分離は明示的です。JSON シリアライズが偶然関数を落とすことには頼りません。
 
-**ステップ 3**：剥がす。provider に送る前に、`listToolDefinitions()` は契約だけを通します：
+### 4. ローカルで振り分ける前に検証する
 
-```ts
-export function listToolDefinitions(registry: ToolRegistry): ToolDefinition[] {
-  return registry.tools.map(({ handler: _handler, label: _label, ...definition }) => ({
-    ...definition,
-    parameters: {
-      ...definition.parameters,
-      properties: { ...definition.parameters.properties },
-      required: definition.parameters.required ? [...definition.parameters.required] : undefined,
-    },
-  }));
-}
-```
+`dispatchTool()` は主 Entry を検索し、未知の名前を拒否して `ToolCall` を作ります。引数検証は `pi-ai` の `validateToolCall()` へ直接委譲します。Handler はこの公式 Validator が成功した後だけ呼ばれます。
 
-分割代入が handler と label をまとめて捨て、残るのはちょうど `ToolDefinition` の 3 フィールドです。`parameters` はさらに一段コピーするので、返り値とレジストリは互いに影響しません。モデルが見るのは常にこのシリアライズ可能な契約だけで、ローカル関数はずっとランタイム側に留まります。これが Pi のツール体系の最初の境界で、s04 の実行も s05 の hook もこの上に建っています。
+`createRegistryToolRuntime()` は、この境界を s01 の Loop へ適合させます。振り分けの失敗は Error `ToolResultMessage` になり、モデルは失敗を受け取って処理を続けられます。
 
-**ステップ 4**：ローカルが名前から handler を引き戻す。
+### 5. 実モデルのループを変えない
+
+`createCourseToolRegistry()` は s01 と同じ安全な `read_file` 能力を登録します。`runToolRegistryAgentLoop()` は Registry による Tool Runtime を `runAgentLoop()` へ渡します。
 
 ```ts
-export async function dispatchTool(
-  registry: ToolRegistry,
-  name: string,
-  input: Record<string, unknown>,
-): Promise<ToolResult> {
-  const tool = registry.tools.find((candidate) => candidate.name === name);
-  if (!tool) {
-    throw new Error(`Unknown tool: ${name}`);
-  }
-
-  validateInput(tool, input);
-  return tool.handler(input);
-}
+return runAgentLoop({
+  ...agentOptions,
+  toolRuntime: createRegistryToolRuntime(registry),
+});
 ```
 
-途中の `validateInput()` は、この節で定義した小さな schema subset を検証します。必須フィールドが存在し、宣言された `string`、`number`、`boolean` と実行時の型が一致しなければなりません。Pi は TypeBox で完全な JSON Schema 検証を行いますが、この教材では配列、入れ子の object、union、format、追加プロパティの規則までは扱いません：
-
-```ts
-function validateInput(tool: ToolDefinition, input: Record<string, unknown>): void {
-  for (const key of tool.parameters.required ?? []) {
-    if (!(key in input)) {
-      throw new Error(`Missing required parameter: ${key}`);
-    }
-  }
-
-  for (const [key, property] of Object.entries(tool.parameters.properties)) {
-    if (!(key in input)) continue;
-    const value = input[key];
-    const hasExpectedType = typeof value === property.type
-      && (property.type !== "number" || Number.isFinite(value));
-    if (!hasExpectedType) {
-      throw new Error(`Invalid parameter type: ${key} must be ${property.type}`);
-    }
-  }
-}
-```
-
-dispatch は名前で handler を探すだけで、まだ Pi の tool loop ではありません。実際の Pi はツール実行の前後で `tool_execution_start`、`tool_execution_update`、`tool_execution_end` を発行し、さらに `beforeToolCall` と `afterToolCall` を実行します。
+モデルとツールの往復は変わりません。変わるのは Schema と Handler の所有場所だけです。
 
 ## 手を動かす
 
-1. `runDemo()` に `console.log(JSON.stringify(registry.tools[0]))` を 1 行足して、`definitions` の中身と見比べてください。handler は静かに消えるのに（関数はそもそも JSON に入りません）、label はそのまま漏れて出てきます——シリアライズのついでに剥がし終えたことにできない理由がこれで、境界は明示的に書く必要があります。
-2. `createDemoToolRegistry()` に 3 つ目のツール `write` を追加し、必須パラメータ `path` と `content` を持たせて、`npm run session:s02` で "Tools visible to the provider" のリストに現れることを確認してください。次に、わざと `content` を抜いて `dispatchTool` を呼び、`validateInput` が `Missing required parameter: content` を throw するのを見てください。
-3. `bash` の name も `read` に変えてデモを実行すると、どのツールが使われるより前に `createToolRegistry()` が `Duplicate tool: read` を throw します。
-
-書き換えたら `npm run test:s02` を実行して、この節の挙動の約束を壊していないか確認してください。
+1. `createCourseToolRegistry()` に二つ目の読み取り専用ツールを追加します。別の名前を付け、Handler が固定のコース情報を返すようにして、モデルに使わせてください。
+2. 同じ名前のツールを二つ登録し、すぐに出る `Duplicate tool` エラーを確認します。モデルを呼ぶ前に競合を拒否します。
+3. 未知の名前または文字列ではない `path` で `dispatchTool()` を呼びます。検索エラーと Schema 検証エラーを比較し、`createRegistryToolRuntime()` が両方を Error Tool Result に変える経路を追ってください。
 
 ## 本線につなぐ
 
-| コンポーネント | 前の節 | この節 |
+| 境界 | s01 | s02 |
 | --- | --- | --- |
-| ツール契約 | なし——assistant はツールを呼びたいと言うが、システムにツールという概念がない | `ToolDefinition`：name / description / parameters |
-| ローカルの実行体 | なし | `RegisteredTool` が label と handler を持ち、`dispatchTool()` が名前で呼び出す |
-| モデル／ローカルの境界 | 不要——provider は messages しか受け取らない | `listToolDefinitions()` が handler と label を剥がし、シリアライズ可能な契約だけを通す |
-
-s03 の `ProviderContext.tools` に入るのがまさにこの契約リストで、s04 の tool loop が `dispatchTool()` を使って、モデルの toolCall をローカル実行へ引き戻します。
+| モデルに見せるツール | `ToolRuntime.tools` | `listToolDefinitions(registry)` |
+| 実行可能なコード | Inline Tool Runtime | 非公開 Registry Handler |
+| 引数検証 | `read_file` Runtime 内の `validateToolCall()` | `dispatchTool()` に集約 |
+| Loop の入口 | `runAgentLoop()` | `runToolRegistryAgentLoop()` |
+| 実際の能力 | 安全な `read_file` | Registry 経由の同じ安全な `read_file` |
 
 ## Pi ソースと照合
 
-この節を読み終えたら [pi-source.md](pi-source.md) を見てください。
+公開 Schema は `@earendil-works/pi-ai` 0.79.1 と同じ `Tool` の形と `validateToolCall()` を使います。Registry 側は、Pi のより豊富な `AgentTool` Runtime Object と Coding Tool 構築処理を小さくしたものです。
 
-対応関係をひとことで：`ToolDefinition` は pi-ai の `Tool` に、`RegisteredTool` は agent パッケージの `AgentTool` に対応します——Pi でも label と `execute()` はランタイム側にあります。「name / description / parameters だけを残す」処理を実際にやっているのは provider 側のシリアライズで、たとえば anthropic provider の `convertTools()` です。なお coding-agent にも `ToolDefinition` という同名の型がありますが、s02 のものとは別物です。見分け方は pi-source にあります。
+固定版ソースとの対応と、Pi 内部にある二つの異なる `ToolDefinition` の説明は、英語の [pi-source.md](pi-source.md) を参照してください。
 
-## 次の節
+## 次のレッスン
 
-モデルはツール契約を見られるようになりましたが、s01 の `provider.complete()` は依然として assistant message を丸ごと一度に返しています。実際のモデルは token を 1 つずつ生成し、テキストも tool call の引数も断片で吐き出されます。
-
-[s03 Provider Events](../s03_provider_events/README.ja.md)：Pi は「モデルが生成中」という状態を 1 本のイベントストリームに分解します——assistant はストリームの中で toolCall を発行できますが、ローカルの handler はまだ実行されません。実行は s04 です。
+[s03 · Provider Events](../s03_provider_events/) では Registry を保ち、完成した応答を返すインターフェースを正式な `pi-ai` Event Stream へ変えます。

@@ -70,7 +70,7 @@ while true:
 | 课程 | 适合作为起点的情况 | 技术栈 | 课数 | 语言 | 真实模型路径 |
 | --- | --- | --- | ---: | --- | --- |
 | [Learn Claude Code](./learn-claude-code/) | 从第一性原理学习 Harness 工程和 Coding Agent 架构 | Python 3.11 | 22 | 英文、中文、日文 | Anthropic-compatible API |
-| [Learn Pi Agent](./learn-pi-agent/) | TypeScript 开发者学习协议和事件驱动运行时 | Node.js 25 + TypeScript | 14 | 英文、中文、日文 | s14 可选接入 OpenAI-compatible API |
+| [Learn Pi Agent](./learn-pi-agent/) | TypeScript 开发者学习协议和事件驱动运行时 | Node.js 22.19+ + TypeScript | 13 | 英文、中文、日文 | 从 s01 开始接入 OpenAI-compatible API |
 | [Learn LangChain](./learn-langchain/) | 想用 LangChain 开发，同时理解组件契约的 Python 开发者 | Python 3.11 + uv | 13 | 中文 | 默认使用 OpenAI |
 
 三门课程不共享运行时依赖，只需安装当前课程自己的环境。
@@ -80,7 +80,7 @@ while true:
 仓库只需 Clone 一次，然后进入你要学习的课程。接下来三个课程章节中的命令都从仓库根目录开始执行。
 
 ```bash
-git clone https://github.com/Bill-Billion/learn-claude-code.git learn-agent-harness
+git clone https://github.com/Bill-Billion/learn-agent-harness.git
 cd learn-agent-harness
 ```
 
@@ -112,14 +112,13 @@ cd learn-agent-harness
 cd learn-claude-code
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt pytest
+pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，填写 ANTHROPIC_API_KEY 后再运行真实模型示例。
 python s01_agent_loop/code.py
-python -m pytest -q
 ```
 
-可运行章节读取 `.env` 中的 Provider 配置。测试套件使用本地替身，不需要模型密钥。课程指南还介绍了由课程内容生成的 Web 学习界面。
+可运行章节读取 `.env` 中的 Provider 配置。课程指南还介绍了由课程内容生成的 Web 学习界面。
 
 - [English course guide](./learn-claude-code/README.md)
 - [中文课程指南](./learn-claude-code/README.zh.md)
@@ -127,7 +126,7 @@ python -m pytest -q
 
 ## 课程二：Learn Pi Agent
 
-[Learn Pi Agent](./learn-pi-agent/) 用 14 节累积式 TypeScript 课程搭建一个小型 Pi 风格 Runtime。代码沿着一次请求依次经过 Provider Event、工具循环、Turn State、Session、上下文资源、Extension、运行模式、信任校验和 Package 解析。s13 把离线机制接成完整链路，s14 再把这套 Harness 接入真实 Provider。
+[Learn Pi Agent](./learn-pi-agent/) 用 13 节累积式 TypeScript 课程搭建一个小型 Pi 风格 Runtime。从 s01 开始，真实模型就可以调用一个安全的只读工具，并在下一次回复中使用工具结果。后续课程在保留这条循环的同时，逐步加入 Provider Event、工具生命周期、Turn State、Session、上下文资源、Extension、运行模式、信任校验和 Package 解析。s13 通过同一条真实 Provider 路径集成完整 Harness。
 
 ### 适合谁
 
@@ -135,39 +134,29 @@ python -m pytest -q
 
 学完后，你应该能够设计可替换的 Provider 契约，归一化流式事件，在不改变 Core Loop 的情况下提供生命周期 Hook，保存 Session 分支，并把执行策略放在模型输出之外。
 
-### 14 节课如何展开
+### 13 节课如何展开
 
 | 课程 | 加入 Harness 的新层次 |
 | --- | --- |
-| s01-s03 | 最小循环、工具 Schema 和归一化 Provider Event |
-| s04-s06 | 事件驱动工具执行、Hook 和 Turn State |
+| s01-s03 | 真实模型工具循环、工具 Schema 和归一化 Provider Event |
+| s04-s06 | 带生命周期事件的工具执行、Hook 和 Turn State |
 | s07-s09 | Session Tree、上下文资源和 Extension Runtime |
-| s10-s12 | 运行模式、可信执行环境和 Package 解析 |
-| s13 | 一套确定性、完整集成的 Harness |
-| s14 | OpenAI-compatible 流式响应和真实的模型工具闭环 |
+| s10-s12 | 运行模式、Project Trust 和 Package 解析 |
+| s13 | 通过同一条真实 Provider 路径运行的完整 Harness |
 
-s01-s13 使用确定性 Provider，不发送网络请求，便于直接观察每个事件和状态变化。s14 是可选的真实模型章节，不会取代离线学习主线。
+从 s01 开始，各章节命令都会调用真实 Provider。每次运行的具体措辞和工具选择可能不同；学习时应重点观察模型工具循环、事件协议和状态契约。
 
 ### 运行课程
 
 ```bash
 cd learn-pi-agent
-npm ci
-npm run session:s01
-npm run test:s01
-npm run check
+npm install
+cp .env.example .env
+# 编辑 .env，填写 OPENAI_API_KEY。
+npm run s01
 ```
 
-运行真实模型章节时，需要提供 OpenAI-compatible Chat Completions Endpoint。`OPENAI_BASE_URL` 可以省略，默认值为 `https://api.openai.com/v1`。
-
-```bash
-export OPENAI_API_KEY="your-key"
-export OPENAI_MODEL="your-model"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-npm run session:s14 -- "Read README.md and summarize it."
-```
-
-只有 `session:s14` 会发送网络请求。`npm run test:s14` 使用内存中的 SSE Fixture，`npm run check` 无需密钥即可验证整门课程。
+`OPENAI_MODEL` 默认使用 `gpt-4o-mini`，`OPENAI_BASE_URL` 默认使用 OpenAI 官方 API。随后依次运行 `npm run s02` 到 `npm run s13`。因为回复和工具调用由模型选择，实际输出可能与示例不同。
 
 - [English course guide](./learn-pi-agent/README.md)
 - [中文课程指南](./learn-pi-agent/README.zh.md)
@@ -197,14 +186,13 @@ npm run session:s14 -- "Read README.md and summarize it."
 
 ```bash
 cd learn-langchain
-uv sync --locked --extra dev
+uv sync --locked
 cp .env.example .env
 # 编辑 .env，填写 OPENAI_API_KEY 后再运行真实模型示例。
 uv run python -m s01_first_model.code
-uv run pytest -q
 ```
 
-真实示例从 `.env` 读取 `LANGCHAIN_MODEL` 和对应 Provider 的密钥，默认配置使用 OpenAI。s11-s13 也默认使用 OpenAI Embeddings，除非你注入其他 Embedding 实现。测试使用 Fake Model、Fake Embedding 或小型本地替身，不调用 Provider。
+示例从 `.env` 读取 `LANGCHAIN_MODEL` 和对应 Provider 的密钥，默认配置使用 OpenAI。s11-s13 也默认使用 OpenAI Embeddings，除非你注入其他 Embedding 实现。
 
 - [中文课程指南](./learn-langchain/README.md)
 
@@ -237,23 +225,13 @@ uv run pytest -q
 
 ## 每门课程怎么学
 
-1. 先读课程指南，并在修改代码前运行一次完整离线检查。
+1. 先读课程指南，并在修改代码前运行第一节课。
 2. 按课程目录顺序学习，每次只确认相对上一节新增了什么机制。
 3. 运行当前章节入口，观察它输出的状态或事件。
-4. 修改一处边界，比如增加工具、拒绝动作、创建 Session 分支或替换测试 Provider。
-5. 运行章节测试，再和下一节的实现对照。
+4. 修改一处边界，比如增加工具、拒绝动作、创建 Session 分支或改变上下文资源。
+5. 再次运行本节，然后和下一节的实现对照。
 
-真实模型路径用于观察 Provider 行为和模型工具交互，离线测试用于验证契约、状态变化和错误处理。两者解决的问题不同，学习时都应实际运行。
-
-## 模型访问与验证边界
-
-| 课程 | 真实运行 | 离线验证 | 网络边界 |
-| --- | --- | --- | --- |
-| Learn Claude Code | 章节脚本使用 `ANTHROPIC_API_KEY`、`MODEL_ID` 和可选的 `ANTHROPIC_BASE_URL` | `python -m pytest -q` | 测试不调用 Provider |
-| Learn Pi Agent | 只有 s14 使用 `OPENAI_API_KEY`、`OPENAI_MODEL` 和可选的 `OPENAI_BASE_URL` | `npm run check` 和每节课程测试 | s01-s13 和所有测试保持离线 |
-| Learn LangChain | 示例使用 `LANGCHAIN_MODEL` 及对应 Provider 密钥，默认使用 OpenAI | `uv run pytest -q` | 测试使用本地 Fake，真实示例可能调用 Provider |
-
-根目录没有统一安装命令，因为三门课程使用各自的环境和 Lockfile。CI 也会分别运行每门课程的检查。
+可运行示例是课程的学习主线。模型每次输出的具体措辞可能不同，应比较模型工具循环、Event 和 State，而不是固定 Transcript。三门课程各自使用独立环境和 Lockfile，因此根目录没有统一安装命令。
 
 ## 仓库目录
 
@@ -266,7 +244,7 @@ learn-agent-harness/
 ├── LICENSE
 ├── .github/workflows/       # independent course checks and repository hygiene
 ├── learn-claude-code/       # 22 Python lessons, trilingual
-├── learn-pi-agent/          # 14 TypeScript lessons, trilingual
+├── learn-pi-agent/          # 13 TypeScript lessons, trilingual
 └── learn-langchain/         # 13 Python lessons, Chinese
 ```
 
@@ -276,7 +254,7 @@ learn-agent-harness/
 
 - 每节课只展开一个新机制。这些代码用于教学，不是生产 SDK。
 - 后续课程可以集成前面的代码，但三门课程各自维护依赖和检查。
-- 真实示例可能需要付费 Provider 账号，自动化测试必须保持确定且离线。
+- 真实示例可能需要付费 Provider 账号。
 - Claude Code 和 Pi Agent 保持英文、中文、日文三语同步；Learn LangChain 当前只提供中文课程。
 - 简化过的权限、存储或 Provider Adapter 会明确标注，不把教学实现包装成生产级系统。
 

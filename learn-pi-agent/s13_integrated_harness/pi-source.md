@@ -1,80 +1,95 @@
-# s13 Against the Pi Source
+# s13 against the Pi 0.79.1 source
 
-s13 maps not to one standalone class but to the composite chain in Pi that runs from resource loading to the agent loop. As before, this unit is pinned to the repository's `@earendil-works/pi-coding-agent` 0.79.1 at commit `2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210`.
+s13 maps to Pi's assembly path rather than one standalone class: Trust, Resources, Packages, Extensions, Agent Harness, Session, and shells converge before the first Prompt.
 
-## The files
+```text
+resolve trust and resources
+  -> build Agent Session services
+  -> run one Agent Harness over one Session
+  -> expose CLI modes and SDK methods
+```
 
-- [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts)
+## Corresponding files
+
 - [`packages/agent/src/harness/agent-harness.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/agent-harness.ts)
 - [`packages/agent/src/harness/session/session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/session/session.ts)
+- [`packages/coding-agent/src/core/sdk.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/sdk.ts)
+- [`packages/coding-agent/src/core/agent-session-runtime.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session-runtime.ts)
+- [`packages/coding-agent/src/core/agent-session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session.ts)
 - [`packages/coding-agent/src/core/resource-loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/resource-loader.ts)
 - [`packages/coding-agent/src/core/project-trust.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/project-trust.ts)
 - [`packages/coding-agent/src/core/package-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/package-manager.ts)
+- [`packages/coding-agent/src/core/extensions/loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/extensions/loader.ts)
 - [`packages/coding-agent/src/core/extensions/runner.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/extensions/runner.ts)
-- [`packages/coding-agent/src/core/agent-session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session.ts)
-- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/session-manager.ts)
-- [`packages/coding-agent/src/core/sdk.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/sdk.ts)
-
-Specific anchors:
-
-```text
-agent-loop.ts:31-67                 agentLoop() takes context, tools, and the loop config
-agent-loop.ts:279-303               provider requests carry systemPrompt, messages, and tools
-agent-loop.ts:564-628               beforeToolCall, tool dispatch, and the blocked result
-agent-harness.ts:332-359            session.buildContext() and turn state
-agent-harness.ts:367-446            systemPrompt, tools, and beforeToolCall wired into the agent loop
-agent-harness.ts:488-512            agent messages written back to the session
-agent-harness.ts:571-596            before_agent_start mutating the system prompt
-harness/session/session.ts:114-144  buildContext() and appendMessage()
-project-trust.ts:45-112             the project trust decision order
-resource-loader.ts:331-468          trust, package resolve, extension/resource load
-package-manager.ts:885-921          project/user packages and local resources gathered
-extensions/runner.ts:867-905        tool_call handlers run in load order
-extensions/runner.ts:980-1042       the before_agent_start handler chain
-extensions/runner.ts:1052-1090      the resources_discover handler chain
-agent-session.ts:404-430            tool_call events wired to the agent's beforeToolCall
-agent-session.ts:1099-1125          before_agent_start runs before the prompt
-session-manager.ts:950-984          messages appended to the JSONL session tree
-sdk.ts:166-330                      createAgentSession() assembling the SDK session
-```
+- [`packages/coding-agent/src/core/prompt-templates.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/prompt-templates.ts)
+- [`packages/coding-agent/src/modes/print-mode.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/modes/print-mode.ts)
 
 ## The mapping
 
-| s13 | Pi |
+| s13 | Pi 0.79.1 |
 | --- | --- |
-| `createIntegratedHarnessRuntime()` | coding-agent's session/service/runtime assembly layer |
-| `resolveProjectTrusted()` | trust resolution in `project-trust.ts` |
-| `resolvePiPackages()` | `DefaultPackageManager.resolve()` |
-| path-to-factory map | the set of extension modules once module loading completes |
-| `createExtensionTurnState()` | resource loader, system prompt builder, and `before_agent_start` |
-| provider adapter | the context handoff from `AgentHarness.createTurnState()` to `agentLoop()` |
-| `runner.emitToolCall()` | the extension runner's `tool_call` event |
-| `runHookedToolLoop()` | the tool loop and hook dispatch in `agent-loop.ts` |
-| tagged JSON session adapter | Pi persisting rich `AgentMessage` objects as session entries |
-| `MiniRuntime` shells | coding-agent CLI modes and the SDK as shells around one session |
+| `createIntegratedHarnessRuntime()` | the assembly performed by `createAgentSession()` and `createAgentSessionRuntime()` |
+| supplied Model, Tool registry, and Session | Agent Session services and `AgentHarness` dependencies |
+| `prepareProjectTrust()` | `resolveProjectTrusted()` before final Resource loading |
+| `createPackageRuntime()` | Package Manager selection followed by `ResourceLoader.reload()` |
+| `extensionFactories` | Extension factories after Pi's module loader resolves paths |
+| `MiniCoreRuntime` | the teaching facade over Agent Harness plus Agent Session state |
+| `promptTemplates` / `invokePromptTemplate()` | loaded templates and explicit `expandPromptTemplate()` invocation |
+| `IntegratedHarnessRuntime` | a host-facing Session facade with a course-specific Prompt queue |
+| Print, JSON, RPC, and SDK helpers | CLI modes and direct Agent Session APIs around one runtime |
 
-## What this unit simplifies
+## Assembly order
 
-Real Pi dynamically loads extension modules, merges settings, and handles package install paths, resource precedence, name collisions, reload, compaction, model selection, and the terminal UI. s13 keeps only this observable chain:
+Pi's `createAgentSession()` assembles Settings, Model selection, Session Manager, Package Manager, Resource Loader, Extensions, Tools, and `AgentSession`. The CLI's `AgentSessionRuntime` retains the services needed to replace or reload that Session while keeping mode-level ownership outside the Agent loop.
+
+s13 makes the same dependency order explicit:
 
 ```text
-trust
-  -> package/resource resolution
-  -> extension registration
-  -> turn state
-  -> provider + hooked tool loop
-  -> session persistence
-  -> runtime shell
+Project Trust
+  -> protected direct paths and project packages
+  -> package Resource selection
+  -> Extension factories, Skills, Prompt Templates
+  -> MiniCoreRuntime and AgentMessage Session
+  -> IntegratedHarnessRuntime and shells
 ```
 
-Files and extension modules are all supplied by in-memory fixtures. The path-to-factory map stands in for modules already loaded by the host; the s12 resolver only decides which paths are eligible to enter the runner. Project trust decides whether project-local paths participate in selection at all.
+The real Model and Tool registry are supplied once. Every shell delegates to the resulting runtime rather than constructing another loop.
 
-s07's message contract is narrower than Pi's `AgentMessage`, so s13 stores complete assistant/tool-result objects as tagged JSON. That's a course-internal adapter, not a replica of Pi's session file format.
+## Trust, Resources, and Packages
+
+Pi's `ResourceLoader.reload()` performs a pre-trust pass, resolves Project Trust, updates `SettingsManager.projectTrusted`, resolves package and direct Resource paths, then loads the final Extension set and other Resources.
+
+The course preserves the observable boundary:
+
+- Context candidates remain independent of Project Trust.
+- User Resources and user packages remain available.
+- Project Skills, Prompt Templates, direct Extensions, and project packages participate only after Trust.
+- Package and direct Extension paths must match explicit course factories.
+- Selected Prompt Templates are catalog data until explicitly invoked.
+
+Pi dynamically loads Extension modules and obtains package lists from Settings. s13 receives both as host arguments. The explicit map makes eligibility and execution separate, which is useful for teaching but is not Pi's module-loading API.
+
+## One AgentMessage Session and every shell
+
+`AgentHarness` builds each Turn from Session Context, System Prompt, Tools, and Hooks, then appends rich Agent Messages back to the Session. s13 reuses the course implementation of those same contracts; Tool Calls and Tool Results remain structured `AgentMessage` objects.
+
+`IntegratedHarnessRuntime` implements `prompt()`, `getState()`, and live `subscribe()`, so Print, JSON, RPC, and SDK access share one cumulative Session. Explicit Prompt invocation enters the same queue and Session as a normal Prompt.
+
+The course transparently serializes concurrent `prompt()` and `invokePromptTemplate()` calls. Pi's `AgentSession.prompt()` instead requires an active-stream caller to choose `steer` or `followUp` behavior. Do not infer the course queue from Pi's public concurrency contract.
+
+## Course-specific host policies
+
+s13 expects the host to provide a Model, Tool registry, Resource source, Package entries, and Extension factories. Pi discovers and constructs more of these from user and project Settings.
+
+The course also omits dynamic module loading, Package installation, Theme UI, Runtime replacement, reload, resume, compaction orchestration, steering, follow-up queues, abort controls, model switching, and the terminal editor. Those omissions do not change the core composition demonstrated by the tests.
+
+`PI_PROJECT_TRUST` affects the course CLI's default policy, but the small CLI has no interactive Trust selector or persistent Store. Its default `ask` therefore leaves protected inputs off when a decision is required. This is a host limitation, not a different Project Trust rule.
 
 ## Suggested reading order
 
-Start with `createTurnState()` and `runLoop()` in `agent-harness.ts` — that's where you see how session context, system prompt, tools, and hooks enter the same loop.
-
-Then read `reload()` in `resource-loader.ts` to confirm trust takes effect before package and project extension resolution. Follow up with the extension runner's `emitBeforeAgentStart()`, `emitResourcesDiscover()`, and `emitToolCall()`.
-
-Finish with the event forwarding in `agent-session.ts` and the append path in `session-manager.ts`. They correspond to the parts of s13 where the loop result gets written back to the session, and where different shells share the same runtime state.
+1. Start with `createAgentSession()` in `sdk.ts` and `createAgentSessionRuntime()`.
+2. Follow `ResourceLoader.reload()` through Trust, Package resolution, and final Extension loading.
+3. Read `AgentHarness.createTurnState()` and its loop handoff.
+4. Follow `AgentSession.prompt()` through Prompt Template expansion and `before_agent_start`.
+5. Read the rich-message append path in the Harness Session implementation.
+6. Finish with Print mode and `AgentSession.subscribe()` to see two shells around the same assembled Session.

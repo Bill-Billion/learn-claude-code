@@ -70,7 +70,7 @@ Together, the courses prevent two common blind spots. A framework-only view can 
 | Course | Best starting point for | Stack | Lessons | Languages | Live model path |
 | --- | --- | --- | ---: | --- | --- |
 | [Learn Claude Code](./learn-claude-code/) | First-principles harness engineering and coding-agent architecture | Python 3.11 | 22 | English, Chinese, Japanese | Anthropic-compatible API |
-| [Learn Pi Agent](./learn-pi-agent/) | TypeScript developers studying protocols and event-driven runtimes | Node.js 25 + TypeScript | 14 | English, Chinese, Japanese | Optional OpenAI-compatible API in s14 |
+| [Learn Pi Agent](./learn-pi-agent/) | TypeScript developers studying protocols and event-driven runtimes | Node.js 22.19+ + TypeScript | 13 | English, Chinese, Japanese | OpenAI-compatible API from s01 |
 | [Learn LangChain](./learn-langchain/) | Python developers who want to build with LangChain while understanding its contracts | Python 3.11 + uv | 13 | Chinese | OpenAI by default |
 
 The courses do not share runtime dependencies. Install only the course you are studying.
@@ -80,7 +80,7 @@ The courses do not share runtime dependencies. Install only the course you are s
 Clone the repository once, then enter the course you want to study. The course-specific commands in the next three sections all start from the repository root.
 
 ```bash
-git clone https://github.com/Bill-Billion/learn-claude-code.git learn-agent-harness
+git clone https://github.com/Bill-Billion/learn-agent-harness.git
 cd learn-agent-harness
 ```
 
@@ -112,14 +112,13 @@ The current 22-lesson track is the recommended path. The course also retains a l
 cd learn-claude-code
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt pytest
+pip install -r requirements.txt
 cp .env.example .env
 # Edit .env and set ANTHROPIC_API_KEY before the live run.
 python s01_agent_loop/code.py
-python -m pytest -q
 ```
 
-The runnable chapter uses the provider settings in `.env`. The test suite uses local doubles and does not require a model key. The course guide also documents its generated Web learning interface.
+The runnable chapter uses the provider settings in `.env`. The course guide also documents its generated Web learning interface.
 
 - [English course guide](./learn-claude-code/README.md)
 - [中文课程指南](./learn-claude-code/README.zh.md)
@@ -127,7 +126,7 @@ The runnable chapter uses the provider settings in `.env`. The test suite uses l
 
 ## Course 2: Learn Pi Agent
 
-[Learn Pi Agent](./learn-pi-agent/) builds a small Pi-style runtime in 14 cumulative TypeScript lessons. The code follows a request through provider events, a tool loop, turn state, sessions, context resources, extensions, runtime modes, trust checks, and package resolution. s13 integrates the offline mechanisms; s14 connects that harness to a real provider.
+[Learn Pi Agent](./learn-pi-agent/) builds a small Pi-style runtime in 13 cumulative TypeScript lessons. From s01, a real model can call a safe, read-only tool and use its result in the next response. The following lessons keep that loop recognizable while adding provider events, tool lifecycle handling, turn state, sessions, context resources, extensions, runtime modes, trust checks, and package resolution. s13 integrates the complete harness on the same provider path.
 
 ### Who it is for
 
@@ -135,39 +134,29 @@ Choose this course when typed boundaries and runtime events help you understand 
 
 After the course, you should be able to design a swappable provider contract, normalize streaming events, expose lifecycle hooks without changing the core loop, preserve session branches, and place execution policy outside model output.
 
-### What the 14 lessons build
+### What the 13 lessons build
 
 | Lessons | Layer added to the harness |
 | --- | --- |
-| s01-s03 | Minimal loop, tool schemas, and normalized provider events |
-| s04-s06 | Event-driven tool execution, hooks, and turn state |
+| s01-s03 | Real model-tool loop, tool schemas, and normalized provider events |
+| s04-s06 | Lifecycle-aware tool execution, hooks, and turn state |
 | s07-s09 | Session trees, context resources, and extension runtime |
-| s10-s12 | Runtime modes, trusted execution environment, and package resolution |
-| s13 | One deterministic, integrated harness |
-| s14 | OpenAI-compatible streaming and a real model-tool-model round trip |
+| s10-s12 | Runtime modes, project trust, and package resolution |
+| s13 | One integrated harness running the same real provider path |
 
-s01-s13 use deterministic providers so that every event and transition can be inspected without a network request. s14 is an optional live chapter, not a replacement for the offline path.
+The chapter commands use a real provider from s01 onward. Exact wording and tool choices can vary between runs; the model-tool loop, event protocol, and state contracts are the parts to inspect.
 
 ### Run it
 
 ```bash
 cd learn-pi-agent
-npm ci
-npm run session:s01
-npm run test:s01
-npm run check
+npm install
+cp .env.example .env
+# Edit .env and set OPENAI_API_KEY.
+npm run s01
 ```
 
-To run the live chapter, provide an OpenAI-compatible Chat Completions endpoint. `OPENAI_BASE_URL` is optional and defaults to `https://api.openai.com/v1`.
-
-```bash
-export OPENAI_API_KEY="your-key"
-export OPENAI_MODEL="your-model"
-export OPENAI_BASE_URL="https://api.openai.com/v1"
-npm run session:s14 -- "Read README.md and summarize it."
-```
-
-Only `session:s14` sends a network request. `npm run test:s14` uses an in-memory SSE fixture, and `npm run check` keeps the entire course verifiable without a key.
+`OPENAI_MODEL` defaults to `gpt-4o-mini`, and `OPENAI_BASE_URL` defaults to the official OpenAI API. Continue with `npm run s02` through `npm run s13`. Because the model chooses the response and tool call, typical output may differ from the examples.
 
 - [English course guide](./learn-pi-agent/README.md)
 - [中文课程指南](./learn-pi-agent/README.zh.md)
@@ -197,14 +186,13 @@ The main path stays focused on LangChain. Deep LangGraph orchestration, MCP, mul
 
 ```bash
 cd learn-langchain
-uv sync --locked --extra dev
+uv sync --locked
 cp .env.example .env
 # Edit .env and set OPENAI_API_KEY before the live run.
 uv run python -m s01_first_model.code
-uv run pytest -q
 ```
 
-Live examples read `LANGCHAIN_MODEL` and provider credentials from `.env`; the default configuration uses OpenAI. Lessons s11-s13 also use OpenAI embeddings unless you inject another embedding implementation. Tests use fake models, fake embeddings, or small local substitutes and do not make provider calls.
+Examples read `LANGCHAIN_MODEL` and provider credentials from `.env`; the default configuration uses OpenAI. Lessons s11-s13 also use OpenAI embeddings unless you inject another embedding implementation.
 
 - [中文课程指南](./learn-langchain/README.md)
 
@@ -237,23 +225,13 @@ Use the courses as three views of the same design problem:
 
 ## How to Work Through a Course
 
-1. Read the course guide and run its full offline check before changing code.
+1. Read the course guide and run the first lesson before changing code.
 2. Work through one lesson directory at a time. Identify the mechanism added since the previous lesson.
 3. Run the chapter entry point and inspect the state or events it emits.
-4. Change one boundary: add a tool, reject an action, branch a session, or swap a test double.
-5. Run the chapter test, then compare the implementation with the next lesson.
+4. Change one boundary: add a tool, reject an action, branch a session, or change a context resource.
+5. Run the lesson again, then compare the implementation with the next chapter.
 
-The live model path teaches provider behavior and model-tool interaction. Offline tests teach contracts, state transitions, and failure handling. Use both; they answer different questions.
-
-## Model Access and Verification
-
-| Course | Live execution | Offline verification | Network boundary |
-| --- | --- | --- | --- |
-| Learn Claude Code | Chapter scripts use `ANTHROPIC_API_KEY`, `MODEL_ID`, and optional `ANTHROPIC_BASE_URL` | `python -m pytest -q` | Tests do not call a provider |
-| Learn Pi Agent | Only s14 uses `OPENAI_API_KEY`, `OPENAI_MODEL`, and optional `OPENAI_BASE_URL` | `npm run check` and every lesson test | s01-s13 and all tests stay offline |
-| Learn LangChain | Examples use `LANGCHAIN_MODEL` and its provider credentials; defaults use OpenAI | `uv run pytest -q` | Tests use local fakes; live examples may call the provider |
-
-No root-level install command exists because the courses use separate environments and lock files. CI runs each course independently.
+The runnable examples are the main learning path. Their exact wording can vary, so compare the model-tool loop, events, and state rather than a fixed transcript. Each course has its own environment and lock file; there is no root-level install command.
 
 ## Repository Layout
 
@@ -266,7 +244,7 @@ learn-agent-harness/
 ├── LICENSE
 ├── .github/workflows/       # independent course checks and repository hygiene
 ├── learn-claude-code/       # 22 Python lessons, trilingual
-├── learn-pi-agent/          # 14 TypeScript lessons, trilingual
+├── learn-pi-agent/          # 13 TypeScript lessons, trilingual
 └── learn-langchain/         # 13 Python lessons, Chinese
 ```
 
@@ -276,7 +254,7 @@ Dependency directories, generated sites, caches, local source clones, internal p
 
 - Lessons expose one mechanism at a time. They are teaching implementations, not production SDKs.
 - Later lessons may integrate earlier code, but each course keeps its own dependencies and checks.
-- Live examples may need a paid provider account. Automated tests must remain deterministic and offline.
+- Live examples may need a paid provider account.
 - The Claude Code and Pi Agent courses keep English, Chinese, and Japanese guides synchronized. Learn LangChain currently publishes Chinese material only.
 - Simplified permissions, storage, or provider adapters are named as such instead of being presented as production-complete systems.
 

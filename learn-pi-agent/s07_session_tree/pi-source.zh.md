@@ -1,13 +1,9 @@
-# s07 的 Pi 源码对照
+# s07 的 Pi 0.79.1 源码对照
 
-s07 对应 Pi 的 session tree。
+s07 对应 Pi 的 Append-only Session Tree 与 Context Materialization。
 
 ```text
-append entry
-  -> parentId points to current leaf
-  -> leaf moves
-  -> buildContext walks leaf -> root
-  -> JSONL stores the tree
+JSONL entries -> parent links -> active leaf path -> AgentMessage[]
 ```
 
 ## 对应文件
@@ -15,79 +11,60 @@ append entry
 - [`packages/agent/src/harness/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/types.ts)
 - [`packages/agent/src/harness/session/session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/session/session.ts)
 - [`packages/agent/src/harness/session/jsonl-storage.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/session/jsonl-storage.ts)
+- [`packages/coding-agent/src/core/messages.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/messages.ts)
 - [`packages/coding-agent/docs/session-format.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/session-format.md)
-- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/session-manager.ts)
-
-具体锚点：
-
-```text
-harness/types.ts:334-420           SessionTreeEntryBase、MessageEntry、LeafEntry
-session.ts:22-80                   buildSessionContext(pathEntries)
-session.ts:97-115                  getLeafId()、getBranch()、buildContext()
-session.ts:132-139                 appendMessage() 用当前 leaf 作为 parentId
-jsonl-storage.ts:109-110           leafIdAfterEntry()
-jsonl-storage.ts:136-158           读取 JSONL 时逐行恢复 leafId
-jsonl-storage.ts:226-243           setLeafId() 追加 leaf entry
-jsonl-storage.ts:250-258           appendEntry() 追加 entry 并更新 currentLeafId
-jsonl-storage.ts:275-287           getPathToRoot()
-session-format.md:1-4              JSONL + id/parentId tree
-session-format.md:171-181          entry base 字段
-session-format.md:300-317          tree structure 和 context building
-session-manager.ts:944-959         appendMessage() 的旧实现
-session-manager.ts:1145-1167       getBranch() 和 buildSessionContext()
-session-manager.ts:1235-1255       branch() / resetLeaf()
-```
 
 ## 对应关系
 
-| s07 | Pi |
+| s07 | Pi 0.79.1 |
 | --- | --- |
-| `MessageEntry` | `MessageEntry` / `SessionMessageEntry` |
+| `SessionHeader` | JSONL Session Header |
+| 带 `id` 和 `parentId` 的 `SessionEntry` | `SessionTreeEntry` |
+| `MessageEntry` | `MessageEntry` |
 | `LeafEntry` | `LeafEntry` |
-| `appendMessage()` | `Session.appendMessage()` / `SessionManager.appendMessage()` |
-| `branch()` | `Session.moveTo()` / `SessionManager.branch()` |
-| `getBranch()` | `Session.getBranch()` / `SessionManager.getBranch()` |
+| `BranchSummaryEntry` | `BranchSummaryEntry` |
+| `CompactionEntry` | `CompactionEntry` |
+| `appendMessage()` | `Session.appendMessage()` |
+| `getBranch()` | `Session.getBranch()` 加 Storage 的 Path-to-root 查找 |
 | `buildContext()` | `buildSessionContext()` |
-| `toJSONL()` | `JsonlSessionStorage` |
-| `loadSessionTreeFromJSONL()` | `JsonlSessionStorage.open()` |
+| `toJSONL()` / `loadSessionTreeFromJSONL()` | 围绕 `JsonlSessionStorage` 的课程版边界 |
 
-## 一个细节
+## Branch 与 Leaf 行为
 
-Pi 现在有两条 session 相关代码线：
+Pi 的 Storage 把 Active Leaf 当作派生状态。追加普通 Entry 会把它推进到该 Entry；追加 `leaf` Row 则会把它恢复到 Row 的 Target。课程在 Branch 与加载 JSONL 时使用同一条规则。
 
-```text
-packages/agent/src/harness/session/*
-packages/coding-agent/src/core/session-manager.ts
-```
+因此，Branch 不会复制或删除 Message。它先记录导航，再让未来 Entry 使用选中的 Target 作为 Parent。
 
-`coding-agent` 里的 `SessionManager` 更像较早的产品实现：`branch()` 直接移动内存里的 leaf。
+## Summary Entry 与 Context
 
-`packages/agent` 里的 `JsonlSessionStorage` 把 leaf 移动也写成 `LeafEntry`。本节采用这个写法，因为它更能说明 Pi 的 append-only 思想：连导航动作也可以作为一行 JSONL 记录下来。
+Pi 的 `buildSessionContext()` 会扫描 Active Path，把 Session Entry 物化为 `AgentMessage[]`。Branch Summary 会变成 `BranchSummaryMessage`；存在 Compaction 时，一条 `CompactionSummaryMessage` 会位于保留的 Message Suffix 之前。
 
-## 本节暂时不做什么
+s07 重建的是这些 Storage 与 Materialization 语义。`appendBranchSummary()` 和 `appendCompaction()` 接收已经生成好的 Summary 文本与 Metadata。
 
-s07 没有实现这些内容：
+## 明确的算法边界
+
+本课不实现决定何时、如何生成摘要的系统：
 
 ```text
-compaction
-branch_summary
-label
-session_info
-custom entry
-custom_message
-真实文件系统写入
-/fork 把某条分支复制成新 session 文件
-/tree 的终端选择器
+token threshold selection
+compaction trigger
+first-kept cut-point selection
+summary prompt construction
+summary model call
+branch-summary generation
 ```
 
-这些不是被忽略，而是之后再讲。
+这些属于 Pi 的 Compaction 与 Branch Summarization 层，而不是 Session Tree 自身。s07 只证明结果 Entry 可以存在于 Append-only History 中，并正确进入 Active Context。
 
-s07 只回答一个问题：为什么 Pi 的 session 不能只是 `messages[]`。
+## 课程范围
+
+Pi 支持更多 Entry Type，包括 Model Change、Thinking-level Change、Active-tool Change、Label、Custom Entry 和 Session Metadata，也有真正向文件追加内容的 Storage 实现。
+
+课程只保留四种内容或导航 Entry，并把内存 Tree 序列化为 JSONL 文本。真实课程入口仍通过 s06 Session 接口使用这棵树，并持久化真实 Model-Tool Loop 产生的每条 Message。
 
 ## 建议读法
 
-先看 `harness/types.ts` 的 `SessionTreeEntryBase` 和 `LeafEntry`。
-
-然后看 `jsonl-storage.ts` 的 `setLeafId()`。它会追加一条 `leaf` entry，并把 `currentLeafId` 指向 `targetId`。
-
-最后看 `session.ts` 的 `buildSessionContext()`。它只从当前 path 里提取 message，所以同一个 JSONL 文件里可以有很多分支，但当前请求只会看到其中一条。
+1. 先看 Harness Type 中的 `SessionTreeEntry`、`LeafEntry`、`BranchSummaryEntry` 与 `CompactionEntry`。
+2. 继续看 `Session.getBranch()`、`Session.buildContext()` 和 `Session.appendMessage()`。
+3. 阅读 `jsonl-storage.ts` 中的 Leaf 恢复与 Path-to-root 函数。
+4. 最后看 `buildSessionContext()`，重点关注 Branch Summary 与 Compaction Materialization，而不是 Summary Generation。

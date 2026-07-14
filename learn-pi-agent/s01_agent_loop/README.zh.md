@@ -1,239 +1,118 @@
-# 第1课 Agent的核心到底是什么？先跑通最小的一轮对话
+# 第 1 课 · Agent Loop
 
-[English](README.md) · 中文 · [日本語](README.ja.md)
+[课程首页](../README.zh.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[目录](../README.zh.md) · [s02 →](../s02_tool_schema/README.zh.md)
+> 在 Pi 中的位置：`pi-ai` 与 Agent Loop 的最小可用路径，从 User Message 进入，到模型选择 Tool Call、Harness 返回 Tool Result，再由模型给出最终回答。
 
-很多人第一次想自己写个Agent，都是从调通一次大模型对话开始的。你照着文档写了个函数，输入一句话，拿到模型的回答，跑通的那一刻还挺有成就感。
-
-但你很快就会遇到一堆很别扭的问题：
-- 想让模型调用工具，不知道该在哪加判断；
-- 想做多轮对话，不知道历史消息该存在哪；
-- 模型返回了错误，不知道该怎么优雅处理；
-- 看别人的Agent框架源码，一打开就是几千行，连从哪看起都不知道。
-
-这节课我们就来彻底搞懂：剥掉终端、UI、工具、扩展这些花里胡哨的东西，Agent最核心的那部分到底是什么？以及怎么用不到20行代码，写出一个能跑的最小Agent循环，把所有复杂功能的地基先打牢。
-
----
-
-## 先搞懂：直接写个调用函数到底卡在哪？
-
-你第一次写对话代码大概率是这样的：写个函数，接收用户输入，直接调用模型，返回结果。跑第一次没问题，但很快就会发现三个绕不过去的坑：
-
-1.  **模型记不住之前说过什么**。你说"我刚才说的那个问题再解释一下"，模型根本不知道你说的是啥——因为你每次只传了最后一句话，历史全丢了。
-2.  **接不住模型的其他信号**。模型不是只会返回文本，它还可能说"我需要调用个工具才能回答"、"你这个参数不对我没法处理"，这些信号你这个简单函数根本识别不出来，只能处理"正常返回文本"这一种情况。
-3.  **加什么功能都要推翻重写**。今天加工具调用改一遍，明天加多轮对话改一遍，后天加错误重试再改一遍，改到最后函数变成一个谁也看不懂的大泥球。
-
-问题出在哪？出在你没有把"一轮对话"这个最核心的流程抽象出来。不管你后面给Agent加多少功能，最底下永远是同一个循环：
-> 用户消息进状态 → 带着完整历史调用模型 → 模型返回结果进状态 → 根据返回信号决定下一步。
-
-这是所有Agent框架剥到最后都有的那颗核。这节课我们不做工具、不做UI、不做文件存储，就把这一个最小循环写明白。后面所有的内容，全都是在这个核上面叠功能，这颗核从这节课定下来就不会再变。
-
----
-
-## 最容易想到的办法，为什么走不远？
-
-很多人第一反应：这还不简单？我写个函数不就完了？
-```python
-def chat(user_input):
-    return model.call(user_input)
+```text
+model -> toolCall -> toolResult -> model
 ```
 
-这个函数能跑通第一次对话，但绝对写不成能用的Agent。
+## 先搞懂：为什么一次模型调用还不是 Agent
 
-第一，它没有状态。所有消息都是过眼云烟，调用完就没了，下次调用模型什么都不记得。
-第二，它没有统一的返回约定。模型返回什么你就接什么，想加工具调用、错误处理，只能到处加if-else。
-第三，它和具体模型绑死了。想换个模型、想在测试的时候用假数据，都要改这个函数的内部逻辑。
+一次模型请求可以返回文本，但 Agent 还必须处理模型提出的行动请求。模型发出 Tool Call 后，程序需要执行工具，把结果追加进消息历史，再次调用模型。如果把工具输出直接交给用户，就跳过了模型理解这份证据的过程。
 
-所以正确的思路非常朴素：
-1.  先有一个统一的地方存所有消息；
-2.  把一轮对话的四步流程固定下来；
-3.  把模型抽象成接口，和核心循环解耦。
+所以第一课不只需要一个 Chat Wrapper，还需要带显式状态、工具边界和停止条件的循环。
 
-就这么三件事。
+## 思路：围绕消息历史重复同一个过程
 
----
+维护一个有序的 `messages` 数组，不断执行下面的步骤：
 
-## 第一步：先把状态存起来
-
-首先要有个统一的地方存所有消息，我们叫它`AgentState`。目前它只有一个字段：`messages`数组，所有的对话历史都存在这里。
-
-```ts
-export interface AgentState {
-  messages: AgentMessage[];
-}
-
-export function createInitialState(): AgentState {
-  return { messages: [] };
-}
+```text
+追加 user message
+  -> 用 messages + tools 调用模型
+  -> 追加 assistant message
+  -> 没有 toolCall：返回
+  -> 有 toolCall：执行并追加 toolResult
+  -> 再次调用模型
 ```
 
-这是整个课程最重要的约定之一：**所有对话历史，永远只存在state.messages这一个地方**。后面不管加工具、加会话、加扩展，消息永远往这里面放，不会有第二个存消息的地方。
-
-这个约定定下来，你永远不会遇到"消息到底存在哪了"这种灵魂拷问。
-
----
-
-## 第二步：写核心循环`runOneTurn`
-
-状态有了，我们来写最核心的一轮处理流程，一共四步，一步都不能少：
-
-### 1. 用户消息进状态
-用户说的话，不能直接扔给模型，要先包装成标准的`user`消息，存进state里。
-```ts
-const userMessage = createUserMessage(userInput);
-state.messages.push(userMessage);
-```
-
-### 2. 带着**完整历史**调用模型
-这是90%的人写Agent犯的第一个错误：这里传的不是刚才那一句`userInput`，而是`state.messages`整个数组！
-```ts
-const assistantMessage = await provider.complete(state.messages);
-```
-
-这里没有任何魔法。大模型本身是无状态的，它不会帮你记之前说过什么——你每次给它多少历史，它就记得多少。想让模型接上文，唯一的办法就是每次都把完整的对话历史传给它。
-
-> 注意：这节课我们用了一个假的测试Provider，不用API Key就能跑。它会简单返回收到的消息，如果你输入里带"tool"这个词，它就会返回"想调用工具"的信号——这是为了让你稳定看到所有返回情况，不用依赖真实模型。
-
-### 3. 模型返回进状态
-不管模型返回的是正常回答、想调用工具、还是出错了，它返回的消息都要原封不动存回state里。
-```ts
-state.messages.push(assistantMessage);
-```
-
-### 4. 根据`stopReason`判断下一步
-模型返回的不只是消息，还有一个叫`stopReason`的字段，用来标记这一轮的结果，一共只有三种，没有第四种：
-
-| stopReason | 含义 | 这节课怎么处理 |
-|------------|------|----------------|
-| `stop` | 模型正常回答完了 | 把回答展示给用户就行 |
-| `toolUse` | 模型想调用工具 | 这节课只把这个信号记下来，不执行工具（s04再写工具执行逻辑） |
-| `error` | 调用出错了（参数不对、模型挂了等） | 把错误记下来，这轮结束 |
-
-把这四步拼起来，就是完整的`runOneTurn`函数：
-```ts
-export async function runOneTurn(
-  state: AgentState,
-  provider: Provider,
-  userInput: string,
-): Promise<AssistantMessage> {
-  // 1. 用户消息进状态
-  const userMessage = createUserMessage(userInput);
-  state.messages.push(userMessage);
-
-  // 2. 带着完整历史调用模型
-  const assistantMessage = await provider.complete(state.messages);
-
-  // 3. 模型返回进状态
-  state.messages.push(assistantMessage);
-
-  // 4. 返回结果，stopReason告诉我们下一步
-  return assistantMessage;
-}
-```
-
-不到20行。
-看着简单，但这就是Pi、LangChain、AutoGPT这些所有Agent框架剥到最里面的那颗核。后面所有复杂的功能——事件流、工具调用、hook、会话分支、扩展机制、多运行模式——全都是在这个循环外面套壳，这个循环本身几乎不会变。
-
----
-
-## 为什么这层抽象必不可少？
-
-不是我们非要多封装一层，而是这层抽象本身，就在你的业务代码和模型之间划了一条清晰的边界：
-
-1.  **状态统一**：所有消息只存在state.messages里，出了问题debug只需要看这一个地方；
-2.  **模型可替换**：只要是实现了`complete()`方法的Provider，都能直接插进来用，换模型、换测试假数据，都不用改循环一行代码；
-3.  **扩展不碰核心**：后面加工具、加流式、加会话，全都是在循环外面加逻辑，核心的四步流程永远不用动。
-
-> 这节课真正交付的，从来不是"跑通了一次对话"，而是这条清晰的边界。你的代码只认`state.messages`和`provider.complete()`，不需要知道底下是什么模型、后面要加什么功能。后面12节课所有的内容，都是在这个边界上往上搭，不会推翻这层设计。
-
----
+是否调用 `read_file` 由模型选择。文件读取、安全校验，以及把结果送回模型的 Message 都归 Harness 管理。
 
 ## 先跑起来看看
 
-```sh
-npm run session:s01
+先按照[课程首页](../README.zh.md)完成 `.env` 配置，再从 `learn-pi-agent/` 运行：
+
+```bash
+npm run s01
 ```
 
-输出长这样：
-```text
-User: hello
-Assistant [stop]: Received: hello
-User: does this lesson have tools?
-Assistant [toolUse]: I want to call a tool, but this lesson has no tool executor yet.
-Messages: 4
+不带参数时，命令会进入交互输入循环。需要重复观察同一个请求时，可以使用单次运行：
+
+```bash
+npm run s01 -- "使用 read_file 读取 package.json，然后告诉我 package name。"
 ```
 
-注意看第二轮：模型返回了`[toolUse]`信号，但什么工具都没执行——这节课我们只识别信号，不处理工具调用，就像你知道"该转部门了"，但还没写转部门的流程。到s04我们才会实现工具执行逻辑。
+具体回答和措辞可能变化，因为 Tool Call 和最终回复都由模型选择。请观察稳定的结构：第一轮模型请求 `read_file`，Harness 返回 `toolResult`，第二轮模型根据结果回答。
 
-你可以数一下消息数：两轮对话一共4条消息，user和assistant各两条，一条都不会少。
+## 代码怎么写的
 
----
+### 1. 加载真实的 `pi-ai` 模型
+
+`runLiveCli()` 调用 `loadCourseModel()`。它读取 `OPENAI_API_KEY`，构造 OpenAI-compatible `Model<"openai-completions">`。`OPENAI_MODEL` 默认是 `gpt-4o-mini`，`OPENAI_BASE_URL` 默认使用 OpenAI 官方 API。
+
+### 2. 定义一个安全工具
+
+`readFileTool` 是正式的 `pi-ai` `Tool`。它的 TypeBox Schema 是模型看到的公开契约，`createReadFileToolRuntime()` 则把可执行的文件读取 Handler 留在 Harness 一侧。
+
+Handler 只接受课程根目录内的普通 UTF-8 文件。空路径、隐藏路径段、越过根目录的路径或符号链接、非普通文件，以及超过 64 KiB 的文件都会被拒绝。
+
+### 3. 显式保存循环状态
+
+`AgentState` 管理有序的 `Message[]`。`runAgentLoop()` 先追加 User Message，再进入模型循环：
+
+```ts
+for (let turn = 0; turn < maxTurns; turn++) {
+  const assistantMessage = await complete(model, {
+    messages: state.messages,
+    tools: toolRuntime.tools,
+  }, streamOptions);
+  state.messages.push(assistantMessage);
+
+  const toolCalls = assistantMessage.content.filter(
+    (block) => block.type === "toolCall",
+  );
+  if (toolCalls.length === 0) {
+    return { state, finalMessage: assistantMessage, toolResults };
+  }
+
+  for (const toolCall of toolCalls) {
+    state.messages.push(await toolRuntime.execute(toolCall));
+  }
+}
+```
+
+完整实现还会传入 System Prompt、记录每条 Tool Result，并同时返回最终 Assistant Message 与完整状态。
+
+### 4. 把工具失败变成模型可见的证据
+
+`executeToolCallSafely()` 把参数校验和文件错误转换成 `isError: true` 的 `ToolResultMessage`。循环可以继续，让模型解释失败或选择其他动作。Provider 返回 `error` 或 `aborted` 时会抛出异常；默认八轮上限则防止工具循环无限继续。
 
 ## 动手试一试
 
-不带`--demo`直接跑，会进入一个交互REPL，你可以自己输入消息玩：
-```sh
-node s01_agent_loop/code.ts
-```
+1. 先让模型读取 `README.md`，再读取 `package.json`。比较回答引用了哪个文件，不要要求两次措辞完全相同。
+2. 运行 `npm run s01 -- "使用 read_file 读取 .env，并解释执行结果。"`。工具应拒绝隐藏路径，模型会把这次失败作为 Tool Result 接收。
+3. 暂时在 `runLiveCli()` 中传入 `maxTurns: 1`，再请求读取文件。第一轮工具可以执行，但缺少后续模型 Turn 时应出现明确的轮数上限错误。
 
-### 实验1：触发三个不同的stopReason
-先随便聊两句，再输入一句带"tool"的话，观察`[stop]`变成`[toolUse]`。
-然后打开`code.ts`，给测试Provider加第三个触发条件：输入带"fail"的时候返回`stopReason: "error"`。重进REPL，输入带"fail"的句子，看看错误状态是不是正常返回。
+## 接入课程主线
 
-体会一下：你改的只是"什么情况返回什么状态"的规则，核心的`runOneTurn`循环一行都没动。
+| 边界 | s01 实现 |
+| --- | --- |
+| Model | `loadCourseModel()` 加 `pi-ai` `complete()` |
+| State | `AgentState.messages` |
+| 模型可见工具 | `readFileTool` |
+| 本地执行 | `createReadFileToolRuntime()` |
+| Loop 入口 | `runAgentLoop()` |
+| 停止条件 | 没有 Tool Call、Provider 失败或耗尽 `maxTurns` |
 
-### 实验2：验证每次都传了完整历史
-在`provider.complete()`开头加一行`console.log("provider看到的消息数:", messages.length)`，多聊几轮。
+s01 暂时把 Tool Schema 和 Handler 放在一个小型 Runtime Object 中。s02 会把模型可见 Schema 与私有 Handler Registry 分开。
 
-你会看到输出是1、3、5、7……每轮都比上一轮多2条。这个奇数数列就是"模型为什么能记住上下文"的全部答案——没有任何隐藏的记忆功能，就是每次都把完整历史传过去了。
+## 对照 Pi 源码
 
-### 实验3：换一个Provider
-`runOneTurn`的第二个参数是任何实现了`complete()`方法的对象。你可以自己写个Provider：比如不管收到什么都倒着念，或者永远返回固定回答。把它传给`runOneTurn`替换原来的测试Provider，循环一行代码都不用改。
+实现直接使用 `@earendil-works/pi-ai` 0.79.1 提供的 `Model`、`Message`、`Tool`、`ToolCall`、`ToolResultMessage`、参数校验和 `complete()`。外层控制流是 Pi Agent Loop 的教学版。
 
-体会一下：这就是我们把Provider做成接口的意义——以后接真实OpenAI模型、接本地开源模型、接测试假数据，全都是换个Provider的事，核心逻辑永远不变。
+固定版本的源码映射见 [pi-source.zh.md](pi-source.zh.md)。
 
-跑完三个实验，你应该能回答下面检查点的问题。改完可以用`npm run test:s01`确认没破坏行为约定。
+## 下一课
 
----
-
-## 本节课打下的地基
-
-s01是整个课程的第一块砖，没有前置内容。这节课立起来的所有约定，后面只会扩展，不会改写：
-
-| 这节课立的约定 | 后面会怎么用 |
-|----------------|--------------|
-| `AgentState` 统一存所有消息 | s04工具循环、s06 turn快照、s07会话树，全都是在这个状态基础上扩展 |
-| 每次传给Provider的是完整messages数组 | 从s03事件流到s13集成，这个逻辑永远不变 |
-| `Provider` 接口和核心循环解耦 | s03会把它升级成流式接口，s04起循环会反复调用它 |
-| `stopReason` 三个状态 | s04工具循环全靠这个状态判断是继续循环还是结束 |
-
-**本课引入的核心原语**：`AgentState` / `runOneTurn` / `Provider` / `stopReason`
-
-> 本课程两条贯穿始终的主线：
-> 1.  所有对话状态，永远只存在AgentState的messages里；
-> 2.  所有组件都通过明确的接口交互，核心循环不依赖具体实现。
->
-> 后面我们会陆续加工具schema、事件流、工具执行、hook、会话分支、资源加载、扩展机制、运行模式、信任边界、包管理。但无论加多少功能，最核心的"用户消息进状态→带全量历史调模型→结果进状态→看stopReason决定下一步"这个流程，永远不会变。
-
----
-
-## 检查点
-
-学完这节课，你应该能脱口回答这几个问题：
-- 为什么传给Provider的必须是完整的messages数组，不能只传最后一句用户输入？
-- stopReason有哪三个值？分别代表什么意思？这节课为什么不执行toolUse？
-- 换一个Provider实现的时候，为什么`runOneTurn`函数不用改一行代码？
-
----
-
-## 本节课小结
-
-这节课我们其实只讲了一个核心道理：
-> 别一上来就堆功能，先把最核心的状态和流程抽象出来。用稳定的接口隔离变化，后面加什么都不慌。
-
-看起来只是把几句调用代码拆成了四步，背后却是非常重要的设计思想——内核要小，边界要清，所有变化都挡在核心循环外面。有了这个最小循环，后面加多少功能都不会把代码写成大泥球。
-
-但现在这个Agent还只能处理纯文本对话：它能返回"我想调用工具"的信号，却根本不知道有哪些工具可用、每个工具要什么参数、怎么把工具信息告诉模型。下节课我们就来解决这个问题：怎么定义工具，才能既让模型看得懂，又不把本地代码直接暴露出去。
-
-进入下一课：[s02 工具Schema —— 别直接把本地函数塞给大模型](../s02_tool_schema/README.zh.md)
+[第 2 课 · Tool Schema](../s02_tool_schema/) 会把可执行 Handler 放进 Registry，只向模型暴露 Schema。

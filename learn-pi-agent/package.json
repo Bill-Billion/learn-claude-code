@@ -4,43 +4,33 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "session:s01": "node s01_agent_loop/code.ts --demo",
-    "session:s02": "node s02_tool_schema/code.ts --demo",
-    "session:s03": "node s03_provider_events/code.ts --demo",
-    "session:s04": "node s04_evented_tool_loop/code.ts --demo",
-    "session:s05": "node s05_tool_hooks/code.ts --demo",
-    "session:s06": "node s06_turn_state/code.ts --demo",
-    "session:s07": "node s07_session_tree/code.ts --demo",
-    "session:s08": "node s08_context_resources/code.ts --demo",
-    "session:s09": "node s09_extension_runtime/code.ts --demo",
-    "session:s10": "node s10_runtime_modes/code.ts --demo",
-    "session:s11": "node s11_trust_execution_env/code.ts --demo",
-    "session:s12": "node s12_pi_package/code.ts --demo",
-    "session:s13": "node s13_integrated_harness/code.ts --s13-demo",
-    "session:s14": "node --env-file-if-exists=.env s14_real_provider/code.ts",
-    "test:s01": "node --test s01_agent_loop/code.test.ts",
-    "test:s02": "node --test s02_tool_schema/code.test.ts",
-    "test:s03": "node --test s03_provider_events/code.test.ts",
-    "test:s04": "node --test s04_evented_tool_loop/code.test.ts",
-    "test:s05": "node --test s05_tool_hooks/code.test.ts",
-    "test:s06": "node --test s06_turn_state/code.test.ts",
-    "test:s07": "node --test s07_session_tree/code.test.ts",
-    "test:s08": "node --test s08_context_resources/code.test.ts",
-    "test:s09": "node --test s09_extension_runtime/code.test.ts",
-    "test:s10": "node --test s10_runtime_modes/code.test.ts",
-    "test:s11": "node --test s11_trust_execution_env/code.test.ts",
-    "test:s12": "node --test s12_pi_package/code.test.ts",
-    "test:s13": "node --test s13_integrated_harness/code.test.ts",
-    "test:s14": "node --test s14_real_provider/code.test.ts",
-    "test": "node --test s*/code.test.ts",
+    "s01": "node --env-file-if-exists=.env s01_agent_loop/code.ts",
+    "s02": "node --env-file-if-exists=.env s02_tool_schema/code.ts",
+    "s03": "node --env-file-if-exists=.env s03_provider_events/code.ts",
+    "s04": "node --env-file-if-exists=.env s04_evented_tool_loop/code.ts",
+    "s05": "node --env-file-if-exists=.env s05_tool_hooks/code.ts",
+    "s06": "node --env-file-if-exists=.env s06_turn_state/code.ts",
+    "s07": "node --env-file-if-exists=.env s07_session_tree/code.ts",
+    "s08": "node --env-file-if-exists=.env s08_context_resources/code.ts",
+    "s09": "node --env-file-if-exists=.env s09_extension_runtime/code.ts",
+    "s10": "node --env-file-if-exists=.env s10_runtime_modes/code.ts",
+    "s11": "node --env-file-if-exists=.env s11_project_trust/code.ts",
+    "s12": "node --env-file-if-exists=.env s12_pi_package/code.ts",
+    "s13": "node --env-file-if-exists=.env s13_integrated_harness/code.ts",
+    "test": "node --test shared/*.test.ts s*/code.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check:deps": "node scripts/check-deps.mjs",
+    "check:entries": "node scripts/check-entries.mjs",
+    "check": "npm run typecheck && npm test && npm run check:deps && npm run check:entries"
   },
   "devDependencies": {
-    "@types/node": "25.5.0",
+    "@types/node": "22.20.1",
     "typescript": "5.9.3"
   },
   "engines": {
-    "node": ">=25"
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.79.1"
   }
 }

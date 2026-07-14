@@ -1,67 +1,55 @@
-# s01 against the Pi source
+# s01 against the Pi 0.79.1 source
 
-s01 keeps only the minimal shape of Pi's agent loop:
+s01 uses `@earendil-works/pi-ai` directly and adds the smallest teaching version of Pi's model-tool loop around it.
 
 ```text
-user input
-  ↓
-messages
-  ↓
-provider
-  ↓
-assistant message
-  ↓
-stopReason
+user -> complete() -> toolCall -> execute -> toolResult -> complete()
 ```
 
 ## Corresponding files
 
-- [`packages/agent/README.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/README.md)
+- [`packages/ai/src/stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/stream.ts)
+- [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts)
+- [`packages/ai/src/utils/validation.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/utils/validation.ts)
 - [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts)
 - [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts)
-- [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts)
+- [`packages/coding-agent/src/core/tools/read.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/tools/read.ts)
 
 ## The mapping
 
-| s01 | Pi |
+| s01 | Pi 0.79.1 |
 | --- | --- |
-| `AgentState.messages` | `AgentContext.messages` |
-| `Provider.complete()` | the provider stream inside `streamAssistantResponse()` |
-| `runOneTurn()` | the minimal path of `runAgentLoop()` plus `runLoop()` |
-| `AssistantMessage.stopReason` | Pi's `AssistantMessage.stopReason` |
-| `toolUse` recorded but not executed | Pi proceeds into `executeToolCalls()` |
+| `complete()` imported from `pi-ai` | `complete()` in `packages/ai/src/stream.ts` |
+| `Message`, `ToolCall`, `ToolResultMessage` | the same public types in `packages/ai/src/types.ts` |
+| `validateToolCall()` | the same validation entry in `packages/ai/src/utils/validation.ts` |
+| `AgentState.messages` | the message history inside `AgentContext` |
+| `runAgentLoop()` | the minimal model-tool path through Pi's `runAgentLoop()` / `runLoop()` |
+| `readFileTool` | a teaching-sized model-visible `Tool`, conceptually matching the coding-agent read tool |
+| `createReadFileToolRuntime()` | the local execution side of an `AgentTool` |
 
-## What we're skipping for now
+The important boundary is already real: s01 sends Pi `Message[]` and `Tool[]` through Pi's `complete()` function. The course owns only the surrounding loop and its deliberately small file tool.
 
-Pi's `agent-loop.ts` also handles all of this:
+## What s01 simplifies
+
+Pi's agent loop also provides lifecycle events, context transformation, custom message conversion, steering and follow-up queues, abort handling, tool progress, hooks, and parallel tool execution. Those concerns are separated into later lessons.
+
+s01 makes these narrower choices:
 
 ```text
-EventStream
-transformContext()
-convertToLlm()
-streaming delta
-tool execution
-beforeToolCall / afterToolCall
-steering messages
-follow-up messages
-shouldStopAfterTurn()
+one read-only tool
+sequential tool calls
+eight model turns as a backstop
+course-root file access with hidden-path, symlink, size, and UTF-8 checks
+complete() rather than exposing the provider event stream
 ```
 
-None of that belongs to s01. s01 confirms exactly one thing: the agent loop is not a mysterious structure — it is, first of all, a piece of control flow around messages and stopReason.
-
-Pi's `StopReason` is defined in [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts). There, `stop` means a normal finish, and `toolUse` means the assistant message contains tool calls. s01 keeps both values but executes no tools.
+The safety policy around `read_file` belongs to this course implementation; it is not presented as a full copy of Pi's coding-agent read tool.
 
 ## Suggested reading order
 
-Start with the `prompt() Event Sequence` in [`packages/agent/README.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/README.md).
+1. Read `Tool`, `ToolCall`, `ToolResultMessage`, `Message`, and `AssistantMessage` in [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts).
+2. Read `complete()` in [`packages/ai/src/stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/stream.ts).
+3. Follow `runAgentLoop()` into `runLoop()` in [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts), concentrating on the assistant message, tool calls, tool results, and next turn.
+4. Compare the public schema and executable side of the read tool in [`packages/coding-agent/src/core/tools/read.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/tools/read.ts).
 
-Then look at these spots in [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts):
-
-```text
-agentLoop()
-runAgentLoop()
-runLoop()
-streamAssistantResponse()
-```
-
-When you hit the provider event stream, feel free to jump ahead to s03. When you hit tool execution, stop — that's s04.
+Provider events become visible in s03; agent lifecycle events are added in s04.

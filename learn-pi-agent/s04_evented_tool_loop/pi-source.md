@@ -1,75 +1,59 @@
-# Pi source cross-reference for s04
+# s04 against the Pi 0.79.1 source
 
-s04 corresponds to the main tool execution path in `pi-agent-core`.
+s04 wraps the official `pi-ai` Assistant Message stream in the main lifecycle boundaries used by `pi-agent-core`.
 
 ```text
-assistant message with toolCall
-  -> execute tool
-  -> toolResult message
-  -> next provider turn
+agent -> turn -> assistant message -> tool execution -> toolResult message
 ```
 
-## Relevant files
+## Corresponding files
 
 - [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts)
 - [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts)
 - [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts)
 
-Exact anchors:
+## The mapping
 
-```text
-agent-loop.ts:192-218  stream assistant, find tool calls, append tool results, emit turn_end
-agent-loop.ts:275-367  streamAssistantResponse()
-agent-loop.ts:373-388  executeToolCalls()
-agent-loop.ts:395-449  executeToolCallsSequential()
-agent-loop.ts:562-626  prepareToolCall()
-agent-loop.ts:628-663  executePreparedToolCall()
-agent-loop.ts:717-742  tool_execution_end and toolResult message events
-types.ts:403-418       AgentEvent
-ai/types.ts:303-311    ToolResultMessage
-```
-
-## How things map
-
-| s04 | Pi |
+| s04 | Pi 0.79.1 |
 | --- | --- |
-| `runEventedToolLoop()` | the minimal tool path of `runAgentLoop()` / `runLoop()` |
-| `streamAssistant()` | `streamAssistantResponse()` |
-| `AgentEvent` | Pi's `AgentEvent` |
-| `executeToolCall()` | the teaching-sized `executeToolCallsSequential()` |
-| `ToolResultMessage` | Pi's `ToolResultMessage` |
-| `tool_execution_start/end` | Pi's tool execution lifecycle events |
-| `message_start/end(toolResult)` | Pi's `emitToolResultMessage()` |
+| `runEventedToolLoop()` | the main Tool Call path through `runAgentLoop()` / `runLoop()` |
+| s03 `collectAssistantStream()` | the stream consumed inside Pi's `streamAssistantResponse()` |
+| `AgentEvent` | a teaching-sized subset of Pi's `AgentEvent` union |
+| `message_update.providerEvent` | Pi's Agent Event field named `assistantMessageEvent` |
+| `createRegistryToolRuntime().execute()` | the prepare, validate, and execute path under `executeToolCalls()` |
+| `ToolExecutionContext.executeDefault()` | an explicit course seam around default execution |
+| `tool_execution_start/end` | Pi's Tool Execution lifecycle events |
+| Tool Result `message_start/end` | Pi's Tool Result Message emission |
+| `turn_end` | Pi's completed Turn after Tool Results are recorded |
 
-## What this lesson deliberately skips
+The course uses Pi's `Message`, `AssistantMessageEvent`, `ToolCall`, and `ToolResultMessage` types directly. Its outer `AgentEvent` type is local because the lesson is reconstructing the Agent Runtime layer.
 
-s04 does sequential execution only. Real Pi also includes:
+## Event ownership
+
+The two event families have different owners:
 
 ```text
-user / prompt messages: Pi's runAgentLoop() receives prompts and emits
-  message_start/end for the prompt message in the first turn; the s04 loop
-  starts from an empty context, which no real provider would accept
-parallel tool execution
-per-tool executionMode
-TypeBox argument validation
-prepareArguments
-AbortSignal
-tool_execution_update
-beforeToolCall / afterToolCall
-terminate=true stopping further provider turns early
-steering / follow-up message queue
-maxTurns: the mini uses maxTurns=4 as a backstop; Pi converges naturally
-  on hasMoreToolCalls and has no such cap
+pi-ai
+  start, text_*, thinking_*, toolcall_*, done, error
+
+pi-agent-core
+  agent_*, turn_*, message_*, tool_execution_*
 ```
 
-One rename to watch for: the mini's `message_update` event carries a field named `providerEvent`; Pi's field in the same position is called `assistantMessageEvent` (`agent/src/types.ts:413`).
+s04 keeps the first family inside `message_update` and emits the second family around the complete Loop. This mirrors the source boundary instead of flattening every event into one list of unrelated strings.
 
-All of this gets unpacked in later lessons. s04 answers only one question: once the assistant emits a toolCall, how does the result get back into messages.
+## What s04 simplifies
+
+The course executes Tool Calls sequentially and preserves their source order. Pi also supports per-tool execution modes, parallel execution, Tool progress updates, argument preparation, abort signals, steering messages, and follow-up queues.
+
+The course adds an eight-Turn backstop. Pi's loop instead decides whether to continue from its Tool Call and queue state. The course also carries the User Message in state and `agent_start.prompt`, while Pi's full event sequence can emit lifecycle events for prompt Messages.
+
+`ToolCallExecutor` and `executeDefault()` are small course interfaces used to add s05 Hooks. They map to the preparation and finalization boundaries in Pi rather than to one identically named Pi type.
 
 ## Suggested reading order
 
-Enter through `agentLoop()` (line 31) and `runAgentLoop()` (line 95) in [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts), then land on lines 192-218 — that stretch is the body of the tool loop inside `runLoop()`.
-
-Then read lines 275-367. This is where `pi-ai`'s provider events get converted into agent events.
-
-Finally, lines 395-449 and 717-742. That's where you can see how Pi executes tools, emits `tool_execution_end`, and wraps the execution result into a `toolResult` message.
+1. Read `AgentEvent` in [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts).
+2. Enter through `runAgentLoop()` and `runLoop()` in [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts).
+3. Follow `streamAssistantResponse()` to see Provider Events become Message lifecycle events.
+4. Follow `executeToolCalls()` through sequential execution and Tool Result emission.
+5. Stop at the `beforeToolCall` and `afterToolCall` boundaries; s05 handles them next.

@@ -1,93 +1,70 @@
-# Pi Source Map for s07
+# s07 against the Pi 0.79.1 source
 
-s07 corresponds to Pi's session tree.
+s07 maps to Pi's append-only Session tree and Context materialization.
 
 ```text
-append entry
-  -> parentId points to current leaf
-  -> leaf moves
-  -> buildContext walks leaf -> root
-  -> JSONL stores the tree
+JSONL entries -> parent links -> active leaf path -> AgentMessage[]
 ```
 
-## Files
+## Corresponding files
 
 - [`packages/agent/src/harness/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/types.ts)
 - [`packages/agent/src/harness/session/session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/session/session.ts)
 - [`packages/agent/src/harness/session/jsonl-storage.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/harness/session/jsonl-storage.ts)
+- [`packages/coding-agent/src/core/messages.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/messages.ts)
 - [`packages/coding-agent/docs/session-format.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/session-format.md)
-- [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/session-manager.ts)
 
-Specific anchors:
+## The mapping
 
-```text
-harness/types.ts:334-420           SessionTreeEntryBase, MessageEntry, LeafEntry
-session.ts:22-80                   buildSessionContext(pathEntries)
-session.ts:97-115                  getLeafId(), getBranch(), buildContext()
-session.ts:132-139                 appendMessage() uses the current leaf as parentId
-jsonl-storage.ts:109-110           leafIdAfterEntry()
-jsonl-storage.ts:136-158           restoring leafId row by row while reading JSONL
-jsonl-storage.ts:226-243           setLeafId() appends a leaf entry
-jsonl-storage.ts:250-258           appendEntry() appends an entry and updates currentLeafId
-jsonl-storage.ts:275-287           getPathToRoot()
-session-format.md:1-4              JSONL + id/parentId tree
-session-format.md:171-181          entry base fields
-session-format.md:300-317          tree structure and context building
-session-manager.ts:944-959         the older appendMessage() implementation
-session-manager.ts:1145-1167       getBranch() and buildSessionContext()
-session-manager.ts:1235-1255       branch() / resetLeaf()
-```
-
-## Mapping
-
-| s07 | Pi |
+| s07 | Pi 0.79.1 |
 | --- | --- |
-| `MessageEntry` | `MessageEntry` / `SessionMessageEntry` |
+| `SessionHeader` | JSONL Session header |
+| `SessionEntry` with `id` and `parentId` | `SessionTreeEntry` |
+| `MessageEntry` | `MessageEntry` |
 | `LeafEntry` | `LeafEntry` |
-| `appendMessage()` | `Session.appendMessage()` / `SessionManager.appendMessage()` |
-| `branch()` | `Session.moveTo()` / `SessionManager.branch()` |
-| `getBranch()` | `Session.getBranch()` / `SessionManager.getBranch()` |
+| `BranchSummaryEntry` | `BranchSummaryEntry` |
+| `CompactionEntry` | `CompactionEntry` |
+| `appendMessage()` | `Session.appendMessage()` |
+| `getBranch()` | `Session.getBranch()` plus storage path-to-root lookup |
 | `buildContext()` | `buildSessionContext()` |
-| `toJSONL()` | `JsonlSessionStorage` |
-| `loadSessionTreeFromJSONL()` | `JsonlSessionStorage.open()` |
+| `toJSONL()` / `loadSessionTreeFromJSONL()` | the lesson-sized boundary around `JsonlSessionStorage` |
 
-## One detail
+## Branch and leaf behavior
 
-Pi currently has two session-related code lines:
+Pi's Storage treats the active leaf as derived state. Appending a normal entry advances it to that entry; appending a `leaf` row restores it to the row's target. The course uses the same rule when branching and when loading JSONL.
 
-```text
-packages/agent/src/harness/session/*
-packages/coding-agent/src/core/session-manager.ts
-```
+A branch therefore does not duplicate or delete Messages. It records navigation, then lets future entries use the selected target as their parent.
 
-The `SessionManager` in `coding-agent` looks more like the earlier product implementation: `branch()` moves the in-memory leaf directly.
+## Summary entries and Context
 
-The `JsonlSessionStorage` in `packages/agent` writes the leaf move out as a `LeafEntry` too. This section adopts that style, because it better illustrates Pi's append-only idea: even a navigation action can be recorded as one line of JSONL.
+Pi's `buildSessionContext()` scans the active path and materializes session entries into `AgentMessage[]`. A Branch Summary becomes a `BranchSummaryMessage`. When Compaction is present, a `CompactionSummaryMessage` precedes the retained Message suffix.
 
-## What s07 doesn't do yet
+s07 reconstructs those storage and materialization semantics. Its `appendBranchSummary()` and `appendCompaction()` accept already-produced Summary text and metadata.
 
-s07 does not implement any of this:
+## Deliberate algorithm boundary
+
+This lesson does not implement the systems that decide when or how to summarize:
 
 ```text
-compaction
-branch_summary
-label
-session_info
-custom entry
-custom_message
-real filesystem writes
-/fork copying a branch into a new session file
-/tree's terminal picker
+token threshold selection
+compaction trigger
+first-kept cut-point selection
+summary prompt construction
+summary model call
+branch-summary generation
 ```
 
-None of these are being ignored — they come later.
+Those belong to Pi's Compaction and Branch Summarization layers, not to the Session tree itself. s07 only proves that the resulting entries can exist in append-only history and enter the active Context correctly.
 
-s07 answers one question only: why Pi's session cannot just be a `messages[]`.
+## Course scope
 
-## Suggested reading path
+Pi supports more Entry types, including model changes, thinking-level changes, active-tool changes, labels, custom entries, and Session metadata. It also has Storage implementations that append to real files.
 
-Start with `SessionTreeEntryBase` and `LeafEntry` in `harness/types.ts`.
+The course keeps four content/navigation Entry types and serializes the in-memory tree to JSONL text. The live lesson still uses that tree through the s06 Session interface and persists each Message produced by the real model-tool loop.
 
-Then look at `setLeafId()` in `jsonl-storage.ts`. It appends a `leaf` entry and points `currentLeafId` at `targetId`.
+## Suggested reading order
 
-Finish with `buildSessionContext()` in `session.ts`. It extracts messages from the current path only, which is why one JSONL file can hold many branches while the current request only ever sees one of them.
+1. Read `SessionTreeEntry`, `LeafEntry`, `BranchSummaryEntry`, and `CompactionEntry` in Harness types.
+2. Follow `Session.getBranch()`, `Session.buildContext()`, and `Session.appendMessage()`.
+3. Read the leaf restoration and path-to-root functions in `jsonl-storage.ts`.
+4. Finish with `buildSessionContext()`, concentrating on Branch Summary and Compaction materialization rather than summary generation.

@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createToolRegistry } from "../s02_tool_schema/code.ts";
+import { createMemorySession } from "../s06_turn_state/code.ts";
+import { runPrintMode } from "../s10_runtime_modes/code.ts";
 import {
+  fauxAssistantMessage,
+  fauxText,
+  fauxToolCall,
+  setupFauxProvider,
+} from "../test-support/faux-provider.ts";
+import {
+  createPackageRuntime,
   createPackageManifest,
   getEnabledPaths,
   type PackageFilter,
@@ -432,4 +442,173 @@ test("a local file package loads as a single extension", () => {
 
   assert.deepEqual(getEnabledPaths(resolved.extensions), ["/tmp/one-file.ts"]);
   assert.deepEqual(getEnabledPaths(resolved.skills), []);
+});
+
+test("resolved package extensions, skills, and prompts configure the real runtime", async (t) => {
+  const runtimeFiles = {
+    "/repo/AGENTS.md": "Project baseline.",
+    "/packages/runtime/package.json": JSON.stringify(
+      createPackageManifest("runtime-pack", {
+        extensions: ["extensions/runtime.ts"],
+        skills: ["skills/review/SKILL.md"],
+        prompts: ["prompts/review.md"],
+      }),
+    ),
+    "/packages/runtime/extensions/runtime.ts": "export default runtimeExtension",
+    "/packages/runtime/skills/review/SKILL.md": [
+      "---",
+      "name: package-review",
+      "description: Review with the package checklist.",
+      "---",
+      "Inspect the complete diff.",
+    ].join("\n"),
+    "/packages/runtime/prompts/review.md": "---\ndescription: Review a change.\n---\nReview $ARGUMENTS.",
+  };
+  let normalSystemPrompt = "";
+  let invocationSystemPrompt = "";
+  let invokedUserPrompt = "";
+  let providerTools: string[] = [];
+  let packageToolExecutions = 0;
+  const faux = setupFauxProvider([
+    (context) => {
+      normalSystemPrompt = context.systemPrompt ?? "";
+      providerTools = context.tools?.map((tool) => tool.name) ?? [];
+      return fauxAssistantMessage([fauxToolCall("package_review", { target: "change" })], {
+        stopReason: "toolUse",
+      });
+    },
+    fauxAssistantMessage([fauxText("Package resources reached the model.")]),
+    (context) => {
+      invocationSystemPrompt = context.systemPrompt ?? "";
+      const message = context.messages.at(-1);
+      invokedUserPrompt = message?.role === "user" && typeof message.content === "string"
+        ? message.content
+        : "";
+      return fauxAssistantMessage([fauxText("Prompt template invoked.")]);
+    },
+  ]);
+  t.after(() => faux.unregister());
+
+  const prepared = await createPackageRuntime({
+    files: runtimeFiles,
+    userPackages: ["/packages/runtime"],
+    projectPackages: [],
+    projectTrusted: true,
+    extensionSources: [{
+      path: "/packages/runtime/extensions/runtime.ts",
+      factory(pi) {
+        pi.registerTool({
+          name: "package_review",
+          description: "Review a target with the package.",
+          parameters: {
+            type: "object",
+            properties: { target: { type: "string" } },
+            required: ["target"],
+          },
+          handler(input) {
+            packageToolExecutions += 1;
+            return { toolName: "package_review", content: `reviewed:${String(input.target)}` };
+          },
+        });
+      },
+    }],
+    runtimeOptions: {
+      source: { readText: (path) => runtimeFiles[path as keyof typeof runtimeFiles] },
+      cwd: "/repo",
+      agentDir: "/home/me/.pi/agent",
+      session: createMemorySession("s12-packages"),
+      model: faux.getModel(),
+      registry: createToolRegistry([{
+        name: "read_file",
+        description: "Read a file.",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+        handler(input) {
+          return { toolName: "read_file", content: `contents:${String(input.path)}` };
+        },
+      }]),
+    },
+  });
+
+  assert.deepEqual(prepared.selection, {
+    extensionPaths: ["/packages/runtime/extensions/runtime.ts"],
+    skillPaths: ["/packages/runtime/skills/review/SKILL.md"],
+    promptPaths: ["/packages/runtime/prompts/review.md"],
+    themePaths: [],
+  });
+  assert.equal(await runPrintMode(prepared.runtime, "Review this"), "Package resources reached the model.");
+  assert.match(normalSystemPrompt, /<name>package-review<\/name>/);
+  assert.doesNotMatch(normalSystemPrompt, /Review \$ARGUMENTS\./);
+  assert.deepEqual(providerTools, ["read_file", "package_review"]);
+  assert.equal(packageToolExecutions, 1);
+
+  const invocation = await prepared.invokePromptTemplate("review", ["change"]);
+  assert.equal(invocation.finalText, "Prompt template invoked.");
+  assert.equal(invokedUserPrompt, "Review change.");
+  assert.doesNotMatch(invocationSystemPrompt, /Review \$ARGUMENTS\./);
+  assert.deepEqual(prepared.promptTemplates.map((template) => template.name), ["review"]);
+});
+
+test("a package may explicitly export nothing while the real model and tool loop keep working", async (t) => {
+  const runtimeFiles = {
+    "/packages/empty/package.json": JSON.stringify(
+      createPackageManifest("empty-pack", {
+        extensions: [],
+        skills: [],
+        prompts: [],
+        themes: [],
+      }),
+    ),
+    "/packages/empty/extensions/hidden.ts": "export default hidden",
+  };
+  const faux = setupFauxProvider([
+    fauxAssistantMessage([fauxToolCall("read_file", { path: "README.md" })], { stopReason: "toolUse" }),
+    fauxAssistantMessage([fauxText("The empty package did not replace the agent loop.")]),
+  ]);
+  t.after(() => faux.unregister());
+  let reads = 0;
+
+  const prepared = await createPackageRuntime({
+    files: runtimeFiles,
+    userPackages: ["/packages/empty"],
+    projectPackages: [],
+    projectTrusted: true,
+    extensionSources: [],
+    runtimeOptions: {
+      source: { readText: () => undefined },
+      cwd: "/repo",
+      agentDir: "/home/me/.pi/agent",
+      session: createMemorySession("s12-empty-package"),
+      model: faux.getModel(),
+      registry: createToolRegistry([{
+        name: "read_file",
+        description: "Read a file.",
+        parameters: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+        handler(input) {
+          reads += 1;
+          return { toolName: "read_file", content: `contents:${String(input.path)}` };
+        },
+      }]),
+      activeToolNames: ["read_file"],
+    },
+  });
+
+  assert.deepEqual(prepared.selection, {
+    extensionPaths: [],
+    skillPaths: [],
+    promptPaths: [],
+    themePaths: [],
+  });
+  assert.equal(
+    await runPrintMode(prepared.runtime, "Read the file"),
+    "The empty package did not replace the agent loop.",
+  );
+  assert.equal(reads, 1);
 });

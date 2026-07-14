@@ -1,108 +1,71 @@
-# Pi Source Map for s09
+# s09 against the Pi 0.79.1 source
 
-s09 maps to Pi's extension runtime.
+s09 maps to Pi's Extension loading, registration API, Event runner, and Agent Session integration.
 
 ```text
-extension factory
-  -> pi.on / pi.registerTool / pi.registerCommand
-  -> loaded extension record
-  -> ExtensionRunner emits events
-  -> tools / commands / prompt hooks enter the session runtime
+Extension factory -> Extension record -> ExtensionRunner -> Harness boundaries
 ```
 
-## Mapped files
+## Corresponding files
 
 - [`packages/coding-agent/src/core/extensions/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/extensions/types.ts)
 - [`packages/coding-agent/src/core/extensions/loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/extensions/loader.ts)
 - [`packages/coding-agent/src/core/extensions/runner.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/extensions/runner.ts)
+- [`packages/coding-agent/src/core/agent-session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session.ts)
 - [`packages/coding-agent/docs/extensions.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/extensions.md)
-- [`packages/coding-agent/examples/extensions/`](https://github.com/earendil-works/pi/tree/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/examples/extensions/)
 
-Specific anchors:
+## The mapping
 
-```text
-types.ts:435-482          ToolDefinition
-types.ts:527-539          ResourcesDiscoverEvent / ResourcesDiscoverResult
-types.ts:1045-1048        BeforeAgentStartEventResult
-types.ts:1097-1107        RegisteredCommand / ResolvedCommand
-types.ts:1120-1155        ExtensionAPI.on(...)
-types.ts:1418-1425        RegisteredTool
-types.ts:1577-1595        Extension / LoadExtensionsResult
-loader.ts:124-170         createExtensionRuntime()
-loader.ts:172-208         on / registerTool / registerCommand in createExtensionAPI()
-loader.ts:348-365         createExtension()
-runner.ts:420-438         getTools() / getToolDefinition()
-runner.ts:536-544         hasHandlers()
-runner.ts:736-768         generic emit()
-runner.ts:862-875         emitToolCall()
-runner.ts:980-1044        emitBeforeAgentStart()
-runner.ts:1046-1090       emitResourcesDiscover()
-extensions.md:3-29        extension capability overview
-extensions.md:55-105      Quick Start
-extensions.md:1259-1273  pi.on / pi.registerTool
-extensions.md:1418-1431  pi.registerCommand
-```
-
-## Mapping
-
-| s09 | Pi |
+| s09 | Pi 0.79.1 |
 | --- | --- |
-| `MiniExtensionFactory` | extension default export |
-| `MiniExtensionAPI` | `ExtensionAPI` |
-| `loadMiniExtensions()` | `loadExtensions()` / `loadExtensionFromFactory()` |
-| `LoadedExtension` | `Extension` |
+| `MiniExtensionFactory` | `ExtensionFactory` |
+| `MiniExtensionAPI` | the teaching subset of `ExtensionAPI` |
+| `LoadedExtension` | `Extension` registration record |
+| `loadMiniExtensions()` | factory loading plus `createExtensionAPI()` |
 | `MiniExtensionRunner` | `ExtensionRunner` |
 | `emitBeforeAgentStart()` | `ExtensionRunner.emitBeforeAgentStart()` |
 | `emitResourcesDiscover()` | `ExtensionRunner.emitResourcesDiscover()` |
 | `emitToolCall()` | `ExtensionRunner.emitToolCall()` |
-| `mergeExtensionTools()` | `ExtensionRunner.getTools()` feeding the tool system |
-| `runCommand()` | registered slash command handler |
+| `createExtensionToolHooks()` | Agent Session wiring from `tool_call` to `beforeToolCall` |
+| `mergeExtensionTools()` | registered Tools entering the Agent Tool set |
+| `runCommand()` | a small registered Command invocation surface |
 
-## What s09 simplifies
+## Registration versus execution
 
-The real Pi extension runtime carries much more than s09:
+Pi's `createExtensionAPI()` writes Event Handlers, Tools, and Commands into the current Extension record. The shared runtime has unavailable action stubs during initial loading, making the registration phase distinct from live execution.
 
-```text
-UI context
-keyboard shortcut
-CLI flag
-message renderer
-provider registration
-session replacement
-stale ctx protection
-resource diagnostics
-error listener
-command name conflict suffix
-custom TUI component
-```
+s09 preserves that central rule. Its factories are already supplied by the caller, while Pi dynamically imports files and supports both synchronous and asynchronous initialization.
 
-s09 implements none of these. It keeps only three main lines:
+## Event integration
 
-```text
-register capabilities
-dispatch by event
-wire extension results back into the existing turn state
-```
+`before_agent_start` Handlers are chained in load order. Pi collects their Custom Messages and adds them to the Agent's input Messages; s09 materializes the same Message shape and persists it through the Session before creating the live Turn snapshot.
 
-Those three lines are enough to explain Pi's design tradeoff: keep the core small, put workflows in extensions.
+`tool_call` is installed as the Agent's Before Tool Hook in Pi's `AgentSession`. The lesson makes that connection explicit through `createExtensionToolHooks()`, so blocking still produces the normal Tool Result lifecycle. Its composition helper applies caller argument rewrites before Extension policy, ensuring the policy checks the values that would actually execute.
 
-## How it connects to earlier units
+`resources_discover` returns paths tagged with the reporting Extension path in both implementations. That provenance survives discovery even when the Resource Loader later merges many sources.
 
-s09 doesn't open up a new system.
+## Composition with earlier lessons
+
+The Extension layer does not replace previous boundaries:
 
 ```text
-s02 Tool Schema          extensions can register new tools
-s05 Tool Hooks           extensions intercept tools via tool_call
-s06 Turn State           extensions edit the current turn's prompt in before_agent_start
-s08 Context Resources    extensions expose resource paths via resources_discover
+s02 Registry          receives Extension Tools
+s05 Tool Hooks        receives tool_call policy
+s06 AgentMessage      carries before_agent_start Custom Messages
+s08 Resource Loader   receives discovered Skill and Prompt paths
 ```
 
-So the extension runtime is more like a layer of sockets. All the earlier mechanisms are still there — just opened up to external modules.
+`runExtensionTurn()` prepares those inputs and then delegates to the same real Harness and Provider path.
+
+## Course scope
+
+Pi's Extension API also supports many more Events, UI components, keyboard shortcuts, CLI flags, Message renderers, Provider registration, Session actions, reload, and stale-context protection. Its loader reports per-Extension errors rather than using the course's smaller fail-fast checks.
+
+s09 does not dynamically import source files or implement an interactive slash-command parser. It proves Tool and Command registration, three Event paths, provenance, Session insertion, and composition with the existing Loop.
 
 ## Suggested reading order
 
-Start with `createExtensionAPI()` in `loader.ts`. There you can see that `pi.on`, `pi.registerTool`, and `pi.registerCommand` all just write into the extension record.
-
-Then read `emitBeforeAgentStart()` and `emitResourcesDiscover()` in `runner.ts`. These two passages show how the runner calls handlers in extension load order and merges their return values.
-
-Finish with the Quick Start in `docs/extensions.md`. A real extension is this unit's demo, scaled up.
+1. Read `ExtensionFactory`, `ExtensionAPI`, and `Extension` in `types.ts`.
+2. Read `createExtensionAPI()` in `loader.ts` to see registrations written into a record.
+3. Follow the three matching emit methods in `runner.ts`.
+4. Finish in `agent-session.ts`, where `tool_call` becomes a Tool Hook and `before_agent_start` Messages join the Agent input.

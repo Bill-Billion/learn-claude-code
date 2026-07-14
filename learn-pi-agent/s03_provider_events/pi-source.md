@@ -1,65 +1,57 @@
-# Pi source cross-reference for s03
+# s03 against the Pi 0.79.1 source
 
-s03 covers only the provider event stream in `pi-ai`.
+s03 consumes the actual `AssistantMessageEvent` stream exported by `@earendil-works/pi-ai` 0.79.1.
 
 ```text
-provider stream
+stream(model, context)
+  -> AssistantMessageEventStream
   -> AssistantMessageEvent
-  -> partial AssistantMessage
-  -> done.message
+  -> done.message or error.error
 ```
 
-## Relevant files
+## Corresponding files
 
 - [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts)
 - [`packages/ai/src/stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/stream.ts)
 - [`packages/ai/src/utils/event-stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/utils/event-stream.ts)
 - [`packages/ai/README.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/README.md)
+- [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts)
 
-Exact anchors:
+## The mapping
 
-```text
-types.ts:257-263       ToolCall
-types.ts:280           StopReason
-types.ts:288-301       AssistantMessage
-types.ts:338-348       Tool / Context
-types.ts:350-370       AssistantMessageEvent
-stream.ts:40-75        stream / complete / streamSimple / completeSimple
-event-stream.ts:69-87  AssistantMessageEventStream
-README.md:374-393      complete event reference and contentIndex warning
-```
-
-## How things map
-
-| s03 | Pi |
+| s03 | Pi 0.79.1 |
 | --- | --- |
-| `ProviderEvent` | `AssistantMessageEvent` |
-| `EventProvider.stream()` | the `AssistantMessageEventStream` returned by `streamSimple()` |
-| `AssistantMessage.content` | Pi's `AssistantMessage.content` |
-| `ToolCall` | Pi's `ToolCall` |
-| `contentIndex` | the content block index in Pi's events |
-| `collectProviderStream()` | consuming events with `for await ... of stream` |
-| `done.message` | the final result of `AssistantMessageEventStream.result()` |
+| `AssistantMessageEvent` import | the same event union in `packages/ai/src/types.ts` |
+| `streamModel()` import | `stream()` in `packages/ai/src/stream.ts` |
+| `collectAssistantStream()` | `for await` consumption of `AssistantMessageEventStream` plus terminal-message collection |
+| `event.type`, `contentIndex`, `partial` | the official event fields used without translation |
+| `done.message` / `error.error` | the official terminal Assistant Message fields |
+| `runStreamingAgentLoop()` | the course Agent Loop around the official stream, Registry, and Tool Results |
+| `onEvent` | a small consumer callback layered over the same event objects |
 
-## What this lesson deliberately skips
+s03 does not define a model-facing Provider Event protocol of its own. The live path imports and consumes the package's official types and Stream directly.
 
-The s03 code does not implement any of these:
+## Provider events versus agent events
+
+`pi-ai` events describe one Assistant Message being built:
 
 ```text
-api / provider / model / usage fields
-thinking_start / thinking_delta / thinking_end
-image content
-protocol translation for real providers
-validateToolCall()
-tool execution and toolResult messages
+start
+text_* / thinking_* / toolcall_*
+done or error
 ```
 
-None of this is an oversight. The goal of s03 is to get you reading the provider event stream first. Tool execution starts in s04.
+`pi-agent-core` wraps that stream in a wider lifecycle for an Agent run, a Turn, Messages, and Tool Execution. s04 reconstructs that outer layer. Keeping the two event families separate is the main source-level boundary in this lesson.
+
+## What s03 adds and simplifies
+
+`collectAssistantStream()` stores events in an array, forwards each one to an optional callback, and remembers the final message. Pi's `AssistantMessageEventStream` also exposes a final result through its Stream abstraction; the course keeps collection explicit so the protocol remains visible.
+
+The lesson CLI displays only text deltas. It does not build a terminal UI, render thinking blocks, display usage, or expose provider-specific wire events. Tool execution still belongs to the course loop rather than `pi-ai`.
 
 ## Suggested reading order
 
-Start with `AssistantMessageEvent` in [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts). That section is the most important piece of source for this lesson.
-
-Then read [`packages/ai/src/utils/event-stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/utils/event-stream.ts). `AssistantMessageEventStream` does two things: it lets the caller consume events with `for await`, and it stores the final assistant message when `done` or `error` arrives.
-
-Finally, [`packages/ai/src/stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/stream.ts). `completeSimple()` is really just grabbing the stream and awaiting `result()`.
+1. Read `AssistantMessageEvent` and `AssistantMessage` in [`packages/ai/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/types.ts).
+2. Read [`packages/ai/src/utils/event-stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/utils/event-stream.ts) to see async iteration and final-result storage.
+3. Read `stream()` and `complete()` in [`packages/ai/src/stream.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/ai/src/stream.ts). The difference explains why s01 could await one message while s03 can observe every event.
+4. Then inspect the Provider-to-Agent event conversion in [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts), which becomes the subject of s04.

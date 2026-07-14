@@ -1,14 +1,14 @@
-# s05 的 Pi 源码对照
+# s05 的 Pi 0.79.1 源码对照
 
-s05 对应 `pi-agent-core` 的工具 hook。
+s05 对应 `pi-agent-core` 中的 Tool Hook 边界。
 
 ```text
 tool_execution_start
   -> beforeToolCall
-  -> execute tool
+  -> execute Tool
   -> afterToolCall
   -> tool_execution_end
-  -> toolResult message
+  -> Tool Result Message
 ```
 
 ## 对应文件
@@ -17,54 +17,48 @@ tool_execution_start
 - [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts)
 - [`packages/agent/README.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/README.md)
 
-具体锚点：
-
-```text
-types.ts:49-58        BeforeToolCallResult
-types.ts:60-81        AfterToolCallResult
-types.ts:83-108       hook context types
-types.ts:256-262      beforeToolCall config entry（签名在 262 行）
-agent-loop.ts:562-626 prepareToolCall()
-agent-loop.ts:665-708 finalizeExecutedToolCall()
-agent/README.md:111-113 hook order and terminate behavior
-agent/README.md:196-210 config examples
-```
-
 ## 对应关系
 
-| s05 | Pi |
+| s05 | Pi 0.79.1 |
 | --- | --- |
 | `ToolHooks.beforeToolCall` | `AgentLoopConfig.beforeToolCall` |
+| `{ block: true, reason }` | Pi `BeforeToolCallResult` 的阻止路径 |
+| `BeforeToolCallResult.arguments` | 课程为了展示参数改写而增加的字段 |
 | `ToolHooks.afterToolCall` | `AgentLoopConfig.afterToolCall` |
-| `{ block: true, reason }` | Pi `BeforeToolCallResult` |
-| `{ content, isError, terminate }` | Pi `AfterToolCallResult` 的教学版 |
-| `runHookedToolLoop()` | `runAgentLoop()` 的带 hook 工具路径 |
-| `terminated` | Pi tool result 的 `terminate` hint |
-| batch 全 terminate 才提前停 | `agent-loop.ts:544-546` 的 `every()` 判定 |
+| `{ content, isError, terminate }` | Result Finalization 的教学版子集 |
+| `createHookExecutor()` | 包围 Pi 准备与收尾边界的 Policy |
+| `runHookedToolLoop({ ... })` | Pi `runAgentLoop()` 中带 Hook 的路径 |
+| `RunEventedToolLoopResult.terminated` | Tool Result 请求终止产生的提前停止效果 |
+| 所有 Outcome 都要求终止 | Pi 的混合批次规则：Mixed Batch 正常继续 |
 
-两个字段级差异：Pi 的 hook context 传的是 `context: AgentContext`（`types.ts:92, 107`），mini 换成了 `messages: LoopMessage[]`；Pi 的 `afterToolCall` 收到的是 `AgentToolResult`（还不是 message），mini 直接给了包装好的 `ToolResultMessage`。
+Pi 会把完整 `AgentContext` 交给 Hook，而课程暴露当前 Message List。Pi 的 After Hook 处理尚未包装成 Message 的 Agent Tool Result；课程则传入 `ToolResultMessage`，再应用一个更小的 Patch。
 
-## 本节暂时不做什么
+## Hook 顺序与职责
 
-s05 没有实现这些内容：
+双方共享的关键顺序是：
 
 ```text
-TypeBox 参数验证后再调用 beforeToolCall
-AbortSignal
-details 字段改写
-parallel 工具执行
-permission popup
-project trust
+validate and prepare call
+beforeToolCall
+  blocked -> error result, skip Handler
+  allowed -> execute Handler
+afterToolCall
+final Tool Result
 ```
 
-terminate 的批量语义 mini 已经和 Pi 对齐：只有当一批 toolCall 的每个结果都要求 terminate 时才提前停，混合批次照常进入下一轮（Pi `agent/README.md:113` "Mixed batches continue normally"）。
+Hook 层不拥有 Message 顺序与生命周期发出过程。这些职责仍然属于 s04 重建的 Agent Loop，因此 Policy 可以组合在执行周围。
 
-这些不是同一层问题。Pi 的 `beforeToolCall` 可以被拿来做权限或审计，但权限 UI 不是 agent-core 的内置机制。后面讲 Trust And Execution Env 时再回到这个边界。
+## 课程实现的差异
+
+`BeforeToolCallResult.arguments` 是课程特意增加的字段。它会在 `executeDefault()` 前构造 Effective Tool Call，让参数改写保持可观察。不要把它理解成从 Pi 0.79.1 `BeforeToolCallResult` 复制来的字段。
+
+课程也省略了更完整的 Result Details、`AbortSignal`、Tool Progress、并行执行、Permission UI 和 Project Trust。产品可以用 Hook 实现权限或审计 Policy，但这些产品界面不是 Agent Core Hook 自带的机制。
+
+Before Hook 阻止调用时，课程会创建 Error Tool Result，不再调用 After Hook。如果课程的 After Hook 在执行后抛错，已产生的 Content 会被保留，Result 会追加 Post-Hook Failure Note 并把 `isError` 设为 true；Loop 会继续，但绝不会重试 Handler。这种保留是课程特意选择的 Recovery 行为。Pi 0.79.1 与之不同：`finalizeExecutedToolCall()` 会用只包含 After Hook Failure 的新 Error Result 替换已执行 Result，而不是保留原始 Content。After Hook 为一批调用请求终止时，只有每个 Tool Outcome 都提出请求，s04 才会在下一次 Provider Turn 前结束。
 
 ## 建议读法
 
-先看 [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts) 的 `BeforeToolCallResult` 和 `AfterToolCallResult`。这里定义了 hook 能返回什么。
-
-然后看 [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts) 的 `prepareToolCall()`。`beforeToolCall` 返回 block 时，Pi 会创建一条错误结果，不执行工具。
-
-最后看 `finalizeExecutedToolCall()`。`afterToolCall` 返回 patch 时，Pi 逐字段替换工具结果。
+1. 先看 [`packages/agent/src/types.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/types.ts) 中的 `BeforeToolCallResult`、`AfterToolCallResult` 和 Context Type。
+2. 阅读 [`packages/agent/README.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/README.md) 中的 Hook 顺序和 Mixed Batch 终止说明。
+3. 沿 [`packages/agent/src/agent-loop.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/agent/src/agent-loop.ts) 的 Tool Call Preparation，观察被阻止的调用如何变成 Error Result。
+4. 再追踪 Result Finalization，观察 After Hook Patch 与 `terminate` 如何在 Tool Result Message 发出前生效。

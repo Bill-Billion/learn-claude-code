@@ -1,125 +1,89 @@
-# s12 Against the Pi Source
+# s12 against the Pi 0.79.1 source
 
-s12 corresponds to Pi's package resolver.
-
-This unit is checked against the repository's pinned `@earendil-works/pi-coding-agent` 0.79.1, git commit `2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210`.
+s12 reconstructs the package resolver and then connects its enabled outputs to the real course runtime.
 
 ```text
-package source
+configured package source
   -> installed package root
-  -> pi manifest or conventional directories
-  -> extensions / skills / prompts / themes
-  -> ResourceLoader
+  -> manifest / conventions / filters
+  -> enabled resource paths
+  -> Resource and Extension loading
 ```
 
-## The files
+## Corresponding files
 
-- [`packages/coding-agent/README.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/README.md)
 - [`packages/coding-agent/docs/packages.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/packages.md)
+- [`packages/coding-agent/docs/security.md`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/docs/security.md)
 - [`packages/coding-agent/src/core/package-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/package-manager.ts)
-- [`packages/coding-agent/src/core/settings-manager.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/settings-manager.ts)
 - [`packages/coding-agent/src/core/resource-loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/resource-loader.ts)
-
-Specific anchors:
-
-```text
-README.md:402-449                 Pi Packages overview, install commands, and a manifest example
-README.md:491-501                 why so many workflows are handed to extensions / skills / packages
-docs/packages.md:18-48            install / remove / update / temporary -e
-docs/packages.md:50-112           the three source kinds: npm, git, local path
-docs/packages.md:114-131          the pi manifest in package.json
-docs/packages.md:154-163          conventional directories
-docs/packages.md:165-186          dependencies / peerDependencies / bundledDependencies
-docs/packages.md:188-210          package filtering
-package-manager.ts:147-153        PiManifest
-package-manager.ts:179-188        PackageFilter and RESOURCE_TYPES
-package-manager.ts:534-630        extension top-level files, subdirectory index / manifest entry discovery
-package-manager.ts:632-761        the filter's minimatch candidates, skill directory identity, +/- ordering
-package-manager.ts:885-921        resolve() gathering project/user packages, local entries, and auto resources
-package-manager.ts:1209-1266      resolvePackageSources()
-package-manager.ts:1270-1295      local path source: a file becomes a single extension, a directory resolves by package rules
-package-manager.ts:1645-1667      dedupePackages(), project packages override global packages
-package-manager.ts:1678-1682      project package storage requires projectTrusted
-package-manager.ts:2030-2073      collectPackageResources()
-package-manager.ts:2076-2096      collectDefaultResources()
-package-manager.ts:2098-2122      applyPackageFilter()
-package-manager.ts:2129-2148      file sets from the manifest and conventional directories
-package-manager.ts:2151-2164      readPiManifest()
-package-manager.ts:2186-2200      manifest globs expand both files and directories
-package-manager.ts:2392-2408      after a glob hits a directory, entry discovery continues per resource type
-test/package-manager.test.ts:1950-2051 regression test that a multi-file extension doesn't treat helpers as standalone entries
-                                  (lives under packages/coding-agent/test/, not src/core/)
-package-manager.ts:2226-2390      addAutoDiscoveredResources(), project resources gated by trust
-package-manager.ts:2450-2470      toResolvedPaths()
-settings-manager.ts:911-921       packages / setPackages / setProjectPackages
-resource-loader.ts:333-343        reload resolves project trust first, then calls packageManager.resolve()
-```
+- [`packages/coding-agent/src/core/extensions/loader.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/extensions/loader.ts)
+- [`packages/coding-agent/src/core/prompt-templates.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/prompt-templates.ts)
+- [`packages/coding-agent/src/core/agent-session.ts`](https://github.com/earendil-works/pi/blob/2f5066d7a0c7bd7d2a6a219561d41a1e11b3b210/packages/coding-agent/src/core/agent-session.ts)
 
 ## The mapping
 
-| s12 | Pi |
+| s12 | Pi 0.79.1 |
 | --- | --- |
-| `createPackageManifest()` | the `pi` manifest in `package.json` |
-| `PackageEntry` | `PackageSource` in string / object-filter form |
-| `resolvePiPackages()` | a minimal `DefaultPackageManager.resolve()` |
-| `collectPackageResourceFiles()` | `collectPackageResources()` / `collectDefaultResources()` / `collectManifestFiles()` |
-| `collectAutoExtensionEntries()` | `collectAutoExtensionEntries()` / `resolveExtensionEntries()` |
-| `matchesPattern()` / `matchesExactPath()` | `matchesAnyPattern()` / `matchesAnyExactPattern()` |
-| `applyPatterns()` | `applyPatterns()`, in order: include / exclude / force-include / force-exclude |
-| `projectTrusted` | `SettingsManager.isProjectTrusted()` |
-| `metadata.scope` | `PathMetadata.scope` |
-| `enabled` | `ResolvedResource.enabled` |
+| `PiManifest` and `createPackageManifest()` | the `pi` field in a package's `package.json` |
+| `PackageEntry` | string and object-filter package sources |
+| `resolvePiPackages()` | the package-source and resource path portion of `DefaultPackageManager.resolve()` |
+| `discoverExtensionEntries()` | `collectAutoExtensionEntries()` and `resolveExtensionEntries()` |
+| `applyPatterns()` | include, exclude, force-include, and force-exclude filtering |
+| `projectTrusted` | the Package Manager's `SettingsManager.isProjectTrusted()` gate |
+| `ResolvedResource.metadata` and `enabled` | Pi's resolved path metadata and enabled state |
+| explicit `extensionSources` | already-loaded Extension modules after Pi's Extension loader |
+| `promptTemplates` and `invokePromptTemplate()` | loaded Prompt Templates and explicit `expandPromptTemplate()` invocation |
+| `selection.themePaths` | enabled Theme paths consumed by Pi's Resource Loader and UI |
 
-## What this unit simplifies
+## Package selection precedence
 
-Real Pi's package manager does a lot of engineering work:
+Pi resolves npm, Git, and local sources to installed roots. A local file is one Extension; a local directory follows package rules. The lesson models those roots in `MiniFiles` and does not perform installation or updates.
 
-```text
-npm install / git clone / git fetch
-pinned npm versions and git refs
-offline mode
-dependency install
-settings.json persistence
-progress events
-ignore files and symlink handling
-path canonicalization and cloud sync ignore
-package update checks
-resource precedence ordering and name collision diagnostics
-```
+Both implementations preserve these central rules:
 
-s12 implements none of that. It keeps only the resolver main line:
+1. Project packages are included only after Project Trust.
+2. Equivalent npm or Git identities deduplicate with project scope winning.
+3. A string package with a `pi` manifest uses that manifest as its selection contract; omitted resource keys do not fall back.
+4. Without a manifest, conventional resource directories are discovered.
+5. Object-form filters choose and enable candidates according to manifest and fallback rules.
 
-```text
-package root
-  -> string form: manifest authoritative, otherwise convention
-  -> object form: filtered default or filtered candidates
-  -> extension entry discovery
-  -> resource list
-```
+The lesson keeps local identities scoped, while Pi derives identity from resolved paths. This is an implementation difference, not a new resource kind.
 
-A few 0.79.1 details are preserved on purpose: in string form, when a `pi` manifest exists, omitted resource keys don't fall back; only an object-form filter chooses between the manifest and the convention directories, by the rules of `collectDefaultResources()` / `collectManifestFiles()`. Extension directories likewise only discover top-level `.ts` / `.js` files and explicit sub-entries — helpers are never loaded recursively — and when a manifest glob hits a directory, entry discovery continues inside it.
+## Resource discovery and filtering
 
-Filter matching uses Node's built-in `node:path.posix.matchesGlob()` (available since v22.5) to express the same globstar-style path semantics as upstream minimatch, and like Pi it separately checks the relative path, basename, absolute path, and the skill's parent-directory candidates. That keeps the teaching project free of runtime dependencies.
+Pi discovers Extension entrypoints rather than recursively treating every source file as an Extension. Top-level `.ts`/`.js` files, child `index.ts`/`index.js` files, and explicit manifest entries can load; nested helpers do not become independent Extensions.
 
-There's also one local-path identity difference: mini keys local paths as `local:${scope}:${source}` (the same path can be kept once per scope), while real Pi's identity is the resolved absolute path (`docs/packages.md:227`, `package-manager.ts:1634-1638`), so the same absolute path dedupes across scopes with project winning. The observable results happen to be equivalent (first-come-first-kept + project listed first), but the mechanisms differ.
+For all resource types, filters operate on a candidate set. Include and exclude globs run before exact `+` and `-` overrides. Skill filters also match the parent directory identity of `SKILL.md`. s12 uses Node's `path.posix.matchesGlob()` rather than Pi's matching library but preserves the tested candidate behavior.
 
-This is the part a newcomer needs to grasp first. The real install and update flows can wait — they don't belong in a first pass through the course.
+A `+` override cannot introduce a path that was never a candidate. That is a resolver rule, not containment. Pi resolves manifest entries directly, including `..` segments, without enforcing that the result remains below `packageRoot`; the lesson's normalized joins likewise do not promise package-root isolation.
 
-## How this connects to earlier units
+## From enabled paths to a real Turn
 
-```text
-s08 Context Resources    a package's end products are still skills, prompts, themes
-s09 Extension Runtime    a package can carry extensions
-s11 Trust Env            project packages enter resource resolution only after trust
-s12 Pi Package           bundles the outer-layer capabilities into an installable distribution unit
-```
+Pi's `ResourceLoader` takes enabled package paths and then loads Extension modules, Skills, Prompt Templates, and Themes. s12 makes the host boundary visible:
 
-The point of a Pi package is distributing a workflow without forking Pi. It's also where the whole course converges: Pi core stays small, and outer-layer capability grows outward through resources, extensions, and packages.
+- every enabled Extension path must match a supplied Factory in `extensionSources`;
+- enabled Skill paths enter the real s08 Context Resource flow;
+- enabled Prompt paths are parsed into `promptTemplates`;
+- `invokePromptTemplate()` expands one selected template and submits it as a User Prompt;
+- enabled Theme paths are returned but not rendered.
+
+A normal Turn never receives every Prompt Template body in its System Prompt. This matches Pi: `AgentSession.prompt()` expands a named slash Prompt through `expandPromptTemplate()` only when it is explicitly invoked.
+
+The explicit Factory map replaces Pi's dynamic Extension module loader for the lesson. Missing factories fail construction instead of silently importing source code.
+
+## Course boundary
+
+The real Package Manager also owns installation, update, settings persistence, dependency handling, diagnostics, and resource precedence across more sources. The lesson starts from an already-populated file map and implements the resolution rules needed to explain which paths take effect.
+
+Likewise, real Pi parses and applies Themes, while s12 only reports `themePaths`. It uses the real Model, Tool loop, Extension runner, and AgentMessage Session after selection; the Package layer does not replace the Agent Core.
+
+Package resolution provides no path or execution isolation. Project Trust decides whether project packages may load, but it is not a sandbox. Package Extensions execute with process permissions. Strong isolation belongs in an external container, VM, micro-VM, remote sandbox, or operating-system policy.
 
 ## Suggested reading order
 
-Start with Creating a Pi Package and Package Structure in `docs/packages.md`. That shows what a package author has to write.
-
-Then look at `collectPackageResources()` and `applyPackageFilter()` in `package-manager.ts`. Those two passages explain how the manifest, convention directories, and settings filters merge.
-
-Finish with `resolve()` and `dedupePackages()`. That's where you see the project/user scope ordering, and why a project package can override a global one.
+1. Read Package Sources, Creating a Pi Package, Package Structure, and Package Filtering in `docs/packages.md`.
+2. Follow `resolvePackageSources()` and `dedupePackages()` in `package-manager.ts`.
+3. Read `collectPackageResources()`, `collectDefaultResources()`, and `collectManifestFiles()`.
+4. Trace Extension entry discovery and `applyPatterns()`.
+5. Follow enabled paths through `ResourceLoader.reload()` and `extensions/loader.ts`.
+6. Finish with `loadPromptTemplates()`, `expandPromptTemplate()`, and the explicit expansion branch in `AgentSession.prompt()`.

@@ -1,157 +1,118 @@
 # s01 · Agent Loop
 
-English · [中文](README.zh.md) · [日本語](README.ja.md)
+[Course home](../README.md) | [English](README.md) | [中文](README.zh.md) | [日本語](README.ja.md)
 
-[Contents](../README.md) · [s02 →](../s02_tool_schema/README.md)
+> Where this sits in Pi: the smallest useful path through `pi-ai` and the agent loop, from a user message to a model-selected tool call, a tool result, and the model's final response.
 
-> In one sentence: an agent loop is, first of all, a piece of control flow around messages and stopReason — user in, state turns over, assistant out.
->
-> Where this sits in Pi: the minimal state flow of `@earendil-works/pi-agent-core`.
-
-→ Open Pi and the first thing you see is the terminal and its commands — but underneath sits a control flow you can write in a few dozen lines
-→ The minimal slice of one request: a user message goes in, the state turns over once, an assistant message comes out
-→ stopReason carries three signals: stop / toolUse / error; in this lesson toolUse is only recorded, never executed
-
----
+```text
+model -> toolCall -> toolResult -> model
+```
 
 ## The problem
 
-Open Pi and you first run into the terminal UI, model selection, sessions, extensions, and a pile of commands. It's easy for a beginner to follow those threads and conclude that the agent's substance lives in the commands and the interface.
+A single model request can return text, but an agent must also handle a request to act. When the model emits a tool call, the application has to execute it, append the result to the message history, and call the model again. Returning the tool output directly to the user would skip the model's chance to interpret that evidence.
 
-But in Pi's layering, what sits underneath is `@earendil-works/pi-agent-core`. It doesn't care what the terminal looks like, and it doesn't care how tools get executed. It asks a much smaller question: which `AgentMessage`s exist right now, which provider does the next request go to, and once the assistant replies, does this turn end, error out, or want to call a tool.
-
-If this step stays blurry, everything that comes later — event streams, tools, the session tree, the extension runtime — turns into a pile of mechanism names. s01 does exactly one thing: run the state transition from one user message to one assistant message.
+The first lesson therefore needs more than a chat wrapper. It needs a loop with an explicit state, a tool boundary, and a stopping rule.
 
 ## The idea
 
-![Agent Loop](images/agent-loop.svg)
+Keep one ordered `messages` array and repeat the same operation:
 
-Write a minimal `runOneTurn()`: put the user message into the state, hand the full state to the provider, then put the assistant message back into the state.
+```text
+append user message
+  -> call model with messages + tools
+  -> append assistant message
+  -> no toolCall: return
+  -> toolCall: execute it and append toolResult
+  -> call model again
+```
 
-This lesson keeps only three signals:
-
-| Signal | Meaning | What this lesson does |
-|------|------|---------|
-| `stopReason == "stop"` | assistant finished normally | record the assistant message |
-| `stopReason == "toolUse"` | assistant wants to call a tool | keep the signal, execute nothing |
-| `stopReason == "error"` | provider didn't get valid input | record the error message |
-
-No tool execution here, no session files, no event streams, no terminal UI.
+The model chooses whether to call `read_file`. The harness owns the file read, its safety checks, and the message that carries the result back.
 
 ## Run it first
 
-```sh
-npm run session:s01
+Complete the `.env` setup in the [course guide](../README.md), then run this command from `learn-pi-agent/`:
+
+```bash
+npm run s01
 ```
 
-The output looks like this:
+With no argument, the command opens a prompt loop. A one-shot request is useful when you want to repeat the same observation:
 
-```text
-User: hello
-Assistant [stop]: Received: hello
-User: does this lesson have tools?
-Assistant [toolUse]: I want to call a tool, but this lesson has no tool executor yet.
-Messages: 4
+```bash
+npm run s01 -- "Use read_file to read package.json, then tell me the package name."
 ```
 
-Those four messages are the current state:
-
-```text
-user
-assistant
-user
-assistant
-```
-
-Watch the second turn: `stopReason=toolUse` flowed out of the provider, but no tool got executed. s01 just keeps it in the messages; it won't be wired to a real tool executor until s04.
+The exact answer and wording can change because the model chooses the tool call and final response. Follow the stable path instead: the first model turn requests `read_file`, the harness returns a `toolResult`, and the second model turn answers from that result.
 
 ## How the code works
 
-Four steps.
+### 1. Load a real `pi-ai` model
 
-**Step 1**: create the agent state. In s01 the state is just `messages`.
+`runLiveCli()` calls `loadCourseModel()`. It reads `OPENAI_API_KEY` and builds an OpenAI-compatible `Model<"openai-completions">`. `OPENAI_MODEL` defaults to `gpt-4o-mini`, and `OPENAI_BASE_URL` defaults to the official OpenAI API.
 
-```ts
-export function createInitialState(): AgentState {
-  return { messages: [] };
-}
-```
+### 2. Define one safe tool
 
-**Step 2**: wrap the user input into an `AgentMessage` and append it to the state.
+`readFileTool` is a real `pi-ai` `Tool`. Its TypeBox schema is the public contract the model sees. `createReadFileToolRuntime()` keeps the executable file-reading handler on the harness side.
 
-```ts
-const userMessage = createUserMessage(userInput);
-state.messages.push(userMessage);
-```
+The handler accepts only regular UTF-8 files inside the course root. It rejects empty paths, hidden path segments, paths or symlinks that escape the root, non-files, and files larger than 64 KiB.
 
-**Step 3**: hand the current messages to the provider. The `DemoProvider` here is a fake model, so the course runs reliably without an API key. It fakes toolUse by scanning the input for the word `tool` — with a real provider, the model itself decides whether to call a tool; the string match here just makes the stopReason signal reproducible.
+### 3. Keep the loop state explicit
+
+`AgentState` owns the ordered `Message[]`. `runAgentLoop()` appends the user message before entering the model loop:
 
 ```ts
-const assistantMessage = await provider.complete(state.messages);
-```
-
-**Step 4**: put the assistant message back into the state, and return this turn's result.
-
-```ts
-state.messages.push(assistantMessage);
-return assistantMessage;
-```
-
-Assembled into the full function:
-
-```ts
-export async function runOneTurn(
-  state: AgentState,
-  provider: Provider,
-  userInput: string,
-): Promise<AssistantMessage> {
-  const userMessage = createUserMessage(userInput);
-  state.messages.push(userMessage);
-
-  const assistantMessage = await provider.complete(state.messages);
+for (let turn = 0; turn < maxTurns; turn++) {
+  const assistantMessage = await complete(model, {
+    messages: state.messages,
+    tools: toolRuntime.tools,
+  }, streamOptions);
   state.messages.push(assistantMessage);
 
-  return assistantMessage;
+  const toolCalls = assistantMessage.content.filter(
+    (block) => block.type === "toolCall",
+  );
+  if (toolCalls.length === 0) {
+    return { state, finalMessage: assistantMessage, toolResults };
+  }
+
+  for (const toolCall of toolCalls) {
+    state.messages.push(await toolRuntime.execute(toolCall));
+  }
 }
 ```
 
-Under 10 lines. It's not a full agent loop yet — just the minimal slice of one request. Pi's real loop keeps stacking onto this line: provider event streams, tool execution, hooks, sessions, and runtime modes.
+The real implementation also passes the system prompt, records every tool result, and returns both the final assistant message and the complete state.
+
+### 4. Turn tool failures into model-visible evidence
+
+`executeToolCallSafely()` converts validation and file errors into `ToolResultMessage` values with `isError: true`. The loop can then continue, giving the model a chance to explain the failure or choose another action. Provider `error` and `aborted` stop reasons are surfaced as exceptions, and the default eight-turn limit prevents an unbounded tool loop.
 
 ## Try it yourself
 
-Run it without `--demo` and you get an interactive REPL:
-
-```sh
-node s01_agent_loop/code.ts
-```
-
-Chat for a couple of turns, then type something containing `tool`, and watch `[stop]` turn into `[toolUse]`.
-
-Then change a few things:
-
-1. Add a third trigger to `DemoProvider` — when the input contains `fail`, return `stopReason: "error"`. Re-enter the REPL and confirm all three signals fire.
-2. Add a `console.log(messages.length)` at the top of `provider.complete()` and chat a few more turns. You'll see 1, 3, 5… — the provider sees the full history every turn, not just the last message. That fact is the foundation every later lesson stands on.
-
-When you're done, `npm run test:s01` confirms you haven't broken this lesson's behavior contract.
+1. Ask the model to read `README.md`, then ask it to read `package.json`. Compare the files named in the answer rather than expecting identical wording.
+2. Run `npm run s01 -- "Use read_file to read .env and explain the result."` The tool should reject the hidden path, and the model should receive that failure as a tool result.
+3. Temporarily pass `maxTurns: 1` in `runLiveCli()`, then request a file read. The first tool call can run, but the missing follow-up model turn should produce the explicit maximum-turn error.
 
 ## Wiring into the main line
 
-s01 has no previous lesson to compare against. What it puts down is the foundation every later lesson steps on:
-
-| What this lesson establishes | Who uses it later |
+| Boundary | s01 implementation |
 | --- | --- |
-| `AgentMessage` / `AgentState` | the s04 tool loop, s06 turn state, and the s07 session tree are all extensions of it |
-| the `Provider` interface | s03 turns it into events, s04 starts calling it in a loop |
-| `stopReason` | the s04 tool loop uses it to decide whether the turn continues or ends |
+| Model | `loadCourseModel()` plus `pi-ai` `complete()` |
+| State | `AgentState.messages` |
+| Model-visible tool | `readFileTool` |
+| Local execution | `createReadFileToolRuntime()` |
+| Loop entry | `runAgentLoop()` |
+| Stop | no tool calls, provider failure, or `maxTurns` exhaustion |
+
+s01 deliberately keeps the tool schema and handler in one small runtime object. s02 will separate the model-visible schema from the private handler registry.
 
 ## Against the Pi source
 
-Read [pi-source.md](pi-source.md) after finishing this lesson.
+The implementation uses `@earendil-works/pi-ai` 0.79.1 directly for `Model`, `Message`, `Tool`, `ToolCall`, `ToolResultMessage`, validation, and `complete()`. The surrounding control flow is a teaching-sized version of Pi's agent loop.
 
-The mapping in one sentence: s01's `runOneTurn()` corresponds to the minimal path of `runAgentLoop()` plus `runLoop()` in Pi's `agent-loop.ts`; `AgentState.messages` corresponds to `AgentContext.messages`. Pi's real loop also has the event stream, context transformation, and tool execution — when you hit the provider event stream, feel free to skip ahead to s03; when you hit tool execution, stop, that's s04.
+See [pi-source.md](pi-source.md) for the pinned source mapping.
 
 ## Next up
 
-The core can now run one user/assistant turn, but the assistant still can't reach any real capability. If the model wants to read files, write files, or run commands, it first needs to know which tools exist and what each tool's input looks like.
-
-[s02 Tool Schema](../s02_tool_schema/README.md): Pi doesn't hand local functions straight to the model — it first describes each tool as a schema the provider can read.
+[s02 · Tool Schema](../s02_tool_schema/) moves executable handlers behind a registry while exposing only schemas to the model.
