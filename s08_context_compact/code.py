@@ -32,9 +32,8 @@ Builds on s07 (skill loading). Usage:
     Needs: pip install anthropic python-dotenv pyyaml + ANTHROPIC_API_KEY in .env
 """
 
-import ast, json, os, subprocess, time
+import ast, json, os, subprocess, time, yaml
 from pathlib import Path
-import yaml
 
 try:
     import readline
