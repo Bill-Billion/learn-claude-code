@@ -301,6 +301,25 @@ def scan_unclaimed_tasks() -> list[dict]:
     return unclaimed
 
 
+def format_auto_claim(task: dict) -> str:
+    """Pass the complete task contract to the teammate."""
+    return (
+        "<auto-claimed>\n"
+        + json.dumps(task, ensure_ascii=False, indent=2)
+        + "\n</auto-claimed>"
+    )
+
+
+def _text_block(block) -> str | None:
+    if isinstance(block, dict):
+        if block.get("type") == "text":
+            return str(block.get("text", ""))
+        return None
+    if getattr(block, "type", None) == "text":
+        return str(getattr(block, "text", ""))
+    return None
+
+
 def idle_poll(agent_name: str, messages: list,
               name: str, role: str) -> str:
     """Poll for 60s. Return 'work', 'shutdown', or 'timeout'."""
@@ -333,9 +352,9 @@ def idle_poll(agent_name: str, messages: list,
             task = unclaimed[0]
             result = claim_task(task["id"], agent_name)
             if "Claimed" in result:
+                claimed_task = asdict(load_task(task["id"]))
                 messages.append({"role": "user",
-                    "content": f"<auto-claimed>Task {task['id']}: "
-                               f"{task['subject']}</auto-claimed>"})
+                    "content": format_auto_claim(claimed_task)})
                 print(f"  \033[32m[idle] {name} auto-claimed: "
                       f"{task['subject']}\033[0m")
                 return "work"
@@ -413,6 +432,11 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
              "description": "List all tasks on the board.",
              "input_schema": {"type": "object", "properties": {},
                               "required": []}},
+            {"name": "get_task",
+             "description": "Get the complete task contract by ID.",
+             "input_schema": {"type": "object",
+                              "properties": {"task_id": {"type": "string"}},
+                              "required": ["task_id"]}},
             {"name": "claim_task",
              "description": "Claim a pending task.",
              "input_schema": {"type": "object",
@@ -436,6 +460,9 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         def _run_claim_task(task_id: str):
             return claim_task(task_id, owner=name)
 
+        def _run_get_task(task_id: str):
+            return get_task(task_id)
+
         def _run_complete_task(task_id: str):
             return complete_task(task_id)
 
@@ -445,6 +472,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                                   "Sent")[1],
             "submit_plan": lambda plan: _teammate_submit_plan(name, plan),
             "list_tasks": _run_list_tasks,
+            "get_task": _run_get_task,
             "claim_task": _run_claim_task,
             "complete_task": _run_complete_task,
         }
@@ -509,8 +537,9 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         for msg in reversed(messages):
             if msg["role"] == "assistant" and isinstance(msg["content"], list):
                 for b in msg["content"]:
-                    if getattr(b, "type", None) == "text":
-                        summary = b.text
+                    text = _text_block(b)
+                    if text:
+                        summary = text
                         break
                 else:
                     continue
@@ -798,8 +827,9 @@ if __name__ == "__main__":
         agent_loop(history, context)
         context = update_context(context, history)
         for block in history[-1]["content"]:
-            if getattr(block, "type", None) == "text":
-                print(block.text)
+            text = _text_block(block)
+            if text:
+                print(text)
 
         # Consume lead inbox: route protocol + inject into history
         inbox = consume_lead_inbox(route_protocol=True)

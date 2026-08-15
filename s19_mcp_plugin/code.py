@@ -60,6 +60,15 @@ class Task:
     worktree: str | None = None
 
 
+@dataclass(frozen=True)
+class WorktreeRecord:
+    name: str
+    path: str
+    branch: str
+    base_commit: str
+    task_id: str = ""
+
+
 def _task_path(task_id: str) -> Path:
     return TASKS_DIR / f"{task_id}.json"
 
@@ -143,6 +152,8 @@ def complete_task(task_id: str) -> str:
 
 WORKTREES_DIR = WORKDIR / ".worktrees"
 WORKTREES_DIR.mkdir(exist_ok=True)
+WORKTREE_RECORDS_DIR = WORKTREES_DIR / "records"
+WORKTREE_RECORDS_DIR.mkdir(exist_ok=True)
 
 VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 
@@ -176,16 +187,61 @@ def log_event(event_type: str, worktree_name: str, task_id: str = ""):
         f.write(json.dumps(event) + "\n")
 
 
+def _worktree_record_path(name: str) -> Path:
+    return WORKTREE_RECORDS_DIR / f"{name}.json"
+
+
+def save_worktree_record(record: WorktreeRecord):
+    _worktree_record_path(record.name).write_text(
+        json.dumps(asdict(record), indent=2)
+    )
+
+
+def load_worktree_record(
+    name: str,
+) -> tuple[WorktreeRecord | None, str | None]:
+    path = _worktree_record_path(name)
+    if not path.exists():
+        return None, "creation record is missing"
+    try:
+        record = WorktreeRecord(**json.loads(path.read_text()))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        return None, f"creation record is invalid: {error}"
+    return record, None
+
+
 def create_worktree(name: str, task_id: str = "") -> str:
     err = validate_worktree_name(name)
     if err:
         return f"Error: {err}"
+    if task_id:
+        try:
+            load_task(task_id)
+        except (FileNotFoundError, TypeError, ValueError, json.JSONDecodeError):
+            return f"Error: task {task_id} not found"
     path = WORKTREES_DIR / name
     if path.exists():
         return f"Worktree '{name}' already exists at {path}"
+    ok, base_commit = run_git(["rev-parse", "HEAD"])
+    if not ok:
+        return f"Git error: cannot record base commit: {base_commit}"
+    branch = f"wt/{name}"
     ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
     if not ok:
         return f"Git error: {result}"
+    record = WorktreeRecord(
+        name=name,
+        path=str(path.resolve()),
+        branch=branch,
+        base_commit=base_commit.strip(),
+        task_id=task_id,
+    )
+    try:
+        save_worktree_record(record)
+    except OSError as error:
+        run_git(["worktree", "remove", "--force", str(path)])
+        run_git(["branch", "-D", branch])
+        return f"Error: cannot save worktree record: {error}"
     if task_id:
         bind_task_to_worktree(task_id, name)
     log_event("create", name, task_id)
@@ -199,17 +255,25 @@ def bind_task_to_worktree(task_id: str, worktree_name: str):
     save_task(task)
 
 
-def _count_worktree_changes(path: Path) -> tuple[int, int]:
+def _inspect_worktree_changes(
+    path: Path, base_commit: str
+) -> tuple[bool, int, int, str]:
     try:
         r1 = subprocess.run(["git", "status", "--porcelain"],
                             cwd=path, capture_output=True, text=True, timeout=10)
+        if r1.returncode != 0:
+            return False, 0, 0, (r1.stderr or r1.stdout).strip()
         files = len([l for l in r1.stdout.strip().splitlines() if l.strip()])
-        r2 = subprocess.run(["git", "log", "@{push}..HEAD", "--oneline"],
+        r2 = subprocess.run(
+                            ["git", "rev-list", "--count",
+                             f"{base_commit}..HEAD"],
                             cwd=path, capture_output=True, text=True, timeout=10)
-        commits = len([l for l in r2.stdout.strip().splitlines() if l.strip()])
-        return files, commits
-    except Exception:
-        return -1, -1
+        if r2.returncode != 0:
+            return False, files, 0, (r2.stderr or r2.stdout).strip()
+        commits = int(r2.stdout.strip())
+        return True, files, commits, ""
+    except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+        return False, 0, 0, str(error)
 
 
 def remove_worktree(name: str, discard_changes: bool = False) -> str:
@@ -219,17 +283,43 @@ def remove_worktree(name: str, discard_changes: bool = False) -> str:
     path = WORKTREES_DIR / name
     if not path.exists():
         return f"Worktree '{name}' not found"
+    record, record_error = load_worktree_record(name)
     if not discard_changes:
-        files, commits = _count_worktree_changes(path)
-        if files < 0:
-            return "Cannot verify status. Use discard_changes=true to force."
+        if record_error:
+            return (f"Cannot verify worktree '{name}': {record_error}. "
+                    "Use discard_changes=true to force removal.")
+        if (
+            Path(record.path).resolve() != path.resolve()
+            or record.branch != f"wt/{name}"
+        ):
+            return (f"Cannot verify worktree '{name}': creation record "
+                    "does not match this worktree. "
+                    "Use discard_changes=true to force removal.")
+        verified, files, commits, inspect_error = _inspect_worktree_changes(
+            path, record.base_commit
+        )
+        if not verified:
+            detail = inspect_error or "git status check failed"
+            return (f"Cannot verify worktree '{name}': {detail}. "
+                    "Use discard_changes=true to force removal.")
         if files > 0 or commits > 0:
-            return (f"Worktree '{name}' has {files} file(s), {commits} commit(s). "
+            return (f"Worktree '{name}' has {files} uncommitted file(s) "
+                    f"and {commits} new commit(s) since creation. "
                     "Use discard_changes=true or keep_worktree.")
-    ok1, _ = run_git(["worktree", "remove", str(path), "--force"])
+    branch = record.branch if record else f"wt/{name}"
+    remove_args = ["worktree", "remove"]
+    if discard_changes:
+        remove_args.append("--force")
+    remove_args.append(str(path))
+    ok1, remove_output = run_git(remove_args)
     if not ok1:
-        return f"Failed to remove worktree '{name}'"
-    run_git(["branch", "-D", f"wt/{name}"])
+        return f"Failed to remove worktree '{name}': {remove_output}"
+    branch_flag = "-D" if discard_changes else "-d"
+    branch_ok, branch_output = run_git(["branch", branch_flag, branch])
+    if not branch_ok:
+        return (f"Worktree directory removed, but branch '{branch}' was kept: "
+                f"{branch_output}")
+    _worktree_record_path(name).unlink(missing_ok=True)
     log_event("remove", name)
     print(f"  \033[33m[worktree] removed: {name}\033[0m")
     return f"Worktree '{name}' removed"
@@ -401,8 +491,33 @@ def scan_unclaimed_tasks() -> list[dict]:
     return unclaimed
 
 
+def format_auto_claim(task: dict) -> str:
+    """Pass the complete task contract and resolved work directory."""
+    payload = dict(task)
+    if task.get("worktree"):
+        payload["work_directory"] = str(
+            (WORKTREES_DIR / task["worktree"]).resolve()
+        )
+    return (
+        "<auto-claimed>\n"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        + "\n</auto-claimed>"
+    )
+
+
+def _text_block(block) -> str | None:
+    if isinstance(block, dict):
+        if block.get("type") == "text":
+            return str(block.get("text", ""))
+        return None
+    if getattr(block, "type", None) == "text":
+        return str(getattr(block, "text", ""))
+    return None
+
+
 def idle_poll(agent_name: str, messages: list,
-              name: str, role: str) -> str:
+              name: str, role: str,
+              worktree_context: dict | None = None) -> str:
     for _ in range(IDLE_TIMEOUT // IDLE_POLL_INTERVAL):
         time.sleep(IDLE_POLL_INTERVAL)
         inbox = BUS.read_inbox(agent_name)
@@ -422,12 +537,13 @@ def idle_poll(agent_name: str, messages: list,
             task_data = unclaimed[0]
             result = claim_task(task_data["id"], agent_name)
             if "Claimed" in result:
-                wt_info = ""
-                if task_data.get("worktree"):
-                    wt_info = f"\nWork directory: {WORKTREES_DIR / task_data['worktree']}"
+                claimed_task = asdict(load_task(task_data["id"]))
+                if claimed_task.get("worktree"):
+                    wt_path = WORKTREES_DIR / claimed_task["worktree"]
+                    if worktree_context is not None:
+                        worktree_context["path"] = str(wt_path.resolve())
                 messages.append({"role": "user",
-                    "content": f"<auto-claimed>Task {task_data['id']}: "
-                               f"{task_data['subject']}{wt_info}</auto-claimed>"})
+                    "content": format_auto_claim(claimed_task)})
                 return "work"
     return "timeout"
 
@@ -491,6 +607,9 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                   if task.worktree else None)
             return result
 
+        def _run_get_task(task_id: str):
+            return get_task_json(task_id)
+
         def _run_complete_task(task_id: str):
             result = complete_task(task_id)
             wt_ctx["path"] = None
@@ -526,6 +645,11 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
              "description": "List all tasks.",
              "input_schema": {"type": "object", "properties": {},
                               "required": []}},
+            {"name": "get_task",
+             "description": "Get the complete task contract by ID.",
+             "input_schema": {"type": "object",
+                              "properties": {"task_id": {"type": "string"}},
+                              "required": ["task_id"]}},
             {"name": "claim_task",
              "description": "Claim a pending task.",
              "input_schema": {"type": "object",
@@ -545,6 +669,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                                   "Sent")[1],
             "submit_plan": lambda plan: _teammate_submit_plan(name, plan),
             "list_tasks": _run_list_tasks,
+            "get_task": _run_get_task,
             "claim_task": _run_claim_task,
             "complete_task": _run_complete_task,
         }
@@ -590,7 +715,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 messages.append({"role": "user", "content": results})
             if should_shutdown:
                 break
-            idle_result = idle_poll(name, messages, name, role)
+            idle_result = idle_poll(name, messages, name, role, wt_ctx)
             if idle_result in ("shutdown", "timeout"):
                 break
 
@@ -598,8 +723,9 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         for msg in reversed(messages):
             if msg["role"] == "assistant" and isinstance(msg["content"], list):
                 for b in msg["content"]:
-                    if getattr(b, "type", None) == "text":
-                        summary = b.text
+                    text = _text_block(b)
+                    if text:
+                        summary = text
                         break
                 else:
                     continue
@@ -681,6 +807,7 @@ class MCPClient:
 
 
 mcp_clients: dict[str, MCPClient] = {}
+MCP_TOOL_ANNOTATIONS: dict[str, dict] = {}
 
 _DISALLOWED_CHARS = re.compile(r'[^a-zA-Z0-9_-]')
 
@@ -694,11 +821,15 @@ def _mock_server_docs():
     client = MCPClient("docs")
     client.register(
         tool_defs=[
-            {"name": "search", "description": "Search documentation. (readOnly)",
+            {"name": "search", "description": "Search documentation.",
+             "annotations": {"readOnlyHint": True,
+                             "destructiveHint": False},
              "inputSchema": {"type": "object",
                              "properties": {"query": {"type": "string"}},
                              "required": ["query"]}},
-            {"name": "get_version", "description": "Get API version. (readOnly)",
+            {"name": "get_version", "description": "Get API version.",
+             "annotations": {"readOnlyHint": True,
+                             "destructiveHint": False},
              "inputSchema": {"type": "object", "properties": {},
                              "required": []}},
         ],
@@ -714,11 +845,15 @@ def _mock_server_deploy():
     client.register(
         tool_defs=[
             {"name": "trigger",
-             "description": "Trigger a deployment. (destructive — requires approval in real Claude Code)",
+             "description": "Trigger a deployment.",
+             "annotations": {"readOnlyHint": False,
+                             "destructiveHint": True},
              "inputSchema": {"type": "object",
                              "properties": {"service": {"type": "string"}},
                              "required": ["service"]}},
-            {"name": "status", "description": "Check deployment status. (readOnly)",
+            {"name": "status", "description": "Check deployment status.",
+             "annotations": {"readOnlyHint": True,
+                             "destructiveHint": False},
              "inputSchema": {"type": "object",
                              "properties": {"service": {"type": "string"}},
                              "required": ["service"]}},
@@ -755,6 +890,7 @@ def assemble_tool_pool() -> tuple[list[dict], dict]:
     """Assemble builtin tools + all MCP tools into one pool."""
     tools = list(BUILTIN_TOOLS)
     handlers = dict(BUILTIN_HANDLERS)
+    MCP_TOOL_ANNOTATIONS.clear()
     for server_name, mcp_client in mcp_clients.items():
         safe_server = normalize_mcp_name(server_name)
         for tool_def in mcp_client.tools:
@@ -765,6 +901,9 @@ def assemble_tool_pool() -> tuple[list[dict], dict]:
                 "description": tool_def.get("description", ""),
                 "input_schema": tool_def.get("inputSchema", {}),
             })
+            MCP_TOOL_ANNOTATIONS[prefixed] = dict(
+                tool_def.get("annotations", {})
+            )
             handlers[prefixed] = (
                 lambda *, c=mcp_client, t=tool_def["name"], **kw: c.call_tool(t, kw))
     return tools, handlers
@@ -1011,8 +1150,9 @@ if __name__ == "__main__":
         agent_loop(history, context)
         context = update_context(context, history)
         for block in history[-1]["content"]:
-            if getattr(block, "type", None) == "text":
-                print(block.text)
+            text = _text_block(block)
+            if text:
+                print(text)
 
         inbox = consume_lead_inbox(route_protocol=True)
         if inbox:

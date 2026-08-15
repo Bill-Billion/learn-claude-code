@@ -88,7 +88,9 @@ Harness = Tools + Knowledge + Observation + Action Interfaces + Permissions
 
 なぜこの repository は Claude Code を詳しく分解するのでしょうか。
 
-Claude Code は、私たちが見た中で最も elegant で完全な Agent Harness implementation だからです。巧妙な trick があるからではなく、*しないこと*が理由です。自分自身が Agent になろうとせず、rigid workflow を強制せず、入念な decision tree でモデルの判断を置き換えません。モデルに tools、knowledge、context management、permission boundary を与え、道を空けます。
+Claude Code は、私たちが見た中で最も elegant で完全な Agent Harness implementation だからです。巧妙な trick があるからではなく、*しないこと*が理由です。自分自身が Agent になろうとせず、答えが決まっていない task を predefined process に押し込めたり、decision tree でモデルの判断を置き換えたりしません。モデルに tools、knowledge、context management、permission boundary を与え、実際の結果から次の step を選ばせます。
+
+実行順序がすでに明確で、並列化、検証、繰り返しが必要な場合は、その流れを Workflow に移すこともできます。script は安定した実行を担当し、理解と判断が必要な step は引き続きモデルが担当します。これは process でモデルを置き換えるのではなく、Harness が担う仕事です。
 
 Claude Code を本質まで剥がすと、次のようになります。
 
@@ -202,9 +204,9 @@ loop は変わりません。tools が変わり、knowledge が変わり、permi
 >
 > **s20** &nbsp; *「仕組みは多数、loop は 1 つ」* &mdash; それまでの全 mechanism を 1 つの完全な Harness へ戻す
 >
-> **s21** &nbsp; *「モデルが単一 step を決め、script が orchestration を決める」* &mdash; 1 回の tool_use で決定的な multi-agent flow を background 実行
+> **s21** &nbsp; *「モデルが単一 step を決め、script が orchestration を決める」* &mdash; 安定した multi-agent process を script に移し、background で実行、検証、resume
 >
-> **s22** &nbsp; *「いつ止まるかは goal が決める」* &mdash; モデルの宣言だけでは止まらず、trusted evidence が condition を満たして終了
+> **s22** &nbsp; *「モデルが停止を提案し、独立した evaluator が継続するかを決める」* &mdash; 各 turn の終了後に goal を確認し、未完了なら自動で継続
 
 ---
 
@@ -290,7 +292,7 @@ cp .env.example .env   # .env を編集し、ANTHROPIC_API_KEY を設定
 
 python s01_agent_loop/code.py         # 起点: 1 loop + bash
 python s08_context_compact/code.py    # context compaction（複雑な章）
-python s22_goal_loop/code.py          # 終点章: 全 mechanism を 1 loop へ戻し、goal で閉じる
+python s22_goal_loop/code.py          # 終点章: 独立した evaluator で goal を閉じる
 ```
 
 ### 旧 12 章 Transition Track
@@ -353,7 +355,7 @@ flowchart TD
     %% 3 行目: stage 7
     subgraph Phase3 ["🎯 Stage 7: Orchestration と Goal Closure"]
         direction LR
-        S7["<b>Stage 7: Orchestration と Goal Closure</b><br/>━━━━━━━━━━━━━<br/><b>s21 Workflow Runtime</b><br/>└─ script が一括 orchestration を決定<br/><br/><b>s22 Goal Loop</b><br/>└─ goal が stop 時点を決定"]:::stage1
+        S7["<b>Stage 7: Orchestration と Goal Closure</b><br/>━━━━━━━━━━━━━<br/><b>s21 Workflow Runtime</b><br/>└─ script が一括実行を配置<br/><br/><b>s22 Goal Loop</b><br/>└─ 独立した evaluator が継続を判断"]:::stage1
 
         S6 ==> S7
     end
@@ -389,8 +391,8 @@ flowchart TD
 | [s18](./s18_worktree_isolation/) | Worktree Isolation | `WorktreeRecord` / task-directory binding |
 | [s19](./s19_mcp_plugin/) | MCP Plugin | multiple transports / channel routing / tool-pool assembly |
 | [s20](./s20_comprehensive/) | Comprehensive Agent | 全 mechanism を 1 loop へ戻す |
-| [s21](./s21_workflow_runtime/) | Workflow Runtime | script orchestration / background execution / journal-cached resume |
-| [s22](./s22_goal_loop/) | Goal Loop | goal gate / trusted evidence / automatic continuation |
+| [s21](./s21_workflow_runtime/) | Workflow Runtime | script orchestration / background execution / ordered resume |
+| [s22](./s22_goal_loop/) | Goal Loop | Stop hook / independent evaluator / automatic continuation |
 
 ## Project Structure
 

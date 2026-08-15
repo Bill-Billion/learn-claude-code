@@ -64,7 +64,10 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
 
     def run():
         messages = [{"role": "user", "content": prompt}]
-        for _ in range(10):                          # 教材版: 最大 10 ラウンド
+        status = "max_rounds"
+        rounds = 0
+        for _ in range(MAX_TEAMMATE_ROUNDS):
+            rounds += 1
             inbox = BUS.read_inbox(name)             # 毎ラウンド先に mailbox を確認
             if inbox:
                 messages.append({"role": "user",
@@ -73,13 +76,20 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 model=MODEL, system=system, messages=messages[-20:],   # sliding window
                 tools=sub_tools, max_tokens=8000)
             ...
-        BUS.send(name, "lead", summary, "result")    # 終了前に lead へ要約を送る
+            if response.stop_reason != "tool_use":
+                status = "completed"
+                break
+        report = build_teammate_report(status, messages, rounds)
+        BUS.send(name, "lead", json.dumps(report),
+                 "result" if status == "completed" else "error")
         active_teammates.pop(name, None)             # roster から自分を削除
 
     threading.Thread(target=run, daemon=True).start()
 ```
 
 ツールセットは今回も絞ります。`bash`、`read_file`、`write_file`、`send_message` だけで、`spawn_teammate` は含めません。teammate がさらに人を増やせないようにする、s06 から続く再帰防止の規則です。context 管理には s08 の圧縮パイプラインではなく、`messages[-20:]` の sliding window を使います。teammate は最大 10 ラウンドと短命で、直近 20 メッセージが生涯全体を覆うため、4 段階の整理は割に合いません。
+
+10 ラウンドは実行予算であり、完了の証明ではありません。正常に停止した場合だけ `status="completed"` を返します。上限に達したら `status="max_rounds"`、API が失敗したら `status="error"` とし、どちらも非成功メッセージとして、最後の有効な要約と実行ラウンド数を送ります。Lead は「完了した」と「動作が止まった」を区別できます。
 
 Lead 側には 3 つのツールを追加します。人を呼ぶ `spawn_teammate`、伝言する `send_message`、受信を確認する `check_inbox` です。
 
@@ -117,6 +127,8 @@ while True:
 
 **poller は roster を見てはいけません。** 直感的には「生きている teammate がいる間だけメールを確認する」と書きたくなります。しかし teammate は、最後の要約を送ってから自分を roster から削除し、この 2 操作は atomic ではありません。roster を条件にすると、削除直後に見えるようになった最後のメールが永遠に受信されない可能性があります。そのため poller が信頼するのは mailbox だけです。送信者が roster に残っているかにかかわらず、メールがあれば wake します。
 
+Lead は teammate を起動した後、`check_inbox` を繰り返す必要もありません。system prompt は一度 control を返し、メール到着時の event が次の turn を起こすよう求めます。それでもモデルが空の poll を続ける場合は、1 回の呼び出しに設けた tool round 上限で `agent_loop()` が terminal へ control を返します。
+
 > 実際の Claude Code では teammate は 10 ラウンドで終わらず、仕事を終えると idle loop に入って mailbox の横で待ち、`shutdown_request` を受け取って初めて退場します。mailbox の書込には file lock を使います。チーム固有の hook event、`TeammateIdle` と `TaskCompleted` もあり、外部システムが動作を追加できます。
 
 ---
@@ -129,7 +141,7 @@ while True:
 | 通信 | なし | `MessageBus` file mailbox（`.mailboxes/*.jsonl`） |
 | 新しいツール | — | `spawn_teammate`, `send_message`, `check_inbox`（合計 14） |
 | main program | `input()` による request-response | event loop（ユーザー入力 + wake event） |
-| teammate のライフサイクル | — | 最大 10 ラウンド。終了時に要約を送り、roster から削除 |
+| teammate のライフサイクル | — | 最大 10 ラウンド。completed / max_rounds / error を報告して roster から削除 |
 
 ---
 

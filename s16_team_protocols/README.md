@@ -115,6 +115,8 @@ Lead: review_plan(req_xxx, approve=True)                                     →
 Injected into Bob's conversation: [Plan approved] Proceed with the task.
 ```
 
+The response must also wake a teammate that is already idle. `wait_for_teammate_message()` routes `plan_approval_response`, appends either the approval or rejection to Bob's conversation, and returns to a fresh model turn. Otherwise the approval is correctly recorded in the mailbox but Bob remains asleep beside it.
+
 One `request_id` correlation mechanism and one pending → approved/rejected state machine serve both protocols. To add a third later, such as a resource request, follow the same pattern. That is the payoff of turning an "agreement" into structure.
 
 One boundary must be stated honestly: **this is protocol-level approval, not a code-level gate.** After `submit_plan`, the teammate thread keeps running and can still call tools; "wait for approval before acting" depends on the model's compliance. A hard constraint would intercept unapproved operations in the tool dispatch layer. s03 showed that permission in the conversation layer is not permission at the boundary. This teaching version builds only the conversation layer and leaves the boundary layer open.

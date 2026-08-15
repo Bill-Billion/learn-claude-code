@@ -54,6 +54,72 @@ MODEL = os.environ["MODEL_ID"]
 # ═══════════════════════════════════════════════════════════
 
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
+TEMPORARY_MEMORY_MARKERS = (
+    "this session",
+    "current session",
+    "this turn",
+    "current turn",
+    "this task",
+    "current task",
+    "for now",
+    "just this time",
+    "today only",
+    "本次会话",
+    "当前会话",
+    "这一轮",
+    "当前轮次",
+    "本次任务",
+    "当前任务",
+    "暂时",
+    "今回だけ",
+    "このセッション",
+    "現在のタスク",
+)
+
+
+def _memory_slug(name: str) -> str:
+    return name.lower().replace(" ", "-").replace("/", "-")
+
+
+def _normalized_memory_text(value: str) -> str:
+    return " ".join(value.lower().split())
+
+
+def should_store_memory(candidate: dict, existing: list[dict]) -> bool:
+    """Admit only durable, non-duplicate memory candidates."""
+    if not isinstance(candidate, dict):
+        return False
+    if candidate.get("scope") != "persistent":
+        return False
+    if candidate.get("type") not in MEMORY_TYPES:
+        return False
+
+    name = str(candidate.get("name", "")).strip()
+    description = str(candidate.get("description", "")).strip()
+    body = str(candidate.get("body", "")).strip()
+    if not name or not description or not body:
+        return False
+
+    candidate_text = _normalized_memory_text(
+        f"{name}\n{description}\n{body}"
+    )
+    if any(marker in candidate_text for marker in TEMPORARY_MEMORY_MARKERS):
+        return False
+
+    slug = _memory_slug(name)
+    normalized_description = _normalized_memory_text(description)
+    normalized_body = _normalized_memory_text(body)
+    for memory in existing:
+        if _memory_slug(str(memory.get("name", ""))) == slug:
+            return False
+        if (
+            _normalized_memory_text(str(memory.get("description", "")))
+            == normalized_description
+        ):
+            return False
+        if _normalized_memory_text(str(memory.get("body", ""))) == normalized_body:
+            return False
+    return True
 
 def _parse_frontmatter(text: str) -> tuple[dict, str]:
     if not text.startswith("---"):
@@ -71,7 +137,7 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
 
 def write_memory_file(name: str, mem_type: str, description: str, body: str):
     """Write a single memory file with YAML frontmatter."""
-    slug = name.lower().replace(" ", "-").replace("/", "-")
+    slug = _memory_slug(name)
     filename = f"{slug}.md"
     filepath = MEMORY_DIR / filename
     filepath.write_text(
@@ -243,13 +309,20 @@ def extract_memories(messages: list):
     existing_desc = "\n".join(f"- {m['name']}: {m['description']}" for m in existing) if existing else "(none)"
 
     prompt = (
-        "Extract user preferences, constraints, or project facts from this dialogue.\n"
-        "Return a JSON array. Each item: {name, type, description, body}.\n"
+        "Propose durable user preferences, guidance, project facts, or references "
+        "from this dialogue.\n"
+        "Return a JSON array. Each item: "
+        "{name, type, scope, description, body}.\n"
         "- name: short kebab-case identifier (e.g. 'user-preference-tabs')\n"
         "- type: one of 'user' (user preference), 'feedback' (guidance), "
         "'project' (project fact), 'reference' (external pointer)\n"
+        "- scope: 'persistent' only for information that should apply in future "
+        "sessions; use 'current_task' for one-off commands, temporary paths, "
+        "current-session restrictions, and today's task state\n"
         "- description: one-line summary for index lookup\n"
         "- body: full detail in markdown\n"
+        "Do not propose tool commands or instructions that apply only to this "
+        "turn, task, or session as persistent memory.\n"
         "If nothing new or already covered by existing memories, return [].\n\n"
         f"Existing memories:\n{existing_desc}\n\n"
         f"Dialogue:\n{dialogue[:4000]}"
@@ -269,13 +342,20 @@ def extract_memories(messages: list):
             return
         count = 0
         for mem in items:
-            name = mem.get("name", f"memory_{int(time.time())}")
-            mem_type = mem.get("type", "user")
-            desc = mem.get("description", "")
-            body = mem.get("body", "")
-            if desc and body:
-                write_memory_file(name, mem_type, desc, body)
-                count += 1
+            if not should_store_memory(mem, existing):
+                continue
+            write_memory_file(
+                str(mem["name"]),
+                str(mem["type"]),
+                str(mem["description"]),
+                str(mem["body"]),
+            )
+            existing.append({
+                "name": mem["name"],
+                "description": mem["description"],
+                "body": mem["body"],
+            })
+            count += 1
         if count:
             print(f"\n\033[33m[Memory: extracted {count} new memories]\033[0m")
     except Exception:

@@ -435,6 +435,74 @@ def consume_lead_inbox(route_protocol: bool = True) -> list[dict]:
     return msgs
 
 
+def dispatch_teammate_inbox_message(
+    name: str, msg: dict, messages: list
+) -> str:
+    """Handle one teammate message and return stop, resume, or message."""
+    msg_type = msg.get("type", "message")
+    meta = msg.get("metadata", {})
+    req_id = meta.get("request_id", "")
+
+    if msg_type == "shutdown_request":
+        BUS.send(name, "lead", "Shutting down gracefully.",
+                 "shutdown_response",
+                 {"request_id": req_id, "approve": True})
+        print(f"  \033[35m[protocol] {name} approved shutdown "
+              f"({req_id})\033[0m")
+        return "stop"
+
+    if msg_type == "plan_approval_response":
+        approve = meta.get("approve", False)
+        if approve:
+            messages.append({"role": "user",
+                "content": "[Plan approved] Proceed with the task."})
+        else:
+            messages.append({"role": "user",
+                "content": f"[Plan rejected] Feedback: {msg['content']}"})
+        return "resume"
+
+    return "message"
+
+
+def wait_for_teammate_message(name: str, messages: list) -> str:
+    """Wait in IDLE until a message resumes work or requests shutdown."""
+    while True:
+        time.sleep(1)
+        inbox = BUS.read_inbox(name)
+        if not inbox:
+            continue
+
+        non_protocol = []
+        resume = False
+        for msg in inbox:
+            action = dispatch_teammate_inbox_message(name, msg, messages)
+            if action == "stop":
+                return "stop"
+            if action == "resume":
+                resume = True
+            if action == "message":
+                non_protocol.append(msg)
+
+        if non_protocol:
+            messages.append({
+                "role": "user",
+                "content": "<inbox>" + json.dumps(non_protocol) + "</inbox>",
+            })
+            resume = True
+        if resume:
+            return "resume"
+
+
+def _text_block(block) -> str | None:
+    if isinstance(block, dict):
+        if block.get("type") == "text":
+            return str(block.get("text", ""))
+        return None
+    if getattr(block, "type", None) == "text":
+        return str(getattr(block, "text", ""))
+    return None
+
+
 # ── Teammate Thread (s16: idle loop + dispatch) ──
 
 def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
@@ -447,32 +515,6 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
     system = (f"You are '{name}', a {role}. "
               f"Use tools to complete tasks. "
               f"Check inbox for protocol messages (shutdown_request, etc).")
-
-    def handle_inbox_message(name: str, msg: dict, messages: list) -> bool:
-        """Dispatch incoming protocol messages by type.
-        Returns True if teammate should stop."""
-        msg_type = msg.get("type", "message")
-        meta = msg.get("metadata", {})
-        req_id = meta.get("request_id", "")
-
-        if msg_type == "shutdown_request":
-            BUS.send(name, "lead", "Shutting down gracefully.",
-                     "shutdown_response",
-                     {"request_id": req_id, "approve": True})
-            print(f"  \033[35m[protocol] {name} approved shutdown "
-                  f"({req_id})\033[0m")
-            return True  # stop the loop
-
-        if msg_type == "plan_approval_response":
-            approve = meta.get("approve", False)
-            if approve:
-                messages.append({"role": "user",
-                    "content": f"[Plan approved] Proceed with the task."})
-            else:
-                messages.append({"role": "user",
-                    "content": f"[Plan rejected] Feedback: {msg['content']}"})
-
-        return False  # continue
 
     def run():
         messages = [{"role": "user", "content": prompt}]
@@ -516,11 +558,13 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             should_stop = False
             non_protocol = []
             for msg in inbox:
-                if msg.get("type") in ("shutdown_request", "plan_approval_response"):
-                    should_stop = handle_inbox_message(name, msg, messages)
-                    if should_stop:
-                        break
-                else:
+                action = dispatch_teammate_inbox_message(
+                    name, msg, messages
+                )
+                if action == "stop":
+                    should_stop = True
+                    break
+                if action == "message":
                     non_protocol.append(msg)
             if should_stop:
                 shutdown_requested = True
@@ -542,26 +586,11 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             if response.stop_reason != "tool_use":
                 # Idle: wait for inbox messages instead of exiting
                 # Real Claude Code sends idle_notification to Lead here
-                while not shutdown_requested:
-                    time.sleep(1)
-                    inbox = BUS.read_inbox(name)
-                    if not inbox:
-                        continue
-                    for msg in inbox:
-                        if msg.get("type") in ("shutdown_request", "plan_approval_response"):
-                            should_stop = handle_inbox_message(name, msg, messages)
-                            if should_stop:
-                                shutdown_requested = True
-                                break
-                        else:
-                            non_protocol.append(msg)
-                    if shutdown_requested:
-                        break
-                    if non_protocol:
-                        inbox_json = json.dumps(non_protocol)
-                        messages.append({"role": "user",
-                            "content": "<inbox>" + inbox_json + "</inbox>"})
-                        break  # back to LLM turn with new messages
+                idle_action = wait_for_teammate_message(name, messages)
+                if idle_action == "stop":
+                    shutdown_requested = True
+                    break
+                continue
 
             # Execute tool calls
             results = []
@@ -579,8 +608,9 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         for msg in reversed(messages):
             if msg["role"] == "assistant" and isinstance(msg["content"], list):
                 for b in msg["content"]:
-                    if getattr(b, "type", None) == "text":
-                        summary = b.text
+                    text = _text_block(b)
+                    if text:
+                        summary = text
                         break
                 else:
                     continue
@@ -866,8 +896,9 @@ if __name__ == "__main__":
         agent_loop(history, context)
         context = update_context(context, history)
         for block in history[-1]["content"]:
-            if getattr(block, "type", None) == "text":
-                print(block.text)
+            text = _text_block(block)
+            if text:
+                print(text)
 
         # Check inbox → route protocol + inject into history
         inbox_msgs = consume_lead_inbox(route_protocol=True)

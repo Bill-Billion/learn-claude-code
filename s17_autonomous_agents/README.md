@@ -78,6 +78,8 @@ def scan_unclaimed_tasks() -> list[dict]:
 
 What happens when two teammates patrol at the same moment and see the same task? The answer is in the return-value check around `claim_task`. The ownership validation written in s12 now matters: the first writer changes the state to `in_progress`; the later call receives `"Task xxx is in_progress, cannot claim"`. A teammate therefore must verify the result after claiming. Only `"Claimed" in result` means success. A loser logs `[idle] claim failed`, continues patrolling, and looks for other work on the next pass.
 
+After a successful claim, the harness reloads the task and injects the complete JSON inside `<auto-claimed>`. The subject alone is not a work contract: the teammate also needs the description, dependencies, owner, and current status to know what to produce and when it is allowed to begin. `get_task` exposes the same record when it needs to inspect the contract again later.
+
 The honest boundary is unchanged: the teaching version has no file lock, so a window remains in which two threads read `pending` in the same millisecond and both write. The real system re-reads and validates inside a file lock, as discussed in s12. The teaching version accepts that small race to keep the "optimistic claim + retry on failure" pattern directly visible.
 
 ---

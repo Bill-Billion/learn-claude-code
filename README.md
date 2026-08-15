@@ -88,7 +88,9 @@ You are not writing intelligence. You are building the world that intelligence i
 
 Why does this repository specifically dissect Claude Code?
 
-Because Claude Code is the most elegant and complete agent-harness implementation we have seen. Not because of any clever trick, but because of what it *does not* do. It does not try to be the agent. It does not impose rigid workflows. It does not replace the model's judgment with carefully crafted decision trees. It gives the model tools, knowledge, context management, and permission boundaries, then gets out of the way.
+Because Claude Code is the most elegant and complete agent-harness implementation we have seen. Not because of any clever trick, but because of what it *does not* do. It does not try to be the agent, and it does not force open-ended work through a predefined process or replace the model's judgment with a decision tree. It gives the model tools, knowledge, context management, and permission boundaries, then lets the model choose the next step from actual results.
+
+When the execution order is already clear and the work needs parallelism, verification, or repetition, Claude Code can also move that arrangement into a Workflow. The script provides stable execution while models still handle the steps that require understanding and judgment. That is still harness work, not a process replacing the model.
 
 Strip Claude Code to its essentials:
 
@@ -202,9 +204,9 @@ Fill the workshop first. Then the farms, hospitals, and factories. Then cities. 
 >
 > **s20** &nbsp; *"Many mechanisms, one loop"* &mdash; bring every previous mechanism back into one complete harness
 >
-> **s21** &nbsp; *"The model decides each step; the script decides the orchestration"* &mdash; one tool_use runs a deterministic multi-agent flow in the background
+> **s21** &nbsp; *"The model decides each step; the script decides the orchestration"* &mdash; move a stable multi-agent process into a background script that can verify and resume
 >
-> **s22** &nbsp; *"The goal decides when to stop"* &mdash; the model cannot stop on its word alone; trusted evidence must satisfy the condition
+> **s22** &nbsp; *"The model proposes a stop; an independent evaluator decides whether to continue"* &mdash; check the goal after every turn and continue automatically when work remains
 
 ---
 
@@ -290,7 +292,7 @@ cp .env.example .env   # Edit .env and add your ANTHROPIC_API_KEY
 
 python s01_agent_loop/code.py         # Starting point: one loop + bash
 python s08_context_compact/code.py    # Context compaction (a complex chapter)
-python s22_goal_loop/code.py          # Final chapter: every mechanism in one loop, closed by a goal
+python s22_goal_loop/code.py          # Final chapter: close the goal with an independent evaluator
 ```
 
 ### Legacy 12-Lesson Transition Track
@@ -353,7 +355,7 @@ flowchart TD
     %% Third row: stage 7
     subgraph Phase3 ["🎯 Stage 7: Orchestration and Goal Closure"]
         direction LR
-        S7["<b>Stage 7: Orchestration and Goal Closure</b><br/>━━━━━━━━━━━━━<br/><b>s21 Workflow Runtime</b><br/>└─ scripts decide bulk orchestration<br/><br/><b>s22 Goal Loop</b><br/>└─ goals decide when to stop"]:::stage1
+        S7["<b>Stage 7: Orchestration and Goal Closure</b><br/>━━━━━━━━━━━━━<br/><b>s21 Workflow Runtime</b><br/>└─ scripts arrange batch execution<br/><br/><b>s22 Goal Loop</b><br/>└─ an independent evaluator decides whether to continue"]:::stage1
 
         S6 ==> S7
     end
@@ -389,8 +391,8 @@ flowchart TD
 | [s18](./s18_worktree_isolation/) | Worktree Isolation | `WorktreeRecord` / task-directory binding |
 | [s19](./s19_mcp_plugin/) | MCP Plugin | multiple transports / channel routing / tool-pool assembly |
 | [s20](./s20_comprehensive/) | Comprehensive Agent | every mechanism returned to one loop |
-| [s21](./s21_workflow_runtime/) | Workflow Runtime | script orchestration / background execution / journal-cached resume |
-| [s22](./s22_goal_loop/) | Goal Loop | goal gate / trusted evidence / automatic continuation |
+| [s21](./s21_workflow_runtime/) | Workflow Runtime | script orchestration / background execution / ordered resume |
+| [s22](./s22_goal_loop/) | Goal Loop | Stop hook / independent evaluator / automatic continuation |
 
 ## Project Structure
 

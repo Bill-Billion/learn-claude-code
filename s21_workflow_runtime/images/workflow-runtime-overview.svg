@@ -1,120 +1,93 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 580" font-family="system-ui, -apple-system, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" font-family="system-ui, -apple-system, sans-serif">
   <defs>
-    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#16a34a"/>
     </marker>
-    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="#888888"/>
+    <marker id="arrow-gray" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#737373"/>
     </marker>
   </defs>
 
-  <!-- Background -->
-  <rect width="960" height="580" rx="8" fill="#ffffff"/>
+  <rect width="960" height="520" rx="8" fill="#ffffff"/>
+  <text x="480" y="31" text-anchor="middle" fill="#171717" font-size="19" font-weight="700">Workflow Runtime</text>
+  <text x="480" y="52" text-anchor="middle" fill="#737373" font-size="12">one tool call starts a background task; the script arranges complete agent loops</text>
 
-  <!-- Title -->
-  <text x="480" y="30" text-anchor="middle" fill="#1a1a1a" font-size="19" font-weight="700">Workflow Runtime — one tool_use launches a background orchestration</text>
-  <text x="480" y="50" text-anchor="middle" fill="#888888" font-size="12">the main loop calls Workflow like any tool; a deterministic runtime fans out subagents in the background and can resume</text>
+  <rect x="24" y="76" width="912" height="132" rx="8" fill="#ffffff" stroke="#d4d4d4" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="44" y="98" fill="#171717" font-size="13" font-weight="700">Main session</text>
 
-  <!-- ===== Lane 1: Main session loop (canonical agent loop) ===== -->
-  <rect x="20" y="66" width="920" height="160" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="40" y="86" fill="#1a1a1a" font-size="13" font-weight="700">Main session loop</text>
+  <rect x="48" y="123" width="126" height="52" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="111" y="145" text-anchor="middle" fill="#171717" font-size="12" font-weight="700" font-family="monospace">messages[]</text>
+  <text x="111" y="162" text-anchor="middle" fill="#737373" font-size="9">conversation</text>
 
-  <!-- loop-back over the top: back into messages[] -->
-  <path d="M 828 130 L 828 102 L 99 102 L 99 130" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
-  <text x="463" y="97" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">append tool_result / notification -&gt; messages[]  (loop continues)</text>
-  <circle cx="828" cy="130" r="3" fill="#22c55e"/>
-  <circle cx="99" cy="130" r="3" fill="#22c55e"/>
+  <line x1="174" y1="149" x2="214" y2="149" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="216" y="123" width="96" height="52" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="264" y="145" text-anchor="middle" fill="#171717" font-size="12" font-weight="700">LLM</text>
+  <text x="264" y="162" text-anchor="middle" fill="#737373" font-size="9">chooses tool</text>
 
-  <!-- messages[] -->
-  <rect x="40" y="130" width="118" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="99" y="152" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700" font-family="monospace">messages[]</text>
-  <text x="99" y="169" text-anchor="middle" fill="#888888" font-size="9">message history</text>
-  <line x1="158" y1="156" x2="176" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <line x1="312" y1="149" x2="352" y2="149" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="354" y="123" width="178" height="52" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="443" y="145" text-anchor="middle" fill="#171717" font-size="11" font-weight="700" font-family="monospace">Workflow(...)</text>
+  <text x="443" y="162" text-anchor="middle" fill="#737373" font-size="9">register background task</text>
 
-  <!-- LLM -->
-  <rect x="178" y="130" width="86" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
-  <text x="221" y="152" text-anchor="middle" fill="#1a1a1a" font-size="13" font-weight="700">LLM</text>
-  <text x="221" y="169" text-anchor="middle" fill="#888888" font-size="9">tool_use?</text>
-  <line x1="264" y1="156" x2="282" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <line x1="532" y1="149" x2="572" y2="149" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="574" y="123" width="146" height="52" rx="6" fill="#f5f5f5" stroke="#a3a3a3" stroke-width="1.5"/>
+  <text x="647" y="145" text-anchor="middle" fill="#171717" font-size="11" font-weight="700" font-family="monospace">async_launched</text>
+  <text x="647" y="162" text-anchor="middle" fill="#737373" font-size="9">returns immediately</text>
 
-  <!-- Workflow tool_use -->
-  <rect x="284" y="130" width="196" height="52" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
-  <text x="382" y="151" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700" font-family="monospace">Workflow({script, args})</text>
-  <text x="382" y="169" text-anchor="middle" fill="#888888" font-size="8.5" font-family="monospace">(or name | scriptPath) · resumeFromRunId</text>
-  <line x1="480" y1="156" x2="518" y2="156" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <line x1="720" y1="149" x2="772" y2="149" stroke="#737373" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrow-gray)"/>
+  <text x="746" y="140" text-anchor="middle" fill="#737373" font-size="8.5">later</text>
+  <rect x="774" y="123" width="138" height="52" rx="6" fill="#f5f5f5" stroke="#a3a3a3" stroke-width="1.5"/>
+  <text x="843" y="145" text-anchor="middle" fill="#171717" font-size="11" font-weight="700">task_notification</text>
+  <text x="843" y="162" text-anchor="middle" fill="#737373" font-size="9">result returns</text>
 
-  <!-- tool_result -->
-  <rect x="520" y="130" width="156" height="52" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
-  <text x="598" y="151" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">tool_result</text>
-  <text x="598" y="169" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">async_launched</text>
+  <path d="M843 123V108H111V123" fill="none" stroke="#737373" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arrow-gray)"/>
 
-  <!-- later (dashed gap) -->
-  <line x1="676" y1="156" x2="734" y2="156" stroke="#888888" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-gray)"/>
-  <text x="705" y="148" text-anchor="middle" fill="#888888" font-size="8">later</text>
+  <rect x="24" y="244" width="912" height="228" rx="8" fill="#ffffff" stroke="#d4d4d4" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="44" y="267" fill="#171717" font-size="13" font-weight="700">Background workflow task</text>
 
-  <!-- task_notification -->
-  <rect x="738" y="130" width="180" height="52" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="828" y="151" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">task_notification</text>
-  <text x="828" y="169" text-anchor="middle" fill="#888888" font-size="9">completed · final report</text>
+  <rect x="44" y="303" width="130" height="64" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="109" y="327" text-anchor="middle" fill="#171717" font-size="11" font-weight="700">Workflow script</text>
+  <text x="109" y="345" text-anchor="middle" fill="#737373" font-size="9">conditions · loops</text>
+  <text x="109" y="359" text-anchor="middle" fill="#737373" font-size="9">variables · phases</text>
 
-  <!-- ===== Lane 2: Background workflow runtime ===== -->
-  <rect x="20" y="270" width="920" height="244" rx="8" fill="#ffffff" stroke="#d0d0d0" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="40" y="290" fill="#1a1a1a" font-size="13" font-weight="700">Background workflow runtime — local_workflow</text>
+  <line x1="174" y1="335" x2="208" y2="335" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="191" y="326" text-anchor="middle" fill="#16a34a" font-size="9">parallel</text>
 
-  <!-- spine: WorkflowTool.call -> LocalWorkflowTask -> Script VM -->
-  <rect x="44" y="316" width="158" height="66" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
-  <text x="123" y="338" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700" font-family="monospace">WorkflowTool.call</text>
-  <text x="123" y="355" text-anchor="middle" fill="#888888" font-size="9">validate meta · permission</text>
-  <text x="123" y="370" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">runId · taskId</text>
-  <line x1="202" y1="349" x2="220" y2="349" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="210" y="290" width="140" height="54" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="280" y="312" text-anchor="middle" fill="#171717" font-size="11" font-weight="700">Audit agent loop</text>
+  <text x="280" y="329" text-anchor="middle" fill="#737373" font-size="9">correctness</text>
 
-  <rect x="222" y="316" width="158" height="66" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
-  <text x="301" y="338" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">LocalWorkflowTask</text>
-  <text x="301" y="355" text-anchor="middle" fill="#888888" font-size="9">status · usage</text>
-  <text x="301" y="370" text-anchor="middle" fill="#888888" font-size="9">progress events</text>
-  <line x1="380" y1="349" x2="398" y2="349" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="210" y="356" width="140" height="54" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="280" y="378" text-anchor="middle" fill="#171717" font-size="11" font-weight="700">Audit agent loop</text>
+  <text x="280" y="395" text-anchor="middle" fill="#737373" font-size="9">maintainability</text>
 
-  <rect x="400" y="316" width="200" height="66" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="500" y="338" text-anchor="middle" fill="#1a1a1a" font-size="12" font-weight="700">Script VM — runs the script</text>
-  <text x="500" y="356" text-anchor="middle" fill="#888888" font-size="9.5" font-family="monospace">phase · agent()</text>
-  <text x="500" y="371" text-anchor="middle" fill="#888888" font-size="9.5" font-family="monospace">parallel · pipeline</text>
+  <line x1="350" y1="317" x2="388" y2="341" stroke="#16a34a" stroke-width="1.8" marker-end="url(#arrow-green)"/>
+  <line x1="350" y1="383" x2="388" y2="359" stroke="#16a34a" stroke-width="1.8" marker-end="url(#arrow-green)"/>
 
-  <!-- agent() cycle: VM -> Subagents -> Journal -> (resume) -> VM -->
-  <!-- Subagents (× N, fan-out: stacked) -->
-  <rect x="666" y="308" width="170" height="58" rx="6" fill="#f3f4f6" stroke="#d0d0d0" stroke-width="1.2"/>
-  <rect x="662" y="312" width="170" height="58" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
-  <text x="747" y="334" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">Subagents × N</text>
-  <text x="747" y="350" text-anchor="middle" fill="#888888" font-size="9">isolated ctx</text>
-  <text x="747" y="363" text-anchor="middle" fill="#888888" font-size="9">schema output</text>
+  <rect x="390" y="318" width="150" height="64" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="465" y="342" text-anchor="middle" fill="#171717" font-size="11" font-weight="700">Consolidate agent</text>
+  <text x="465" y="360" text-anchor="middle" fill="#737373" font-size="9">group same root cause</text>
+  <text x="465" y="374" text-anchor="middle" fill="#737373" font-size="9">source IDs exactly once</text>
 
-  <!-- Journal -->
-  <rect x="662" y="420" width="170" height="58" rx="6" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
-  <text x="747" y="442" text-anchor="middle" fill="#1a1a1a" font-size="11" font-weight="700">Journal</text>
-  <text x="747" y="458" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">started / result</text>
-  <text x="747" y="471" text-anchor="middle" fill="#888888" font-size="9" font-family="monospace">per agent()</text>
+  <line x1="540" y1="350" x2="578" y2="350" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="580" y="318" width="142" height="64" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="651" y="342" text-anchor="middle" fill="#171717" font-size="11" font-weight="700">Verification pipeline</text>
+  <text x="651" y="360" text-anchor="middle" fill="#737373" font-size="9">one verifier per group</text>
+  <text x="651" y="374" text-anchor="middle" fill="#737373" font-size="9">failures stay explicit</text>
 
-  <!-- VM -> Subagents: agent() spawns -->
-  <line x1="600" y1="341" x2="660" y2="341" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
-  <text x="630" y="333" text-anchor="middle" fill="#22c55e" font-size="9" font-weight="600">agent()</text>
-  <text x="630" y="356" text-anchor="middle" fill="#888888" font-size="8">spawns</text>
+  <line x1="722" y1="350" x2="760" y2="350" stroke="#16a34a" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <rect x="762" y="318" width="142" height="64" rx="6" fill="#ffffff" stroke="#171717" stroke-width="1.5"/>
+  <text x="833" y="342" text-anchor="middle" fill="#171717" font-size="11" font-weight="700">Final report</text>
+  <text x="833" y="360" text-anchor="middle" fill="#737373" font-size="9">rank confirmed issues</text>
+  <text x="833" y="374" text-anchor="middle" fill="#737373" font-size="9">confirmed · incomplete</text>
 
-  <!-- Subagents -> Journal: record -->
-  <line x1="747" y1="370" x2="747" y2="418" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)"/>
-  <text x="757" y="398" fill="#22c55e" font-size="9" font-weight="600">record</text>
+  <rect x="762" y="406" width="142" height="40" rx="6" fill="#f5f5f5" stroke="#a3a3a3" stroke-width="1.5"/>
+  <text x="833" y="424" text-anchor="middle" fill="#171717" font-size="10.5" font-weight="700">Journal</text>
+  <text x="833" y="439" text-anchor="middle" fill="#737373" font-size="8.5">resume in agent start order</text>
+  <path d="M762 426H651V382" fill="none" stroke="#737373" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arrow-gray)"/>
 
-  <!-- Journal -> Script VM: resume cached -->
-  <path d="M 662 449 L 500 449 L 500 382" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-gray)"/>
-  <text x="556" y="443" text-anchor="middle" fill="#888888" font-size="9" font-weight="600">resumeFromRunId -&gt; cached agent()</text>
+  <path d="M443 175V224H109V303" fill="none" stroke="#16a34a" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrow-green)"/>
+  <path d="M904 350H920V208H843V175" fill="none" stroke="#737373" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrow-gray)"/>
 
-  <!-- ===== Cross arrows between lanes ===== -->
-  <!-- launch (outer Workflow tool_use -> inner runtime), left side -->
-  <path d="M 382 182 L 382 248 L 123 248 L 123 316" fill="none" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-green)"/>
-  <text x="152" y="242" fill="#22c55e" font-size="9" font-weight="600">launch (async)</text>
-
-  <!-- progress / notification (inner task -> outer notification), routed just below launch -->
-  <path d="M 301 316 L 301 256 L 828 256 L 828 182" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-gray)"/>
-  <text x="600" y="250" text-anchor="middle" fill="#888888" font-size="9" font-weight="600">task_progress: workflow_phase · workflow_agent · workflow_log</text>
-
-  <!-- ===== Bottom note ===== -->
-  <text x="480" y="548" text-anchor="middle" fill="#888888" font-size="10">The runtime result stays on the task (scriptPath · transcripts · journal · output) — only the launch + final notification re-enter messages[].</text>
+  <text x="480" y="500" text-anchor="middle" fill="#737373" font-size="10">The model handles judgment inside each agent; the script handles launch, waiting, data flow, and completion.</text>
 </svg>

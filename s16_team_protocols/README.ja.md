@@ -115,6 +115,8 @@ Lead: review_plan(req_xxx, approve=True)                                        
 Bob の会話へ注入: [Plan approved] Proceed with the task.
 ```
 
+すでに idle に入った teammate を response で起こすことも必要です。`wait_for_teammate_message()` は `plan_approval_response` を route し、承認または却下を Bob の会話へ追加して、新しい model turn へ戻ります。この経路がないと、承認は mailbox に正しく届いても、Bob はその横で待ち続けます。
+
 1 つの `request_id` による対応付けと、1 つの pending → approved/rejected 状態機械で、2 種類の protocol を扱えます。将来、資源申請のような 3 種類目を加えるときも同じ形を使えます。「取り決め」を構造にした見返りです。
 
 境界も正直に説明する必要があります。**これは protocol レベルの承認であり、コードレベルの gate ではありません。** `submit_plan` の後も teammate thread は動き続け、ツールも呼べます。「承認まで待つ」はモデルの自制に依存しています。強制するには、tool dispatch 層で未承認の操作を止める必要があります。s03 で見たように、会話層の許可は境界層の許可ではありません。この教材版は会話層だけを構築し、境界層を空けています。

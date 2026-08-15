@@ -88,7 +88,9 @@ Harness = Tools + Knowledge + Observation + Action Interfaces + Permissions
 
 为什么这个仓库专门拆解 Claude Code？
 
-因为 Claude Code 是我们所见过的最优雅、最完整的 agent harness 实现。不是因为某个巧妙的技巧，而是因为它 *没做* 的事：它没有试图成为 agent 本身。它没有强加僵化的工作流。它没有用精心设计的决策树去替模型做判断。它给模型提供了工具、知识、上下文管理和权限边界 -- 然后让开了。
+因为 Claude Code 是我们所见过的最优雅、最完整的 agent harness 实现。不是因为某个巧妙的技巧，而是因为它 *没做* 的事：它没有试图成为 agent 本身，也没有把开放任务塞进预设流程，用决策树替模型做判断。它给模型提供工具、知识、上下文管理和权限边界，然后让模型根据实际结果决定下一步。
+
+当执行顺序已经明确，而且一项工作需要并行、验证或重复运行时，Claude Code 也允许把这部分安排写进 Workflow。脚本负责稳定执行，模型仍然负责其中需要理解和判断的步骤。这仍然是 Harness，而不是用流程代替模型。
 
 把 Claude Code 剥到本质来看：
 
@@ -202,9 +204,9 @@ Claude Code = 一个 agent loop
 >
 > **s20** &nbsp; *"机制很多，循环一个"* &mdash; 前面所有机制回到一个完整 harness
 >
-> **s21** &nbsp; *"模型决定单步，脚本决定编排"* &mdash; 一次 tool_use 后台跑完一整套确定的多 agent 流程
+> **s21** &nbsp; *"模型决定单步，脚本决定编排"* &mdash; 把稳定的多 agent 流程写进脚本，在后台执行、验证并恢复
 >
-> **s22** &nbsp; *"什么时候停，目标说了算"* &mdash; 不是模型说停就停，可信证据满足条件才结束
+> **s22** &nbsp; *"模型提出停止，独立判断器决定是否继续"* &mdash; 每轮结束后检查目标，没有完成就自动继续
 
 ---
 
@@ -291,7 +293,7 @@ cp .env.example .env   # 编辑 .env 填入你的 ANTHROPIC_API_KEY
 
 python s01_agent_loop/code.py        # 起点 — 一个循环 + bash
 python s08_context_compact/code.py    # 上下文压缩（复杂章）
-python s22_goal_loop/code.py         # 终点章: 全部机制归到一个循环，目标闭环
+python s22_goal_loop/code.py         # 终点章: 用独立判断器完成目标闭环
 ```
 
 ### 旧版 12 章过渡线
@@ -354,7 +356,7 @@ flowchart TD
     %% 第三层：7阶段
     subgraph Phase3 ["🎯 阶段 7：编排与目标闭环"]
         direction LR
-        S7["<b>第七阶段：编排与目标闭环</b><br/>━━━━━━━━━━━━━<br/><b>s21 Workflow Runtime</b><br/>└─ 脚本决定批量编排<br/><br/><b>s22 Goal Loop</b><br/>└─ 目标决定何时停止"]:::stage1
+        S7["<b>第七阶段：编排与目标闭环</b><br/>━━━━━━━━━━━━━<br/><b>s21 Workflow Runtime</b><br/>└─ 脚本安排批量执行<br/><br/><b>s22 Goal Loop</b><br/>└─ 独立判断器决定是否继续"]:::stage1
 
         S6 ==> S7
     end
@@ -390,8 +392,8 @@ flowchart TD
 | [s18](./s18_worktree_isolation/) | Worktree Isolation | `WorktreeRecord` / 任务-目录绑定 |
 | [s19](./s19_mcp_plugin/) | MCP Plugin | 多传输 / 通道路由 / 工具池组装 |
 | [s20](./s20_comprehensive/) | Comprehensive Agent | 全部机制归到一个循环 |
-| [s21](./s21_workflow_runtime/) | Workflow Runtime | 脚本编排 / 后台运行 / journal 缓存续跑 |
-| [s22](./s22_goal_loop/) | Goal Loop | 目标闸门 / 可信证据 / 自动续轮 |
+| [s21](./s21_workflow_runtime/) | Workflow Runtime | 脚本编排 / 后台运行 / 有序恢复 |
+| [s22](./s22_goal_loop/) | Goal Loop | Stop hook / 独立判断器 / 自动续轮 |
 
 ## 项目结构
 

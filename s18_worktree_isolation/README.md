@@ -26,6 +26,8 @@ The first instinct is to add locks. Lock the entire repository? Concurrency coll
 
 Take another angle: git solved this problem twenty years ago. Give each person a working copy, let them make changes independently, and merge at the end. `git worktree` is a much lighter version of clone: one repository grows several working directories, each attached to a branch, while all share the same `.git` history.
 
+The worktree mechanism belongs to Git, not to the Agent Harness. The harness decides when to create one, binds it to a task, switches a teammate's working directory, records the creation point, and refuses unsafe cleanup. This chapter teaches that lifecycle around Git rather than reimplementing isolation.
+
 The chapter's design fits in one sentence: **isolation comes from copies, not locks.**
 
 ---
@@ -35,14 +37,28 @@ The chapter's design fits in one sentence: **isolation comes from copies, not lo
 ```python
 VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 
+@dataclass(frozen=True)
+class WorktreeRecord:
+    name: str
+    path: str
+    branch: str
+    base_commit: str
+    task_id: str = ""
+
 def create_worktree(name: str, task_id: str = "") -> str:
     err = validate_worktree_name(name)      # Reject invalid names immediately
     if err:
         return f"Error: {err}"
+    ok, base_commit = run_git(["rev-parse", "HEAD"])
+    if not ok:
+        return f"Git error: cannot record base commit: {base_commit}"
     path = WORKTREES_DIR / name             # .worktrees/<name>
-    ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
+    branch = f"wt/{name}"
+    ok, result = run_git(["worktree", "add", str(path), "-b", branch, "HEAD"])
     if not ok:
         return f"Git error: {result}"
+    save_worktree_record(WorktreeRecord(
+        name, str(path.resolve()), branch, base_commit.strip(), task_id))
     if task_id:
         bind_task_to_worktree(task_id, name)
     log_event("create", name, task_id)      # Audit log: record successful events only
@@ -51,6 +67,8 @@ def create_worktree(name: str, task_id: str = "") -> str:
 Name validation is an old friend making its third appearance. s02's `safe_path` guarded file paths, s07's registry guarded skill names, and this regular expression guards workspace names. If a name such as `../../etc` is concatenated into a path, the worktree is created outside the workspace. Whenever a model-provided string becomes part of a path, it must pass inspection first. That rule does not change from chapter to chapter.
 
 The position of `log_event` also matters: it comes after `run_git` succeeds. If logging happened before execution, a failed operation would leave behind a "successful" audit record, turning the log from evidence into a lie.
+
+`WorktreeRecord` is different from the audit log. It stores the exact branch, path, and `base_commit` needed to prove what changed later. If that record is missing or does not match the directory, normal cleanup fails closed rather than guessing.
 
 ---
 
@@ -75,20 +93,32 @@ When a workspace is no longer needed, one question must be answered before disma
 
 ```python
 def remove_worktree(name: str, discard_changes: bool = False) -> str:
-    ...
+    path = WORKTREES_DIR / name
+    record, record_error = load_worktree_record(name)
     if not discard_changes:
-        files, commits = _count_worktree_changes(path)   # Count uncommitted files and unpushed commits
+        if record_error:
+            return f"Cannot verify worktree: {record_error}"
+        verified, files, commits, detail = _inspect_worktree_changes(
+            path, record.base_commit)
+        if not verified:
+            return f"Cannot verify worktree: {detail}"
         if files > 0 or commits > 0:
             return (f"Worktree '{name}' has {files} uncommitted file(s) "
-                    f"and {commits} unpushed commit(s). "
+                    f"and {commits} new commit(s) since creation. "
                     "Use discard_changes=true to force removal, "
                     "or keep_worktree to preserve for review.")
-    ok1, _ = run_git(["worktree", "remove", str(path), "--force"])
-    run_git(["branch", "-D", f"wt/{name}"])
+    branch = record.branch if record else f"wt/{name}"
+    remove_args = ["worktree", "remove"]
+    if discard_changes:
+        remove_args.append("--force")
+    run_git([*remove_args, str(path)])
+    run_git(["branch", "-D" if discard_changes else "-d", branch])
     log_event("remove", name)
 ```
 
-By default, the harness refuses to delete a changed worktree. This is the same instinct as "persist before summarizing" in s08 and "obtain the new inventory before deleting the old file" in s09, now appearing for a third time: **before destruction, verify that no orphaned data remains.** Imagine the reverse. A teammate has committed but not merged; the lead casually says "clean up the workspace"; `branch -D` runs, and hours of work vanish while the log contains one tidy `remove` entry.
+By default, the harness refuses to delete a changed worktree. Uncommitted files come from `git status`; new commits come from `git rev-list base_commit..HEAD`. The check does not depend on an upstream branch, because a fresh worktree often has none. A missing record, a failed Git command, or an unreadable commit count is also a refusal, not an assumed zero.
+
+This is the same instinct as "persist before summarizing" in s08 and "obtain the new inventory before deleting the old file" in s09, now appearing for a third time: **before destruction, verify that no orphaned data remains.** Imagine the reverse. A teammate has committed but not merged; the lead casually says "clean up the workspace"; `branch -D` runs, and hours of work vanish while the log contains one tidy `remove` entry.
 
 There are two explicit exits when deletion is truly intended. `discard_changes=true` means "I know what I am throwing away." `keep_worktree` means "preserve the branch for human review." Dangerous operations are allowed, but they must be deliberate decisions spoken aloud, never defaults.
 
@@ -103,6 +133,7 @@ There are two explicit exits when deletion is truly intended. `discard_changes=t
 | Working directory | Everyone shares WORKDIR | Each task may bind to a separate worktree |
 | Task fields | id/subject/.../blockedBy | +`worktree` |
 | New functions | — | `create_worktree`, `bind_task_to_worktree`, `remove_worktree`, `keep_worktree`, `validate_worktree_name` |
+| Cleanup evidence | None | `WorktreeRecord` with path, branch, and creation commit |
 | Audit | None | Lifecycle log in `.worktrees/events.jsonl` |
 | Teammate execution | Always in the main directory | cwd switches to the task's bound workspace |
 

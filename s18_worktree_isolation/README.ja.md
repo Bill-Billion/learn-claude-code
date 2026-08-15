@@ -26,6 +26,8 @@ s15 から s17 は「誰が何をするか」を task board で、「どう話�
 
 発想を変えましょう。この問題を git は 20 年前に解決しました。1 人 1 つ working copy を持ち、それぞれ変更し、最後に merge します。`git worktree` は clone よりずっと軽い方法です。1 つの repository から複数の作業ディレクトリを生やし、それぞれを branch へ結びながら、同じ `.git` 履歴を共有します。
 
+worktree の機構は Git の機能であり、Agent Harness が発明したものではありません。Harness は作成時期、task との binding、teammate の working directory、作成時 commit の記録、安全に片付けられる時期を管理します。この章で実装するのは Git を囲む lifecycle であって、分離機構そのものの再実装ではありません。
+
 この章の設計は一文で表せます。**分離は lock ではなく、copy で行います。**
 
 ---
@@ -35,14 +37,28 @@ s15 から s17 は「誰が何をするか」を task board で、「どう話�
 ```python
 VALID_WT_NAME = re.compile(r'^[A-Za-z0-9._-]{1,64}$')
 
+@dataclass(frozen=True)
+class WorktreeRecord:
+    name: str
+    path: str
+    branch: str
+    base_commit: str
+    task_id: str = ""
+
 def create_worktree(name: str, task_id: str = "") -> str:
     err = validate_worktree_name(name)      # 不正な名前はその場で拒否
     if err:
         return f"Error: {err}"
+    ok, base_commit = run_git(["rev-parse", "HEAD"])
+    if not ok:
+        return f"Git error: cannot record base commit: {base_commit}"
     path = WORKTREES_DIR / name             # .worktrees/<name>
-    ok, result = run_git(["worktree", "add", str(path), "-b", f"wt/{name}", "HEAD"])
+    branch = f"wt/{name}"
+    ok, result = run_git(["worktree", "add", str(path), "-b", branch, "HEAD"])
     if not ok:
         return f"Git error: {result}"
+    save_worktree_record(WorktreeRecord(
+        name, str(path.resolve()), branch, base_commit.strip(), task_id))
     if task_id:
         bind_task_to_worktree(task_id, name)
     log_event("create", name, task_id)      # audit log: 成功した事実だけを記録
@@ -51,6 +67,8 @@ def create_worktree(name: str, task_id: str = "") -> str:
 名前の検証は、古い知人が 3 度目に登場したものです。s02 の `safe_path` はファイルパスを、s07 の registry は skill 名を、この正規表現は作業場所の名前を守ります。`../../etc` のような名前を path へ連結すると、workspace の外に worktree が作られます。モデルが渡す文字列を path の一部にするなら、必ず先に検査する。この規則はどの章でも変わりません。
 
 `log_event` の位置にも意味があります。`run_git` の成功後に置きます。先に log を書いてから実行すると、失敗した操作にも「成功」という audit record が残り、log は証拠ではなく嘘になります。
+
+`WorktreeRecord` は audit log とは別のものです。正確な branch、path、`base_commit` を保存し、後から何が増えたかを検証できるようにします。record がない、または directory と一致しない場合、通常の cleanup は推測せず拒否します。
 
 ---
 
@@ -75,20 +93,32 @@ teammate 側の変更は 1 つだけです。worktree に binding されたタ�
 
 ```python
 def remove_worktree(name: str, discard_changes: bool = False) -> str:
-    ...
+    path = WORKTREES_DIR / name
+    record, record_error = load_worktree_record(name)
     if not discard_changes:
-        files, commits = _count_worktree_changes(path)   # 未 commit ファイルと未 push commit を数える
+        if record_error:
+            return f"Cannot verify worktree: {record_error}"
+        verified, files, commits, detail = _inspect_worktree_changes(
+            path, record.base_commit)
+        if not verified:
+            return f"Cannot verify worktree: {detail}"
         if files > 0 or commits > 0:
             return (f"Worktree '{name}' has {files} uncommitted file(s) "
-                    f"and {commits} unpushed commit(s). "
+                    f"and {commits} new commit(s) since creation. "
                     "Use discard_changes=true to force removal, "
                     "or keep_worktree to preserve for review.")
-    ok1, _ = run_git(["worktree", "remove", str(path), "--force"])
-    run_git(["branch", "-D", f"wt/{name}"])
+    branch = record.branch if record else f"wt/{name}"
+    remove_args = ["worktree", "remove"]
+    if discard_changes:
+        remove_args.append("--force")
+    run_git([*remove_args, str(path)])
+    run_git(["branch", "-D" if discard_changes else "-d", branch])
     log_event("remove", name)
 ```
 
-変更のある worktree は既定で削除を拒否します。s08 の「要約前に保存」、s09 の「新しい inventory を得てから古いファイルを消す」と同じ感覚が 3 度目に現れます。**破壊する前に、孤児になるデータがないことを確認します。** 逆を想像してください。teammate が commit を終えたものの未 merge のとき、Lead が何気なく「作業場所を片付けて」と言い、`branch -D` で数時間の作業が消え、log には整然とした remove の 1 行だけが残ります。
+変更のある worktree は既定で削除を拒否します。未 commit ファイルは `git status`、新しい commit は `git rev-list base_commit..HEAD` で数えます。新しい worktree には upstream がないことも多いため、検査は remote tracking branch に依存しません。作成 record がない、Git command が失敗した、commit 数を読めない場合も、0 と見なさず拒否します。
+
+s08 の「要約前に保存」、s09 の「新しい inventory を得てから古いファイルを消す」と同じ感覚が 3 度目に現れます。**破壊する前に、孤児になるデータがないことを確認します。** 逆を想像してください。teammate が commit を終えたものの未 merge のとき、Lead が何気なく「作業場所を片付けて」と言い、`branch -D` で数時間の作業が消え、log には整然とした remove の 1 行だけが残ります。
 
 本当に削除したい場合は 2 つの明示的な出口があります。`discard_changes=true` は「何を捨てるか理解している」、`keep_worktree` は「branch を残し、人が review する」という意味です。危険な操作も実行できますが、言葉にした決断でなければならず、既定動作にはしません。
 
@@ -103,6 +133,7 @@ def remove_worktree(name: str, discard_changes: bool = False) -> str:
 | 作業ディレクトリ | 全員が WORKDIR を共有 | task ごとに独立 worktree を binding 可能 |
 | Task フィールド | id/subject/.../blockedBy | +`worktree` |
 | 新しい関数 | — | `create_worktree`, `bind_task_to_worktree`, `remove_worktree`, `keep_worktree`, `validate_worktree_name` |
+| cleanup の根拠 | なし | path、branch、作成時 commit を持つ `WorktreeRecord` |
 | Audit | なし | `.worktrees/events.jsonl` の lifecycle log |
 | teammate の実行 | 常に main directory | binding された task では cwd を作業場所へ切替 |
 

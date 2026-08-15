@@ -64,7 +64,10 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
 
     def run():
         messages = [{"role": "user", "content": prompt}]
-        for _ in range(10):                          # 教学版：10 轮封顶
+        status = "max_rounds"
+        rounds = 0
+        for _ in range(MAX_TEAMMATE_ROUNDS):
+            rounds += 1
             inbox = BUS.read_inbox(name)             # 每轮先查信箱
             if inbox:
                 messages.append({"role": "user",
@@ -73,13 +76,20 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 model=MODEL, system=system, messages=messages[-20:],   # 滑动窗口
                 tools=sub_tools, max_tokens=8000)
             ...
-        BUS.send(name, "lead", summary, "result")    # 收工前把总结寄给 lead
+            if response.stop_reason != "tool_use":
+                status = "completed"
+                break
+        report = build_teammate_report(status, messages, rounds)
+        BUS.send(name, "lead", json.dumps(report),
+                 "result" if status == "completed" else "error")
         active_teammates.pop(name, None)             # 从花名册注销自己
 
     threading.Thread(target=run, daemon=True).start()
 ```
 
 工具集照旧收窄：`bash`/`read_file`/`write_file`/`send_message`，没有 `spawn_teammate`，队友不能再拉人头，s06 防递归的老规矩。上下文管理用 `messages[-20:]` 滑动窗口而不是 s08 的压缩管线，理由是队友短命（10 轮封顶），最近 20 条足够覆盖一生，犯不上为它跑四步整理。
+
+10 轮只是执行预算，不是完成证明。正常停下才回 `status="completed"`；撞到上限回 `status="max_rounds"`，API 出错回 `status="error"`，后两者都按非成功消息寄出，并带上最后一段有效总结和实际轮数。Lead 因而能分清"做完了"和"只是跑不下去了"。
 
 Lead 这边添三个工具：`spawn_teammate` 拉人，`send_message` 捎话，`check_inbox` 查信。
 
@@ -117,6 +127,8 @@ while True:
 
 **轮询不看花名册。** 直觉写法是"还有活着的队友才去查信"。但队友的退场顺序是先寄出最后的总结、再注销自己，两步之间没有原子性。按花名册把关，恰好在注销之后到达的最后一封信就永远没人收了。所以 poller 只认信箱本身：有信就唤醒，别管寄信人还在不在。
 
+Lead 拉起队友后也不必反复调用 `check_inbox`。system prompt 要它先交还控制权，信件到达后由事件循环唤醒下一轮。每次调用还有工具轮数上限兜底：模型真要执着地空查，`agent_loop()` 也会把控制权还给终端，不会无限烧调用。
+
 > 真实 Claude Code：teammate 不是 10 轮封顶，而是 idle loop——干完活在信箱边待命，直到收到 `shutdown_request` 才退场；信箱写入有文件锁；团队还有自己的 hook 事件（TeammateIdle、TaskCompleted），供外部系统挂载。
 
 ---
@@ -129,7 +141,7 @@ while True:
 | 通信 | 无 | `MessageBus` 文件信箱（`.mailboxes/*.jsonl`） |
 | 新工具 | — | `spawn_teammate`, `send_message`, `check_inbox`（共 14 个） |
 | 主程序 | `input()` 一问一答 | 事件循环（用户输入 + 唤醒事件合流） |
-| 队友生命周期 | — | 10 轮封顶，收工自动寄总结、注销 |
+| 队友生命周期 | — | 10 轮封顶；报告 completed / max_rounds / error 后注销 |
 
 ---
 

@@ -74,6 +74,7 @@ s01 → ... → s18 → s19 → `s20`
 | 信箱消费统一入口、路由先行 | 协议答复被掏走未登记，请求永远 pending | s16 |
 | 销毁前先确认（存盘/解析/数变更） | 一次失败清空记忆 / 蒸发工位里的工作 | s08/s09/s18 |
 | 一切模型给的名字先过安检 | 路径注入：读走 `.env`，工位开到仓库外 | s02/s07/s18/s19 |
+| MCP 注解留在宿主元数据里 | 从描述文字里猜属性会丢结构，也没法支撑权限判断 | s19 |
 
 这张表就是全课程的骨架。单看每一条都是小心思，合在一起是同一个立场：**模型负责决策，harness 负责让决策无法造成结构性破坏。**
 
@@ -91,9 +92,11 @@ s01 → ... → s18 → s19 → `s20`
 
 **压缩与恢复。** LLM 前四步管线（s08），调用外包一层恢复（429/529 退避、`max_tokens` 两级升级、超限 reactive compact，s11）。
 
-**后台与定时。** 慢命令进线程、凭条占位、通知注入（s13）；cron 调度线程独立看表，触发走队列，与用户轮互斥（s14）。
+**后台与定时。** 慢命令进线程、凭条占位、通知注入（s13）；cron 调度线程独立看表，触发走队列，与用户轮互斥（s14）。显式写了 `run_in_background=true` 就直接进后台；自动判断只看 `pytest`、`npm run check`、`cargo build` 这类命令入口，不在参数和文件名里搜关键词，所以 `cat pytest_out.txt` 仍在前台执行。
 
-**隔离与外接。** 任务可绑 worktree，队友在工位目录里干活（s18）；MCP 工具发现后带前缀入池（s19）。
+**隔离与外接。** 任务可绑 worktree，队友在工位目录里干活（s18）。每个工位保存分支、路径和创建时提交，清理时比较 `base_commit..HEAD`，不会把"没有 upstream"误判成"没有新提交"。MCP 工具发现后带前缀入池（s19）。
+
+MCP 注解始终留在宿主侧的注册表里。本课只能连接代码中显式登记的进程内 mock，因此标明只读的工具可以不打断用户，破坏性和未分类工具则要求确认。这只是封闭教学环境的策略，不是通用授权规则；真正允许任意外部 server 接入时，还必须叠加 server 信任和本地策略，因为注解只是对方的自我申报。
 
 ---
 
@@ -102,7 +105,7 @@ s01 → ... → s18 → s19 → `s20`
 | 组件 | s19 | s20 |
 |------|-----|-----|
 | 工具池 | 内置 + MCP | 补齐 s01-s18 的全部工具 |
-| 权限 | 教学主体省略 | `PreToolUse` hook 中执行 |
+| 权限 | 教学主体省略 | `PreToolUse` hook 中执行，包含 MCP 元数据 |
 | hooks | 省略 | 四事件全挂载 |
 | todo / skill / compact | 省略 | 全部回归 |
 | error recovery | 简化 try/except | 退避 / 升级 / reactive compact |
@@ -119,7 +122,7 @@ python s20_comprehensive/code.py
 ```
 
 1. `Create a todo list for inspecting this repo, then list Python files`：s05 的便签和 s02 的工具在同一轮里工作；
-2. `Connect to the docs MCP server and search for agent loop`：s19 的发现与装配；
+2. `Connect to the docs MCP server and search for agent loop`：s19 的发现与装配，只读注解以宿主元数据进入权限 hook；
 3. `Create two tasks, create worktrees for them, then spawn alice and bob. Ask them to submit plans before claiming tasks.`：s12+s15+s16+s18 四套机制咬合运转，看计划审批通过后队友才认领、认领后在各自工位里干活；
 4. `Remind me of the meeting in 3 minutes.`：s14 的闹钟，到点终端自己动；
 5. `Run 'sleep 20 && echo build done' in the background and continue reading README.md`：s13 的凭条与通知。

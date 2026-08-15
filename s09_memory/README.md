@@ -129,7 +129,9 @@ if response.stop_reason != "tool_use":
 
 `pre_compress` is a hard requirement. Every loop iteration runs the s08 compaction pipeline. By shutdown, earlier conversation may already have been trimmed or replaced with placeholders. If "prefer tabs to spaces" happened to fall in the removed region, extracting from compacted history means reconstructing from fragments. The loop therefore saves a pre-compaction snapshot on every iteration, and extraction always sees the full text. This locks s08 and s09 together in execution order: compaction may shrink freely, but extraction must read the original.
 
-The extraction prompt also receives the existing catalog and returns content only when something is genuinely new, avoiding ten copies of one preference.
+The extraction prompt also receives the existing catalog and returns content only when something is genuinely new, avoiding ten copies of one preference. But the model's answer is only a proposal, not permission to write. Every candidate carries a `scope`: `persistent` means it should survive into later sessions, while `current_task` covers one-off commands, temporary paths, and restrictions that belong only to the current work.
+
+`should_store_memory()` is the final admission check. It writes only `scope="persistent"` candidates with complete fields, rejects phrases such as "this session" or "current task," and compares names, descriptions, and bodies with memories already on disk. This prevents a sentence such as "do not create files in this session" from quietly becoming a rule next week even if the extractor classifies it incorrectly.
 
 ---
 

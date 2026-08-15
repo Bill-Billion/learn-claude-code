@@ -262,6 +262,16 @@ def update_context(context: dict, messages: list) -> dict:
 
 # ── Agent Loop ──
 
+def _text_block(block) -> str | None:
+    if isinstance(block, dict):
+        if block.get("type") == "text":
+            return str(block.get("text", ""))
+        return None
+    if getattr(block, "type", None) == "text":
+        return str(getattr(block, "text", ""))
+    return None
+
+
 def agent_loop(messages: list, context: dict):
     """Main loop with error recovery wrapping LLM calls."""
     system = get_system_prompt(context)
@@ -360,6 +370,7 @@ if __name__ == "__main__":
             if msg.get("role") != "assistant":
                 continue
             for block in msg["content"]:
-                if getattr(block, "type", None) == "text":
-                    print(block.text)
+                text = _text_block(block)
+                if text:
+                    print(text)
         print()

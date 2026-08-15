@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 440" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <defs>
+    <marker id="l2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#22c55e"/>
+    </marker>
+  </defs>
+
+  <rect width="760" height="440" rx="6" fill="#ffffff"/>
+  <text x="380" y="30" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">L2：剪掉对话中间段</text>
+  <text x="380" y="51" fill="#888888" font-size="12" text-anchor="middle">像剪一条过长的纸带：开头和最新进度留下，中间旧过程换成省略条</text>
+  <line x1="36" y1="68" x2="724" y2="68" stroke="#d0d0d0"/>
+
+  <text x="48" y="91" fill="#888888" font-size="11">剪之前</text>
+
+  <!-- Long accordion message ribbon -->
+  <g>
+    <rect x="44" y="105" width="148" height="105" rx="4" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+    <path d="M44 105 L58 116 L58 199 L44 210" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="119" y="129" fill="#1a1a1a" font-size="12" font-weight="700" text-anchor="middle">原始任务</text>
+    <text x="119" y="146" fill="#888888" font-size="9" text-anchor="middle">规则和约束</text>
+    <g stroke="#d0d0d0">
+      <line x1="76" y1="165" x2="163" y2="165"/>
+      <line x1="76" y1="178" x2="151" y2="178"/>
+      <line x1="76" y1="191" x2="168" y2="191"/>
+    </g>
+
+    <rect x="192" y="105" width="320" height="105" fill="#fafafa" stroke="#d0d0d0" stroke-width="1.5"/>
+    <path d="M192 105 L218 119 L244 105 L270 119 L296 105 L322 119 L348 105 L374 119 L400 105 L426 119 L452 105 L478 119 L512 105" fill="none" stroke="#d0d0d0"/>
+    <path d="M192 210 L218 196 L244 210 L270 196 L296 210 L322 196 L348 210 L374 196 L400 210 L426 196 L452 210 L478 196 L512 210" fill="none" stroke="#d0d0d0"/>
+    <g stroke="#d0d0d0">
+      <line x1="220" y1="139" x2="280" y2="139"/>
+      <line x1="220" y1="152" x2="267" y2="152"/>
+      <line x1="307" y1="139" x2="369" y2="139"/>
+      <line x1="307" y1="152" x2="354" y2="152"/>
+      <line x1="397" y1="139" x2="478" y2="139"/>
+      <line x1="397" y1="152" x2="462" y2="152"/>
+    </g>
+    <text x="352" y="181" fill="#888888" font-size="11" font-weight="600" text-anchor="middle">49 条已经过去的过程</text>
+
+    <rect x="512" y="105" width="204" height="105" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.7"/>
+    <path d="M702 105 L716 117 V198 L702 210" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="614" y="128" fill="#1a1a1a" font-size="12" font-weight="700" text-anchor="middle">最新进度</text>
+    <rect x="532" y="143" width="71" height="25" rx="3" fill="#fafafa" stroke="#1a1a1a"/>
+    <rect x="603" y="143" width="86" height="25" rx="3" fill="#ffffff" stroke="#1a1a1a"/>
+    <text x="567" y="159" fill="#888888" font-size="8" text-anchor="middle" font-family="monospace">tool_use</text>
+    <text x="646" y="159" fill="#888888" font-size="8" text-anchor="middle" font-family="monospace">tool_result</text>
+    <path d="M592 140 C592 131 610 131 610 140 V149" fill="none" stroke="#22c55e" stroke-width="2"/>
+    <text x="614" y="190" fill="#888888" font-size="9" text-anchor="middle">这一对一起留下</text>
+  </g>
+
+  <!-- Safe cut lines and scissors -->
+  <g stroke-linecap="round" stroke-linejoin="round">
+    <line x1="192" y1="99" x2="192" y2="216" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="5,4"/>
+    <line x1="512" y1="99" x2="512" y2="216" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="5,4"/>
+    <g transform="translate(184 91) rotate(-13)">
+      <circle cx="-7" cy="-7" r="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+      <circle cx="-7" cy="7" r="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+      <path d="M-2 -3 L25 8 M-2 3 L25 -8" fill="none" stroke="#1a1a1a" stroke-width="1.6"/>
+    </g>
+    <g transform="translate(504 91) rotate(-13)">
+      <circle cx="-7" cy="-7" r="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+      <circle cx="-7" cy="7" r="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+      <path d="M-2 -3 L25 8 M-2 3 L25 -8" fill="none" stroke="#1a1a1a" stroke-width="1.6"/>
+    </g>
+  </g>
+
+  <!-- Removed middle folds downward -->
+  <path d="M288 218 C305 237 330 239 350 226 C372 244 398 245 417 224" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="5,4"/>
+  <path d="M350 224 V248" fill="none" stroke="#22c55e" stroke-width="2" marker-end="url(#l2-arrow)"/>
+
+  <text x="48" y="274" fill="#888888" font-size="11">剪之后：头尾重新接好</text>
+
+  <!-- Rejoined compact ribbon -->
+  <g>
+    <rect x="84" y="289" width="178" height="58" rx="4" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+    <path d="M84 289 L96 299 V337 L84 347" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="173" y="316" fill="#1a1a1a" font-size="11" font-weight="700" text-anchor="middle">原始任务和规则</text>
+    <text x="173" y="333" fill="#888888" font-size="9" text-anchor="middle">head 完整</text>
+
+    <rect x="262" y="299" width="226" height="38" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="5,3"/>
+    <text x="375" y="322" fill="#888888" font-size="10" font-weight="600" text-anchor="middle" font-family="monospace">[snipped 49 messages]</text>
+
+    <rect x="488" y="289" width="188" height="58" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.7"/>
+    <path d="M664 289 L676 300 V336 L664 347" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="582" y="316" fill="#1a1a1a" font-size="11" font-weight="700" text-anchor="middle">最新进度</text>
+    <text x="582" y="333" fill="#888888" font-size="9" text-anchor="middle">tail 完整，工具配对不拆</text>
+  </g>
+
+  <g transform="translate(117 377)">
+    <rect width="526" height="38" rx="5" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="263" y="24" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">它裁掉的是消息数量，不是把旧过程读懂后重新总结</text>
+  </g>
+</svg>

@@ -74,6 +74,7 @@ loop 自体は s01 の 5 段階のままです。モデルを呼び、ツール�
 | mailbox 消費を単一入口へ集約し、先に route する | protocol response が登録されずに消え、request が永遠に pending になる | s16 |
 | 破壊前に検証する（保存 / parse / 変更数の確認） | 1 回の失敗で memory が空になり、worktree 内の作業が消える | s08/s09/s18 |
 | モデルが渡すすべての名前を先に検査 | path injection で `.env` を読み、repository 外に worktree を作る | s02/s07/s18/s19 |
+| MCP annotation は host metadata として保持 | description の文字列から推測すると構造が失われ、permission 判断に使えない | s19 |
 
 この表がコース全体の骨格です。1 行ずつ見ると小さな注意ですが、集めると同じ立場を表します。**モデルは判断し、Harness はその判断が構造的な破壊を起こせないようにします。**
 
@@ -91,9 +92,11 @@ loop 自体は s01 の 5 段階のままです。モデルを呼び、ツール�
 
 **compaction と recovery。** LLM 前の 4 段階 pipeline は s08 から、呼び出しを包む recovery は s11 から来ています。429/529 の backoff、2 段階の `max_tokens` 増加、overflow 時の reactive compact があります。
 
-**background と定時実行。** 遅い command を thread へ送り、引換券を返し、通知を注入する s13 の仕組みです。s14 の独立 cron thread は時刻を監視し、queue へ trigger を送り、定時 turn と user turn を排他します。
+**background と定時実行。** 遅い command を thread へ送り、引換券を返し、通知を注入する s13 の仕組みです。s14 の独立 cron thread は時刻を監視し、queue へ trigger を送り、定時 turn と user turn を排他します。`run_in_background=true` が明示されれば常に background へ送ります。自動判定は `pytest`、`npm run check`、`cargo build` のような command entry point だけを見ます。引数や filename の単語は検索しないため、`cat pytest_out.txt` は foreground のままです。
 
-**分離と外部接続。** task は worktree へ binding でき、teammate は s18 のようにその作業場所で実行します。発見された MCP tool は s19 のように prefix 付きで pool へ入ります。
+**分離と外部接続。** task は worktree へ binding でき、teammate は s18 のようにその作業場所で実行します。各 worktree は branch、path、作成時 commit を記録し、cleanup では `base_commit..HEAD` を比較します。「upstream がない」を「新しい commit がない」と誤認しません。発見された MCP tool は s19 のように prefix 付きで pool へ入ります。
+
+MCP annotation は host 側の registry に残ります。この章で接続できるのはコードに明示登録した in-process mock だけなので、read-only と申告された tool は確認なしで進み、destructive または未分類の tool は承認を求めます。これは閉じた教材環境の policy であって、一般の authorization 規則ではありません。任意の外部 server を受け入れる connector では、自己申告の hint に server trust と local policy を重ねる必要があります。
 
 ---
 
@@ -102,7 +105,7 @@ loop 自体は s01 の 5 段階のままです。モデルを呼び、ツール�
 | コンポーネント | s19 | s20 |
 |------|-----|-----|
 | tool pool | built-in + MCP | s01-s18 の全ツールを復帰 |
-| permission | 教材の主題から省略 | `PreToolUse` hook 内で実行 |
+| permission | 教材の主題から省略 | MCP metadata を含め `PreToolUse` hook 内で実行 |
 | hooks | 省略 | 4 event すべてを接続 |
 | todo / skill / compact | 省略 | すべて復帰 |
 | error recovery | 単純な try/except | backoff / escalation / reactive compact |
@@ -119,7 +122,7 @@ python s20_comprehensive/code.py
 ```
 
 1. `Create a todo list for inspecting this repo, then list Python files`: s05 の付箋と s02 のツールが同じラウンドで動きます。
-2. `Connect to the docs MCP server and search for agent loop`: s19 の発見と組み立てです。
+2. `Connect to the docs MCP server and search for agent loop`: s19 の発見と組み立てです。登録済み read-only annotation が host metadata として permission hook に届きます。
 3. `Create two tasks, create worktrees for them, then spawn alice and bob. Ask them to submit plans before claiming tasks.`: s12、s15、s16、s18 の 4 機構がかみ合います。plan approval 後にだけ teammate が claim し、その後それぞれの worktree で働く様子を確認します。
 4. `Remind me of the meeting in 3 minutes.`: s14 の目覚ましで、時刻になると terminal が自分で動きます。
 5. `Run 'sleep 20 && echo build done' in the background and continue reading README.md`: s13 の引換券と通知です。

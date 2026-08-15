@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <defs>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e"/>
+    </marker>
+  </defs>
+
+  <rect width="760" height="420" rx="8" fill="#ffffff"/>
+  <text x="380" y="32" fill="#1a1a1a" font-size="20" font-weight="700" text-anchor="middle">L3: micro_compact</text>
+  <text x="380" y="52" fill="#888888" font-size="12" text-anchor="middle">旧工具结果太多时：最近 3 条保留，更早的长结果换成便签</text>
+  <line x1="40" y1="70" x2="720" y2="70" stroke="#d0d0d0"/>
+
+  <!-- Before paper -->
+  <g transform="translate(54 94)">
+    <rect x="0" y="0" width="220" height="260" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+    <path d="M 184 0 L 220 36 L 184 36 Z" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="110" y="30" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">整理前</text>
+    <text x="110" y="48" fill="#888888" font-size="10" text-anchor="middle" font-family="monospace">many tool_results</text>
+
+    <g>
+      <rect x="26" y="66" width="168" height="30" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.3"/>
+      <text x="110" y="85" fill="#1a1a1a" font-size="10" text-anchor="middle">旧 tool_result #1 很长</text>
+      <rect x="26" y="104" width="168" height="30" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.3"/>
+      <text x="110" y="123" fill="#1a1a1a" font-size="10" text-anchor="middle">旧 tool_result #2 很长</text>
+      <rect x="26" y="142" width="168" height="30" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.3"/>
+      <text x="110" y="161" fill="#1a1a1a" font-size="10" text-anchor="middle">旧 tool_result #3 很长</text>
+      <rect x="26" y="190" width="168" height="22" rx="4" fill="#fafafa" stroke="#1a1a1a"/>
+      <text x="110" y="205" fill="#1a1a1a" font-size="9" font-weight="700" text-anchor="middle">最近 tool_result #4</text>
+      <rect x="26" y="218" width="168" height="22" rx="4" fill="#fafafa" stroke="#1a1a1a"/>
+      <text x="110" y="233" fill="#1a1a1a" font-size="9" font-weight="700" text-anchor="middle">最近 tool_result #5</text>
+    </g>
+  </g>
+
+  <!-- Action -->
+  <g transform="translate(310 134)">
+    <path d="M 0 70 L 46 70" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)" fill="none"/>
+    <rect x="58" y="26" width="118" height="88" rx="6" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="117" y="54" fill="#1a1a1a" font-size="12" font-weight="700" text-anchor="middle">KEEP_RECENT = 3</text>
+    <line x1="78" y1="70" x2="156" y2="70" stroke="#d0d0d0"/>
+    <text x="117" y="91" fill="#888888" font-size="10" text-anchor="middle">older long results</text>
+    <text x="117" y="106" fill="#888888" font-size="10" text-anchor="middle">→ placeholder</text>
+    <text x="117" y="138" fill="#1a1a1a" font-size="12" font-weight="700" text-anchor="middle">replace content</text>
+    <path d="M 188 70 L 234 70" stroke="#22c55e" stroke-width="2" marker-end="url(#arrow-green)" fill="none"/>
+  </g>
+
+  <!-- After paper -->
+  <g transform="translate(518 94)">
+    <rect x="0" y="0" width="220" height="260" rx="6" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.5"/>
+    <path d="M 184 0 L 220 36 L 184 36 Z" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="110" y="30" fill="#1a1a1a" font-size="13" font-weight="700" text-anchor="middle">整理后</text>
+    <text x="110" y="48" fill="#888888" font-size="10" text-anchor="middle" font-family="monospace">older results compacted</text>
+
+    <rect x="24" y="66" width="172" height="28" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="5,3"/>
+    <text x="110" y="84" fill="#888888" font-size="8.5" text-anchor="middle" font-family="monospace">[Earlier tool result compacted]</text>
+    <rect x="24" y="104" width="172" height="28" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="5,3"/>
+    <text x="110" y="122" fill="#888888" font-size="8.5" text-anchor="middle" font-family="monospace">[Re-run if needed]</text>
+    <rect x="24" y="142" width="172" height="28" rx="4" fill="#ffffff" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="5,3"/>
+    <text x="110" y="160" fill="#888888" font-size="8.5" text-anchor="middle" font-family="monospace">[Earlier result compacted]</text>
+
+    <rect x="26" y="190" width="168" height="22" rx="4" fill="#fafafa" stroke="#1a1a1a"/>
+    <text x="110" y="205" fill="#1a1a1a" font-size="9" font-weight="700" text-anchor="middle">最近 tool_result #4 完整</text>
+    <rect x="26" y="218" width="168" height="22" rx="4" fill="#fafafa" stroke="#1a1a1a"/>
+    <text x="110" y="233" fill="#1a1a1a" font-size="9" font-weight="700" text-anchor="middle">最近 tool_result #5 完整</text>
+  </g>
+
+  <g transform="translate(128 360)">
+    <rect x="0" y="0" width="504" height="34" rx="6" fill="#fafafa" stroke="#d0d0d0"/>
+    <text x="252" y="22" fill="#1a1a1a" font-size="12" font-weight="600" text-anchor="middle">核心动作：不裁消息，只把较早工具结果的正文替换成占位符</text>
+  </g>
+</svg>

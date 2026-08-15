@@ -81,11 +81,11 @@ Assembly is not a one-time operation. `agent_loop` assembles the pool again afte
 
 ## Annotations: External Tools Describe Themselves
 
-Look at the mock server's tool descriptions. `search` is marked `(readOnly)`, while `deploy.trigger` is marked `(destructive)`. These annotations connect to the permission system. We know whether a built-in tool reads or writes because we implemented it. For an external tool, its server must declare that behavior.
+Look at the mock server's tool definitions. `search` carries `{"readOnlyHint": true, "destructiveHint": false}`, while `deploy.trigger` carries the opposite values. These are structured annotations, not words appended to a description. We know whether a built-in tool reads or writes because we implemented it. For an external tool, its server can only declare its intended behavior.
 
-One more layer of honesty is required: annotations come from the server, and a server can lie. A malicious server may label a database-deletion tool readOnly, and the teaching version would believe it. Real systems therefore use annotations only in the conservative direction: readOnly may reduce interruptions, but destructive always triggers approval, and a declaration can never let a dangerous tool bypass the gate from s03. The trust boundary is drawn around the protocol, not around the other party's goodwill.
+`assemble_tool_pool()` keeps those annotations in `MCP_TOOL_ANNOTATIONS` under the prefixed tool name. They are host metadata, so they are not flattened into the description or sent as part of the model-facing tool schema. s19 preserves the information but does not enforce a permission policy yet; s20 is where the `PreToolUse` gate consumes it.
 
-> The real Claude Code supports six transports, including stdio, HTTP, and SSE, plus OAuth authentication, server-pushed notifications, and merged configuration from multiple sources. MCP readOnly/destructive annotations feed into the actual permission pipeline, and destructive tools require user approval by default. The teaching mocks preserve four essential stages: discovery, naming, assembly, and annotations.
+One more layer of honesty is required: annotations come from the server, and a server can lie. MCP defines them as hints, not authorization. A real connector must combine them with server trust and local policy. This course connects only explicitly registered in-process mock servers, but it keeps the boundary visible rather than teaching that `readOnlyHint=true` is proof of safety.
 
 ---
 
@@ -98,6 +98,7 @@ One more layer of honesty is required: annotations come from the server, and a s
 | New functions | — | `connect_mcp`, `assemble_tool_pool`, `normalize_mcp_name` |
 | Naming | Bare names | MCP tools use the `mcp__{server}__{tool}` prefix |
 | Tool pool | Static `TOOLS` | Reassembled after every tool round |
+| Annotations | — | Structured host metadata keyed by the prefixed tool name |
 
 ---
 
@@ -111,7 +112,7 @@ python s19_mcp_plugin/code.py
 1. **The moment of discovery**: `Connect to the docs MCP server, then list what tools you have now.` After `[mcp] connected: docs → ['search', 'get_version']`, the model can name new tools such as `mcp__docs__search`. They are in the pool.
 2. **Calls from one pool**: `Search the docs for "authentication" and also read README.md`. An external tool and a built-in tool are called together in one round; to the model, there is no difference.
 3. **Connecting a missing server**: `Connect to the jira MCP server`. The response is `Unknown server 'jira'. Available: docs, deploy`. The error includes the valid inventory, so the model can correct itself.
-4. **How annotations feel**: `Connect to deploy and check the status of service 'web'`, then try `Trigger a deployment of 'web'`. Both tools run because the teaching version does not connect the permission gate, but `(readOnly)` and `(destructive)` are already in their descriptions. Recall s03: those annotations provide the input for applying the three permission gates to external tools.
+4. **Preserving annotations**: `Connect to deploy and check the status of service 'web'`, then try `Trigger a deployment of 'web'`. Both tools run because s19 has not connected the permission gate. The distinction remains in `MCP_TOOL_ANNOTATIONS`; s20 will use it before dispatch instead of trying to infer risk from the tool name.
 
 ---
 

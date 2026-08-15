@@ -81,11 +81,11 @@ handler の lambda には、名前を挙げる価値のある古い Python の�
 
 ## Annotation: 外部ツールによる自己申告
 
-mock server のツール説明を見ると、`search` は `(readOnly)`、`deploy.trigger` は `(destructive)` と記されています。これは permission system への interface です。built-in ツールが読み書きのどちらかは実装者である私たちが分かりますが、外部ツールは server の申告に頼ります。
+mock server の tool definition を見ると、`search` は `{"readOnlyHint": true, "destructiveHint": false}`、`deploy.trigger` は反対の値を持ちます。description に文字を付け足したものではなく、構造化された annotation です。built-in tool の読み書きは実装者が分かりますが、外部 tool は意図した動作を server が申告するしかありません。
 
-さらに正直に言えば、annotation は server の主張であり、server は嘘をつけます。悪意ある server がデータベース削除ツールを readOnly と記しても、教材版は信じます。そのため実システムは annotation を保守的な方向にだけ使います。readOnly は「確認を減らす」材料にはなっても、destructive は必ず承認を求め、自己申告で危険なツールが s03 の gate を通過することはありません。trust boundary は相手の善意ではなく protocol に引きます。
+`assemble_tool_pool()` は prefix 付き tool name を key にして、annotation を `MCP_TOOL_ANNOTATIONS` へ保存します。これは host metadata であり、description へ押し込まず、モデル向け tool schema にも混ぜません。s19 は情報を保つところまでで、permission policy はまだ適用しません。s20 の `PreToolUse` gate が dispatch 前に利用します。
 
-> 実際の Claude Code は stdio、HTTP、SSE など 6 種類の transport、OAuth 認証、server からの push notification、複数 source の設定 merge をサポートします。MCP ツールの readOnly/destructive annotation は実際に permission pipeline へ入り、destructive は既定でユーザー承認が必要です。教材版 mock は発見、命名、組み立て、annotation という 4 つの要点を保っています。
+もう一つ境界があります。annotation は server の自己申告であり、server は嘘をつけます。MCP では authorization ではなく hint として定義されています。外部 server を接続する実装では、server trust と local policy を重ねなければなりません。本章で接続できるのはコードに明示登録した in-process mock だけですが、それでも `readOnlyHint=true` を安全性の証明として教えないよう、この境界を残します。
 
 ---
 
@@ -98,6 +98,7 @@ mock server のツール説明を見ると、`search` は `(readOnly)`、`deploy
 | 新しい関数 | — | `connect_mcp`, `assemble_tool_pool`, `normalize_mcp_name` |
 | 命名 | prefix なし | MCP ツールに `mcp__{server}__{tool}` prefix |
 | tool pool | static `TOOLS` | 各 tool round 後に再組み立て |
+| annotation | なし | prefix 付き tool name を key にした構造化 host metadata |
 
 ---
 
@@ -111,7 +112,7 @@ python s19_mcp_plugin/code.py
 1. **発見の瞬間**: `Connect to the docs MCP server, then list what tools you have now.` 接続ログ `[mcp] connected: docs → ['search', 'get_version']` の後、モデル自身が `mcp__docs__search` などの新しい名前を挙げられます。pool に入った証拠です。
 2. **同じ pool から呼ぶ**: `Search the docs for "authentication" and also read README.md`。1 ラウンドで外部ツールと built-in ツールを混ぜて呼んでも、モデルには違いがありません。
 3. **存在しない server へ接続**: `Connect to the jira MCP server`。`Unknown server 'jira'. Available: docs, deploy` が返り、エラーに利用可能な一覧があるため、モデルは自分で修正できます。
-4. **Annotation の感触**: `Connect to deploy and check the status of service 'web'`、続いて `Trigger a deployment of 'web'` を試します。教材版は permission gate を接続していないため両方実行できますが、説明には `(readOnly)` と `(destructive)` がすでにあります。s03 を思い出してください。外部ツールへ 3 つの gate を適用する判断材料が、この annotation です。
+4. **Annotation が保たれるか**: `Connect to deploy and check the status of service 'web'`、続いて `Trigger a deployment of 'web'` を試します。s19 は permission gate をまだ接続していないため、どちらも実行できます。違いは `MCP_TOOL_ANNOTATIONS` に残り、s20 が tool name から危険度を推測せず dispatch 前に読みます。
 
 ---
 

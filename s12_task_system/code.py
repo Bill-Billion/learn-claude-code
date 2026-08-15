@@ -323,6 +323,16 @@ def update_context(context: dict, messages: list) -> dict:
 
 # ── Agent Loop (simplified, focused on task system) ──
 
+def _text_block(block) -> str | None:
+    if isinstance(block, dict):
+        if block.get("type") == "text":
+            return str(block.get("text", ""))
+        return None
+    if getattr(block, "type", None) == "text":
+        return str(getattr(block, "text", ""))
+    return None
+
+
 def agent_loop(messages: list, context: dict):
     system = get_system_prompt(context)
     while True:
@@ -371,6 +381,7 @@ if __name__ == "__main__":
         agent_loop(history, context)
         context = update_context(context, history)
         for block in history[-1]["content"]:
-            if getattr(block, "type", None) == "text":
-                print(block.text)
+            text = _text_block(block)
+            if text:
+                print(text)
         print()

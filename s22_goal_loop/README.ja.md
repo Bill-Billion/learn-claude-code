@@ -1,160 +1,231 @@
-# s22: Goal Loop — いつ止まるかはモデルではなく goal が決める
+# s22: Goal Loop：モデルが停止を提案し、独立した evaluator が継続するかを決める
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s20 → s21 → `s22`
 
-> *「turn が終了できるかは goal condition を満たすかで決まり、モデルが stop と言っただけでは終わらない」* — `/goal` は main loop の各 turn の終端に gate を追加します。独立した evaluator が trusted evidence の充足を確認し、不足ならモデルを次のラウンドへ押し戻します。
+> *「モデルが tool call をやめたのは、一つの turn を止めたいという意味にすぎない。goal 全体が完了したかは別の evaluator が判断する。」*
 >
-> **Harness 層**: Goal closure — turn 終端に program-controlled completion gate を追加します。
+> **Harness layer：継続実行。** 各 turn の終わりで完了条件を確認し、未完了なら次の turn を始めます。
 
 ---
 
-s01 から s21 まで、会話の 1 turn はどう終わったでしょうか。モデルが `tool_use` を出さなくなると、loop はそのまま `return` しました。one-shot task なら問題ありません。終わったら止まります。
+![Goal Loop 全体像](images/goal-loop-overview.svg)
 
-しかし「テストを通す」「deploy が成功するまで続ける」のように、最後まで見届けるべき goal もあります。そこでは 2 つの問題がよく起きます。モデルが途中まで進めて十分だと思い、自分で止まる。さらに悪ければ、口頭で `tests passed` と言うだけで終了しようとします。必要なことは単純です。turn が終了できるかをモデル自身に決めさせず、明示的な condition を実際の evidence に照らして判断します。
+s01 から、agent loop の終了条件は単純でした。モデルが tool を呼ばなくなったら、program は return します。
 
-この流れは最初の章からありました。s01 は loop の exit がモデルの判断だと説明し、s04 の Stop hook が初めて program に veto を与えました。この章は、その veto を condition、evidence、budget の 3 要素が欠けない完全な loop にします。
+通常の会話には十分ですが、「すべての test が通るまで直す」「acceptance criteria をすべて満たす」といった task では足りないことがあります。モデルは一部を終えただけで、作業全体が完了したと考えるかもしれません。新しい `tool_use` がないことは、現在の turn が終わったことを示すだけで、goal 全体の達成までは証明しません。
 
-## /goal: 各 turn の終端に gate を追加する
+`/goal` は本当に return する前に、独立した判断を一つ追加します。
 
-`/goal <condition>` を入力すると session-scoped stopping condition を設定します。program は active goal として保存し、各 turn の後に独立した lightweight model を evaluator として使い、transcript 内の trusted evidence が condition を満たすか確認します。不足なら gate が停止を拒み、次ラウンドへ「作業を続ける」prompt を queue します。十分なら goal を消して complete とします。
+## /goal は session-scoped Stop hook
 
-![Goal Loop Overview](images/goal-loop-overview.svg)
+次のように入力します。
 
-s01 の loop と比べて、追加されるのは 1 つの判断だけです。モデルが止まりたいとき、先に goal gate を通ります。
-
-```python
-# s01: モデルが stop と言えば停止
-if not has_tool_use(response):
-    return
-# s22: 止まりたい？先に goal gate を通る
-if not has_tool_use(response):
-    verdict = goal.evaluate_after_turn()
-    if verdict == "continuing":
-        continue                 # 未達成 -> 次のラウンドへ押し戻す
-    return                       # 達成 / budget 超過 / goal なし -> 本当に停止
+```text
+/goal pytest tests/auth が exit code 0 で終了し、lint error もない
 ```
 
-この gate を制御するのは program です。モデルが自分を律しているのではありません。モデルは gate の存在すら知らず、次のラウンドの入力を受け取って作業を続けるだけです。
+program は完了条件を保存し、その条件を現在の task としてすぐ main model に渡します。「作業を開始して」と別の prompt を送る必要はありません。
 
-> 実際の Claude Code では `/goal` は session-scoped Stop hook で、workspace trust と hook restriction の管理下にあります。コードには `active_goal`、`goal_status`、`goal_met`、`tengu_goal_achieved` などの marker があります。
-
-## Goal の設定: Evidence は command の後から数える
-
-`set_goal` は active goal として、goal text、最大 turn budget、counter、そして evidence window の開始点 `start_index` を保存します。現在の transcript length を使うため、`/goal` command 自身は window の外です。これが最初の防御です。command が自分自身の完了を証明することはできません。
+main model が tool call をやめると、loop は return の前に Goal Stop hook を実行します。
 
 ```python
-def set_goal(self, objective, max_turns=20):
-    self.active = {
-        "objective": objective, "status": "active",
-        "start_index": len(self.transcript),   # evidence はここから。command 自身は window 外
-        "max_turns": max_turns, "checks": 0, "continuation_turns": 0,
-    }
+if tool_results:
+    messages.append({"role": "user", "content": tool_results})
+    continue
+
+decision = await self.goal.evaluate_after_turn(self.messages)
+if decision.action == "block":
+    self.messages.append({
+        "role": "user",
+        "content": decision.reason,
+    })
+    continue
+
+return SessionResult(text=text, status=decision.action)
 ```
 
-> 実際の Claude Code では `GoalRuntime.setGoal()` が active goal、開始位置、counter、budget を保存し、submit 後に `resetEvidenceStart()` で window を command 後へそろえます。
+active Goal がなければ hook はそのまま stop を許可し、loop は s01 と同じ動作になります。
 
-## Evaluator: 実在する evidence だけを信頼する
+## evaluator と作業モデルを分ける
 
-ここが仕組み全体の core です。evaluator は会話全体を見ず、evidence window 内で trusted source から来た message だけを見ます。3 層の filter が、「完了したと言ったから完了」という内容をすべて外へ止めます。
+main model はコードを変更し、command を実行し、問題を解決します。Goal evaluator は別の model call であり、完了条件の判断だけを担当します。
 
-```python
-TRUSTED_EVIDENCE_ORIGINS = {"task-notification", "monitor-line"}
+evaluator は `GoalController` が持つ Goal Gate 内部の依存です。main loop の外にある別の終了経路ではありません。
 
-def evidence_text(self):
-    out = []
-    for m in self.transcript[self.active["start_index"]:]:
-        if m.origin.get("kind") == "slash-command":                     # 1 slash command 自身は evidence ではない
-            continue
-        if m.role == "user" and m.content.strip().startswith("/goal"):  # 2 /goal command text は evidence ではない
-            continue
-        if m.origin.get("kind") not in TRUSTED_EVIDENCE_ORIGINS:        # 3 trusted origin だけを信頼
-            continue
-        out.append(f"{m.role}: {m.content}")
-    return "\n".join(out)
+この章には独立した `CommandQueue` がありません。評価が停止を block すると、controller は理由を同じ `messages[]` へ直接追加し、次の turn を始めます。より大きな host では user input、background result、continuation command を session へ戻す共有 queue を使えますが、それは host 全体の transport であり、Goal Gate が所有する部品ではありません。Gate の中へ描くと、「誰が判断するか」と「判断をどの経路で戻すか」が混ざります。
+
+evaluator が見るものは次の三つです。
+
+- active Goal の条件；
+- 現在までの conversation；
+- worker が conversation に書き戻した tool result。
+
+evaluator は tool を持ちません。file を読んだり、test を再実行したりはできません。conversation にすでに現れた内容だけで判断します。
+
+```json
+{
+  "ok": false,
+  "reason": "conversation に pytest の exit code がまだありません",
+  "impossible": false
+}
 ```
 
-効果は明確です。同じ `tests passed` でも、あなたが入力したものは数えず、background task notification が持ち帰ったものだけを数えます。モデルは「完了した」と自分で言うだけでは goal を complete にできません。これはコース全体に繰り返し現れた trust boundary の最後の登場です。s16 は protocol が理解ではなく field に依存すると言い、s19 は annotation が申告であり、申告は嘘をつけると言い、s22 は completion evidence を content ではなく origin で信頼します。
+`ok=true` は条件を満たしたことを表します。`ok=false` なら次の turn が必要です。task を完了できない状況なら `impossible=true` を返せます。
 
-教材版の `goal_satisfied()` は決定的な keyword matching です。実際の版は evidence window を別の lightweight model へ渡して判定します。
+## conversation が判断材料になる
 
-> 実際の Claude Code の evaluator は作業モデルとは別の lightweight model で、`evaluatorModel`、`default small fast model` と記されています。任意の text を信じず、会話内の evidence を判断します。
+evaluator は現在の conversation を読みます。tool result、worker の説明、background task notification はすべて message として入り、判断はそれらに実際に何が書かれているかで決まります。
 
-## Gate の 3 状態: Completed / continuing / budget 超過
+だからといって、根拠のない「tests passed」を必ず受け入れるわけではありません。evaluator prompt は conversation にある具体的な結果に基づくよう求め、報告されていない command の成功を仮定しないよう指示します。
 
-`evaluate_after_turn` は各 turn で 1 回動き、3 つの結果を返します。condition が満たされれば goal を completed として消します。満たされず budget が残れば「作業を続ける」prompt を queue し、continuing として次ラウンドを許可します。budget を使い切れば blocked で gate を解除し、永遠に判定できない goal が無限に費用を使わないようにします。
+それでも text を読むモデルであるため、重要な結果が conversation に明確に現れているかが reliability を左右します。worker の system prompt には次の方針を入れます。
 
-```python
-def evaluate_after_turn(self):
-    g = self.active
-    g["checks"] += 1
-    if self.goal_satisfied():
-        g["status"] = "completed"; self.active = None
-        return "completed"                          # 達成 -> goal を消す
-    if g["continuation_turns"] < g["max_turns"]:
-        g["continuation_turns"] += 1
-        self.queue.enqueue(
-            value="作業を続けてください。この reminder を completion evidence として扱わないでください。",
-            origin={"kind": "active-goal"})
-        return "continuing"                         # 未達成 -> prompt を queue し、次ラウンドへ
-    g["status"] = "blocked"; self.active = None
-    return "blocked"                                # budget 超過 -> gate を解除
+> verification command を実行したら、独立した evaluator が確認できるよう、command と result を明確に報告する。
+
+Goal Loop は test framework ではありません。実際の verification は tool が行います。Goal evaluator は、その結果が現在の作業記録に現れているかを判断するだけです。
+
+## 良い完了条件は確認できる
+
+「コードを良くする」だけでは曖昧で、evaluator は何をもって良いとするか判断できません。
+
+有用な条件には三つの情報があります。
+
+1. **End state：** 完了時に何が成立しているべきか；
+2. **Check：** どの command や output がそれを証明するか；
+3. **Constraints：** 作業中に壊してはいけないものは何か。
+
+例えば：
+
+```text
+/goal authentication migration を完了し、pytest tests/auth が exit code 0 になり、
+tests/auth 以外の test file は変更しない
 ```
 
-continuation prompt には、わざわざ自身を evidence にしないよう書き、filter でも除外します。これで false positive を防ぐ 3 層がそろいます。command text、reminder text、ordinary conversation のいずれも数えません。budget は s11 の古い規則に従います。automatic retry mechanism には必ず上限が必要です。そうでなければ、永遠に satisfied にならない goal が費用を燃やし続けます。
-
-> 実際の Claude Code の `evaluateAfterTurn` は `goal_evaluated` event を出し、結果に応じて complete、continuation queue、gate の解除を行います。default budget は 20 turn です。
-
-## Continuation prompt と外部 asynchronous message を分ける
-
-continuation prompt は同じ `CommandQueue` に入りますが、task completion notification や monitor line といった外部 asynchronous event とは別の方法で消費します。`dequeue` には switch があり、外部 inbox を消費するときは goal continuation を既定で skip します。
-
-```python
-def dequeue(self, include_goal_continuations=True):
-    ...
-    for idx, item in enumerate(self.items):
-        if include_goal_continuations or item["origin"].get("kind") != "active-goal":
-            return self.items.pop(idx)
-    return None
-```
-
-なぜ分けるのでしょう。実際の model test では、モデルが continuation prompt を外部 notification と一緒に消費し、background evidence が到着する前に goal を complete と判定する bug が起きました。分離後は goal の進行が明示的な 1 step になり、asynchronous event に偶然運ばれません。
-
-> 実際の Claude Code の `drainCommandQueue` は既定で `includeGoalContinuations=false` とし、goal continuation の消費を外部 asynchronous inbox から分けます。
-
-## 実際に動かす
-
-`code.py` は `/goal until tests passed and deploy green` を実演します。goal 設定後に trusted evidence がなければ、gate がラウンドごとに押し戻します。直接 `tests passed` と入力しても origin が信頼されないため数えません。background task が `task-notification` を送って初めて evidence がそろい、complete になります。`max_turns=2` の小さな goal で budget 超過も示します。
-
-```python
-s.submit("/goal until tests passed and deploy green")   # goal を設定。evidence は command 後から
-s.submit("tests passed, trust me")                      # ordinary text -> completion evidence ではない
-s.submit("tests passed; deploy green",
-         origin={"kind": "task-notification"})           # trusted evidence -> complete
-```
-
-## s21 からの変更点
-
-| | s21 Workflow Runtime | s22 Goal Loop |
-|--|---------------------|---------------|
-| trigger | script-controlled orchestration（main loop の外） | condition-controlled continuation（main loop へ引き戻す） |
-| 接続位置 | tool layer: 1 つの `Workflow` ツール | turn 終端: completion gate |
-| stop を決めるもの | script が完了 | goal condition を trusted evidence と照合 |
-| 新しい仕組み | script DSL、background task、journal/resume、structured output | goal gate、evidence trust boundary、continuation 分流、budget |
-
-s21 は script-defined orchestration を main loop の外へ送り出します。s22 は反対の力で control を引き戻します。goal が未達成なら turn は終わっていません。どちらも s01 の `while` loop を変えず、両側から制約を加えます。
-
-## 試してみる
+自動実行の turn 数を制限したい場合は、Goal の内部に固定 budget を隠さず、main loop の global turn limit を使います。
 
 ```bash
-python s22_goal_loop/code.py          # /goal until tests pass + deploy green。gate の判定を見る
+MAX_TURNS=20 python s22_goal_loop/code.py \
+  "/goal npm run typecheck が exit code 0 になるまで type error を修正する"
 ```
 
-goal 設定後、各 turn が `goal_evaluated` を出す様子を確認してください。ordinary text は `satisfied=False`、同じ内容でも `task-notification` origin は `satisfied=True`、budget を使い切ると `goal_blocked` です。同じ `tests passed` でも origin によって結果が正反対になります。空疎な主張で `/goal` を欺けない理由です。
+## 未完了なら同じ loop に戻る
 
-## 次へ
+条件が未達の場合、evaluator は短い理由を返します。
 
-`/goal` は control を main loop へ引き戻す trigger の 1 つ、condition control です。s21 の main loop 外 orchestration と対になり、一方は仕事を外へ送り、もう一方は control を内へ戻します。その外側には `/loop` と cron による time-controlled re-entry、`Monitor` による event-controlled re-entry もあり、同じ task/notification 基盤を共有します。しかし gate の core はすでにここにあります。**stop するかはモデルの一言では決まらず、goal が trusted evidence に照らして判断します。**
+```text
+完全な test result がありません。pytest tests/auth を実行し、exit code を報告してください。
+```
 
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
+program はその理由を `messages[]` に追加し、現在の `while` loop で `continue` します。user が「続けて」と入力しなくても、main model は次の turn を始めます。
+
+別の continuation queue はありません。Goal evaluation は loop の return 境界で行われ、未完了の作業も同じ場所から loop に戻ります。
+
+## background work が終わる前には判断しない
+
+Workflow、background command、その他の async task は、main model の turn が終わっても実行中かもしれません。
+
+重要な結果が conversation に戻っていない状態で判断するのは早すぎます。Goal Stop hook は `defer` を返し、Goal を active のまま残して evaluator call を省きます。task が完了すると、host は completion message を `submit_background_result()` に渡します。その message が同じ `messages[]` に入り、loop が再開します。
+
+Workflow notification に機械的な特権はありません。他の message と同じように conversation に入り、evaluator が中身の実際の結果を確認します。
+
+## 自動継続にも出口が必要
+
+Goal には隠れた「default 20 turn budget」はありません。完了条件は各 turn のあとに evaluator が改めて判断します。
+
+ただし、一つの request を永久に占有する仕組みにはできません。この章では Goal の外側に二つの共通出口を残します。
+
+- main loop の global `max_turns`；
+- Stop hook が連続で stop を拒否できる回数の上限。
+
+上限に達したら user に control を返します。goal を完了扱いにはせず、勝手に clear もしません。user は status を確認し、情報を追加して続けるか、goal を clear できます。
+
+evaluator call が失敗した場合も同じです。自動継続を止め、goal を active のまま残し、判断できないのに成功と報告せず error を返します。
+
+## 確認、置換、clear
+
+一つの session に active Goal は一つだけです。
+
+```text
+/goal
+```
+
+現在の条件、経過時間、evaluation 回数、main Agent の token 使用量、直近の evaluator reason を表示します。
+
+```text
+/goal 新しい完了条件
+```
+
+以前の Goal を置き換え、新しい条件ですぐ作業を始めます。
+
+```text
+/goal clear
+```
+
+active Goal を clear します。`stop`、`off`、`reset`、`none`、`cancel` も alias として利用できます。
+
+`GoalController.restore()` は、host が保存した `goal_status` event から active Goal を復元できます。この章の CLI は session 全体を永続化しません。完了、失敗、clear 済みの Goal は再起動しません。条件は引き継ぎますが、turn count、経過時間、token baseline は新しく計算します。
+
+## コードに追加したもの
+
+この章は agent loop を書き直しません。四つの小さな部品を追加します。
+
+| 部品 | 役割 |
+|---|---|
+| `GoalState` | 条件、evaluation 回数、開始時刻、直近の理由を保存する |
+| `PromptGoalEvaluator` | 独立した小さなモデルで conversation を判断する |
+| `GoalController` | Goal の設定、確認、clear と Stop hook を担当する |
+| `AgentSession` | 元の return 境界へ Goal 判断を接続する |
+
+接続箇所は数行です。
+
+```python
+decision = await self.goal.evaluate_after_turn(self.messages)
+if decision.action == "block":
+    continue
+return SessionResult(text=text, status=decision.action)
+```
+
+## 実行してみる
+
+dependency を install し、`.env` を準備します。
+
+```bash
+pip install -r requirements.txt
+
+# .env
+ANTHROPIC_API_KEY=...
+MODEL_ID=...
+
+# optional: Goal evaluator に小さな model を使う
+GOAL_EVALUATOR_MODEL_ID=...
+```
+
+interactive session を開始します。
+
+```bash
+python s22_goal_loop/code.py
+```
+
+次に入力します。
+
+```text
+/goal python -m pytest が exit code 0 で終了する
+```
+
+command line から直接 Goal を設定することもできます。
+
+```bash
+python s22_goal_loop/code.py "/goal python -m pytest が exit code 0 で終了する"
+```
+
+## s21 から何が変わったか
+
+s21 は「複数の仕事をどう実行するか」を扱いました。どの step を並列化し、結果をどう検証し、中断後にどう resume するかを決めます。
+
+s22 は「task 全体が完了したか」を扱います。Workflow が正常に終了しても、user の最終要件をまだ満たしていないかもしれません。Workflow result が conversation に入ったあと、Goal evaluator が session を止めるか続けるかを決めます。
+
+どちらも単独で利用できます。同じ host に接続すると、Workflow の completion message が conversation に入り、Goal Loop が task 全体を続けるか判断します。
+
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

@@ -1,160 +1,231 @@
-# s22: Goal Loop — The Goal Decides When to Stop, Not the Model
+# s22: Goal Loop: The Model Proposes a Stop; an Independent Evaluator Decides Whether to Continue
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s20 → s21 → `s22`
 
-> *"A turn ends only when the goal condition is satisfied, not merely when the model says stop"* — `/goal` adds a gate at the end of every main-loop turn. An independent evaluator checks whether trusted evidence is sufficient; if not, it pushes the model into another round.
+> *"The model making no more tool calls means that one turn wants to stop. A separate evaluator decides whether the whole goal is complete."*
 >
-> **Harness layer**: Goal closure — a program-controlled completion gate at the end of each turn.
+> **Harness layer: continued execution.** Check a completion condition at the end of every turn, and start another turn when work remains.
 
 ---
 
-From s01 through s21, how does a conversation turn end? When the model stops emitting `tool_use`, the loop simply executes `return`. That is fine for one-shot work: finish and stop.
+![Goal Loop overview](images/goal-loop-overview.svg)
 
-Some objectives, however, must be carried through to completion: "get the tests passing" or "do not stop until the deployment succeeds." Two problems appear often. The model does half the work, decides it is close enough, and stops. Worse, it says `tests passed` and tries to declare victory. The requirement is simple: the model cannot decide by itself whether the turn may end. An explicit condition must be evaluated against concrete evidence.
+Since s01, the agent loop has had one simple exit condition: when the model stops calling tools, the program returns.
 
-This thread was present from the first chapter. s01 explained that exiting the loop is a model decision. s04's Stop hook gave the program veto power for the first time. This chapter turns that veto into a complete loop with three indispensable parts: condition, evidence, and budget.
+That is enough for ordinary conversations, but not always for tasks such as "keep fixing until every test passes" or "finish every acceptance criterion." The model may believe the work is done after only part of it. No new `tool_use` means only that the current turn ended; it does not prove that the whole goal was achieved.
 
-## /goal: Add a Gate at the End of Every Turn
+`/goal` adds one independent decision before the real return.
 
-Entering `/goal <condition>` sets a session-scoped stopping condition. The program stores it as the active goal. After each turn, an independent lightweight model acts as evaluator and checks whether trusted evidence in the transcript satisfies the condition. If evidence is insufficient, the gate blocks the attempted stop and queues a "keep working" prompt for the next round. If it is sufficient, the goal is cleared and marked complete.
+## /goal is a session-scoped Stop hook
 
-![Goal Loop Overview](images/goal-loop-overview.svg)
+Enter:
 
-Compared with the s01 loop, there is only one additional decision: when the model wants to stop, it must first pass the goal gate.
-
-```python
-# s01: stop when the model says stop
-if not has_tool_use(response):
-    return
-# s22: want to stop? Pass the goal gate first
-if not has_tool_use(response):
-    verdict = goal.evaluate_after_turn()
-    if verdict == "continuing":
-        continue                 # Not achieved -> push back for another round
-    return                       # Achieved / over budget / no goal -> really stop
+```text
+/goal pytest tests/auth exits with code 0 and lint reports no errors
 ```
 
-The program controls this gate. It is not the model restraining itself. The model does not even know the gate exists; it simply receives another round of input and continues working.
+The program stores the completion condition and immediately gives it to the main model as the current task. You do not need to send a second "start working" prompt.
 
-> In the real Claude Code, `/goal` is a session-scoped Stop hook governed by workspace trust and hook restrictions. The code contains markers such as `active_goal`, `goal_status`, `goal_met`, and `tengu_goal_achieved`.
-
-## Setting a Goal: Evidence Starts after the Command
-
-`set_goal` stores an active goal containing the objective text, a maximum-turn budget, counters, and `start_index`, the beginning of the evidence window. It uses the transcript's current length, placing the `/goal` command itself outside the window. This is the first defense: a command cannot prove its own completion.
+When the main model stops calling tools, the loop runs the Goal Stop hook before returning:
 
 ```python
-def set_goal(self, objective, max_turns=20):
-    self.active = {
-        "objective": objective, "status": "active",
-        "start_index": len(self.transcript),   # Evidence starts here; the command is outside the window
-        "max_turns": max_turns, "checks": 0, "continuation_turns": 0,
-    }
+if tool_results:
+    messages.append({"role": "user", "content": tool_results})
+    continue
+
+decision = await self.goal.evaluate_after_turn(self.messages)
+if decision.action == "block":
+    self.messages.append({
+        "role": "user",
+        "content": decision.reason,
+    })
+    continue
+
+return SessionResult(text=text, status=decision.action)
 ```
 
-> In the real Claude Code, `GoalRuntime.setGoal()` stores the active goal, start position, counters, and budget, then `resetEvidenceStart()` aligns the window to the position after command submission.
+With no active goal, the hook allows the stop immediately and the loop behaves exactly as it did in s01.
 
-## The Evaluator: Trust Concrete Evidence Only
+## The evaluator is separate from the worker
 
-This is the core of the entire mechanism. The evaluator does not inspect the whole conversation. It sees only messages inside the evidence window that come from trusted sources. Three filters keep every form of "I said it was done, so it must be done" outside:
+The main model edits code, runs commands, and solves the task. The Goal evaluator is a separate model call with one job: judge the completion condition.
 
-```python
-TRUSTED_EVIDENCE_ORIGINS = {"task-notification", "monitor-line"}
+`GoalController` owns the evaluator as an internal dependency of the Goal gate. It is not a second return path beside the main loop.
 
-def evidence_text(self):
-    out = []
-    for m in self.transcript[self.active["start_index"]:]:
-        if m.origin.get("kind") == "slash-command":                     # 1 Slash commands are not evidence
-            continue
-        if m.role == "user" and m.content.strip().startswith("/goal"):  # 2 /goal command text is not evidence
-            continue
-        if m.origin.get("kind") not in TRUSTED_EVIDENCE_ORIGINS:        # 3 Trust only approved origins
-            continue
-        out.append(f"{m.role}: {m.content}")
-    return "\n".join(out)
+This lesson has no separate `CommandQueue`: when evaluation blocks the stop, the controller appends the reason to the same `messages[]` and starts the next turn. A larger host may use a shared queue to carry user input, background results, and continuation commands back into the session, but that queue is transport for the whole host, not a component owned by the Goal gate. Putting it inside the gate would blur the decision with the path used to deliver that decision.
+
+The evaluator sees:
+
+- the active Goal condition;
+- the conversation so far;
+- tool results that the worker placed in that conversation.
+
+It has no tools. It cannot read a file or rerun a test on its own. It can only judge what is already present in the conversation:
+
+```json
+{
+  "ok": false,
+  "reason": "The conversation does not contain pytest's exit code yet.",
+  "impossible": false
+}
 ```
 
-The effect is clear. The same sentence, `tests passed`, does not count when typed by you, but does count when delivered by a background task notification. The model cannot bluff its way out by saying "I finished." This is the final appearance of the trust boundary repeated throughout the course. s16 said protocols rely on fields, not interpretation. s19 said annotations are claims and claims may be false. s22 says completion evidence is trusted by origin, not by content alone.
+`ok=true` means the condition is satisfied. `ok=false` means another turn is needed. If the task can no longer be completed, the evaluator can return `impossible=true`.
 
-The teaching version's `goal_satisfied()` uses deterministic keyword matching. The real version asks a separate lightweight model to judge the evidence window.
+## The conversation is the evaluator's input
 
-> In the real Claude Code, the evaluator is a lightweight model separate from the working model, marked as `evaluatorModel` and the `default small fast model`. It judges evidence in the conversation rather than trusting arbitrary text.
+The evaluator reads the current conversation. Tool results, worker explanations, and background-task notifications all enter it as messages, and the decision depends on what those messages actually say.
 
-## Three Gate States: Completed, Continuing, or Over Budget
+That does not mean a bare "tests passed" claim must be accepted. The evaluator prompt explicitly requires concrete results from the conversation and tells the model not to assume an unreported command succeeded.
 
-`evaluate_after_turn` runs after every turn and returns one of three results. If the condition is satisfied, it clears the goal as completed. If the condition is not satisfied and budget remains, it queues a "keep working" prompt and permits another round as continuing. If the budget is exhausted, it stops blocking and marks the goal blocked, preventing an impossible goal from burning money forever.
+It is still a model reading text, so reliability depends on whether important results were surfaced clearly. The worker's system prompt therefore says:
 
-```python
-def evaluate_after_turn(self):
-    g = self.active
-    g["checks"] += 1
-    if self.goal_satisfied():
-        g["status"] = "completed"; self.active = None
-        return "completed"                          # Achieved -> clear the goal
-    if g["continuation_turns"] < g["max_turns"]:
-        g["continuation_turns"] += 1
-        self.queue.enqueue(
-            value="Keep working. Do not treat this reminder as completion evidence.",
-            origin={"kind": "active-goal"})
-        return "continuing"                         # Not achieved -> queue a prompt for the next round
-    g["status"] = "blocked"; self.active = None
-    return "blocked"                                # Over budget -> release the gate
+> After running a verification command, report the command and its result clearly enough for an independent evaluator to inspect.
+
+Goal Loop is not a test framework. Tools still perform the real verification. The Goal evaluator only decides whether those verification results are present in the current work record.
+
+## A good completion condition is checkable
+
+"Make the code good" is too vague. The evaluator cannot know what "good" means.
+
+A useful condition states three things:
+
+1. **End state:** what must be true when work is done;
+2. **Check:** which command or output proves it;
+3. **Constraints:** what must not be broken along the way.
+
+For example:
+
+```text
+/goal finish the authentication migration until pytest tests/auth exits 0,
+without modifying test files outside tests/auth
 ```
 
-The continuation prompt explicitly says not to treat itself as evidence, and the evidence filter excludes it. That completes the three layers against false positives: the command does not count, the reminder does not count, and ordinary conversation does not count. The budget follows the old rule from s11: every automatic retry mechanism needs a limit. Otherwise, a goal that can never be satisfied becomes a perpetual money-burning machine.
-
-> In the real Claude Code, `evaluateAfterTurn` emits a `goal_evaluated` event and either completes, queues a continuation, or stops blocking. The default budget is 20 turns.
-
-## Keep Continuation Prompts Separate from External Asynchronous Messages
-
-Continuation prompts enter the same `CommandQueue`, but they are not consumed in the same way as external asynchronous events such as task-completion notifications and monitor lines. `dequeue` has a switch, and consumption of the external inbox skips goal continuations by default.
-
-```python
-def dequeue(self, include_goal_continuations=True):
-    ...
-    for idx, item in enumerate(self.items):
-        if include_goal_continuations or item["origin"].get("kind") != "active-goal":
-            return self.items.pop(idx)
-    return None
-```
-
-Why separate them? A real model test exposed a bug where the model consumed the continuation prompt together with an external notification and marked the goal complete before background evidence arrived. With the paths separated, goal progression is an explicit step and cannot be carried along accidentally by asynchronous events.
-
-> In the real Claude Code, `drainCommandQueue` defaults to `includeGoalContinuations=false`, separating goal-continuation consumption from the external asynchronous inbox.
-
-## See It Run
-
-`code.py` demonstrates `/goal until tests passed and deploy green`. With no trusted evidence after goal creation, the gate pushes it back round after round. Typing `tests passed` directly still does not count because the origin is untrusted. Only after a background task sends a `task-notification` does the evidence satisfy the goal. A second small goal with `max_turns=2` demonstrates the over-budget path.
-
-```python
-s.submit("/goal until tests passed and deploy green")   # Set the goal; evidence begins after this command
-s.submit("tests passed, trust me")                      # Ordinary text -> not completion evidence
-s.submit("tests passed; deploy green",
-         origin={"kind": "task-notification"})           # Trusted evidence -> complete
-```
-
-## Changes from s21
-
-| | s21 Workflow Runtime | s22 Goal Loop |
-|--|---------------------|---------------|
-| Trigger | Script-controlled orchestration outside the main loop | Condition-controlled continuation pulled back into the main loop |
-| Attachment point | Tool layer: one `Workflow` tool | End of turn: a completion gate |
-| Who decides when to stop | The script finishes | Goal condition evaluated against trusted evidence |
-| New mechanisms | Script DSL, background tasks, journal/resume, structured output | Goal gate, evidence trust boundary, separate continuation path, budget |
-
-s21 sends script-defined orchestration away from the main loop. s22 applies an opposite force that pulls control back: if the goal is not achieved, the turn is not finished. Neither changes the `while` loop from s01; each constrains it from a different side.
-
-## Try It
+If you need to bound unattended work, use the main loop's global turn limit instead of hiding a fixed budget inside Goal:
 
 ```bash
-python s22_goal_loop/code.py          # /goal until tests pass + deploy green; watch the gate decide
+MAX_TURNS=20 python s22_goal_loop/code.py \
+  "/goal fix the type errors until npm run typecheck exits 0"
 ```
 
-After setting a goal, watch every turn produce `goal_evaluated`. Ordinary text yields `satisfied=False`; the same content from a `task-notification` origin yields `satisfied=True`; exhausted budget produces `goal_blocked`. The same `tests passed` sentence has opposite results depending on its origin. That is why an empty claim cannot fool `/goal`.
+## Unfinished work returns to the same loop
 
-## Next
+When the evaluator says the condition is not met, it returns a short reason:
 
-`/goal` is one kind of trigger that pulls control back into the main loop: condition control. It pairs naturally with s21's orchestration outside the main loop, one dispatching work outward and the other pulling control inward. Beyond them are time-controlled re-entry through `/loop` and cron, and event-controlled re-entry through `Monitor`; all share the same task and notification foundation. But the essential gate is already here: **the model's words do not decide whether to stop. The goal must judge trusted evidence.**
+```text
+The conversation has no complete test result. Run pytest tests/auth and report its exit code.
+```
 
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
+The program appends that reason to `messages[]` and executes `continue` in the current `while` loop. The main model starts another turn without waiting for the user to type "continue."
+
+There is no separate continuation queue. Goal evaluation happens at the loop's return boundary, and unfinished work returns through that same boundary.
+
+## Wait before judging unfinished background work
+
+A Workflow, background command, or other asynchronous task may still be running when the main model ends its current turn.
+
+Evaluating immediately would be premature because the important result has not returned to the conversation. The Goal Stop hook returns `defer`, keeps the Goal active, and skips the evaluator. When the task finishes, the host passes its completion message to `submit_background_result()`; that message enters the same `messages[]`, and the loop resumes.
+
+A Workflow notification has no mechanical privilege. It enters the conversation like other messages, and the evaluator judges the actual result it contains.
+
+## Automatic continuation still needs an exit
+
+Goal has no hidden default budget of twenty turns. The evaluator judges the condition again after each completed turn.
+
+No automatic mechanism should monopolize one request forever, however. This lesson keeps two general exits outside the goal itself:
+
+- the main loop's global `max_turns`;
+- a cap on consecutive Stop-hook blocks.
+
+When a limit is reached, the program returns control to the user. It does not mark the goal complete and does not silently clear it. The user can inspect status, provide more information, continue, or clear the goal.
+
+An evaluator error follows the same rule: stop automatic continuation, leave the goal active, and surface the error instead of claiming success when completion could not be judged.
+
+## Inspect, replace, and clear
+
+One session has at most one active Goal.
+
+```text
+/goal
+```
+
+Shows the condition, elapsed time, evaluation count, main Agent token spend, and the latest evaluator reason.
+
+```text
+/goal a new completion condition
+```
+
+Replaces the previous Goal and begins work under the new condition immediately.
+
+```text
+/goal clear
+```
+
+Clears the active Goal. `stop`, `off`, `reset`, `none`, and `cancel` are accepted aliases.
+
+`GoalController.restore()` can restore a still-active Goal from `goal_status` events persisted by the host; this lesson's CLI does not persist a whole session. A completed, failed, or cleared Goal does not restart. The condition carries over, while turn count, elapsed time, and token baseline start fresh.
+
+## What the code adds
+
+This chapter does not rewrite the agent loop. It adds four focused pieces:
+
+| Piece | Responsibility |
+|---|---|
+| `GoalState` | Store the condition, evaluation count, start time, and latest reason |
+| `PromptGoalEvaluator` | Use a separate small model to judge the conversation |
+| `GoalController` | Set, inspect, clear, and run the Goal Stop hook |
+| `AgentSession` | Connect the Stop hook to the original return boundary |
+
+The integration point is only a few lines:
+
+```python
+decision = await self.goal.evaluate_after_turn(self.messages)
+if decision.action == "block":
+    continue
+return SessionResult(text=text, status=decision.action)
+```
+
+## Try it
+
+Install dependencies and prepare `.env`:
+
+```bash
+pip install -r requirements.txt
+
+# .env
+ANTHROPIC_API_KEY=...
+MODEL_ID=...
+
+# Optional: use a smaller model for Goal evaluation
+GOAL_EVALUATOR_MODEL_ID=...
+```
+
+Start the interactive session:
+
+```bash
+python s22_goal_loop/code.py
+```
+
+Then enter:
+
+```text
+/goal python -m pytest exits with code 0
+```
+
+You can also set a Goal directly from the command line:
+
+```bash
+python s22_goal_loop/code.py "/goal python -m pytest exits with code 0"
+```
+
+## What changed from s21
+
+s21 answers how a batch of work should run: which steps are concurrent, how results are verified, and how an interrupted run resumes.
+
+s22 answers whether the entire task is complete. A Workflow may finish successfully while the user's final requirements are still unmet. Once the Workflow result enters the conversation, the Goal evaluator decides whether the session should stop or continue.
+
+You can use either mechanism on its own. When one host connects them, the Workflow completion message enters the conversation and Goal Loop decides whether the overall task needs another turn.
+
+<!-- translation-sync: zh@v3, en@v3, ja@v3 -->

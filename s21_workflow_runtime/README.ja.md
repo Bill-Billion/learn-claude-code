@@ -1,229 +1,319 @@
-# s21: Workflow Runtime — モデルが単一 step を決め、script が orchestration を決める
+# s21: Workflow Runtime：モデルが単一の判断を行い、script が全体の進行を決める
 
 [中文](README.zh.md) · [English](README.md) · [日本語](README.ja.md)
 
 s01 → ... → s19 → s20 → `s21`
 
-> *「1 回の tool_use で、バックグラウンドに一式の orchestration を走らせる」* — `Workflow` ツールが決定的で復元可能な script runtime を起動し、多数の subagent をまとめて送り出します。
+> *「一つの仕事をどう進めるかはモデルに任せ、複数の仕事をどの順序で進めるかは script に任せる。」*
 >
-> **Harness 層**: Orchestration — single-agent loop の上に、決定的な multi-agent script runtime を追加します。
+> **Harness layer：orchestration。** 安定していて繰り返しやすく、並列化に向いた multi-agent の流れをコードにします。
 
 ---
 
-s01 から s20 まで、loop は常にモデル駆動で 1 step ずつ進みました。各ラウンドでモデルが 1 つのツールを選び、結果を `messages[]` へ入れ、次のラウンドへ進みます。open-ended なタスクには最適です。次に何をするかを、モデルが context を見てその場で決められます。
+![Workflow Runtime 全体像](images/workflow-runtime-overview.svg)
 
-しかし、複数の Agent を決定的に指揮したい仕事もあります。大きな変更の review を考えてください。10 の観点から並行して問題を探す → 各 finding へ別 Agent を送り adversarial verification を行う → 結果を集約して重複を除く → severity 順に並べる。この流れの形は固定されており、本当に必要なのは 3 つです。
+s01 から s20 までは、次に何をするかを常にモデルが決めてきました。モデルは context を読み、tool を選び、結果を観察してから次の行動を決めます。答えが最初から分からない仕事では、これが今でも最も自然な進め方です。
 
-- **並行性**: 1 件ずつ順番に待たないこと。
-- **決定性**: 同じ入力から同じ結果構造が得られること。
-- **復元可能性**: 途中で止まっても、完了済みの部分を最初からやり直さないこと。
+一方で、実行順序がすでに明確な仕事もあります。大きな変更を review する場合を考えてみましょう。
 
-この流れをモデルに main loop で 1 ラウンドずつ動かさせると、遅く、結果は不確定で、中断すれば最初からです。ここで必要なのは「もう 1 turn 話す」ことではなく、orchestration をそのままコードにすることです。
+1. 確認すべき file を見つける。
+2. 複数の観点から並列に調べる。
+3. 同じ根本原因を説明する report をまとめる。
+4. まとめた各 issue を別の Agent が検証する。
+5. 優先順位を付け、一つの report にまとめる。
 
-## 計画は chat のラウンドを重ねず、コードに書く
+モデルが判断すべきなのは、「コードに問題があるか」「その finding は本当に成立するか」です。いつ並列に実行し、誰が検証し、最後にどう集約するかを毎 turn モデルに決め直させる必要はありません。
 
-Claude Code の tool pool には `Workflow` ツールがあります。あなたが渡すか、モデルが high-intensity mode で起動した script は、`agent() / parallel() / pipeline() / phase()` という少数の primitive を使い、orchestration を決定的なコードとして表します。
+Workflow は、この実行の流れを script に移します。
 
-main loop から見えるのは 1 回の `tool_use` だけで、すぐ「バックグラウンドで起動済み」という結果を受け取ります。本当の実行は background runtime で進み、進捗をリアルタイムに報告し、全過程をディスク上の journal へ記録します。script の中間結果は変数に保存され、会話履歴の場所を取りません。`resumeFromRunId` で再開すると、変更されていない `agent()` は journal cache に当たり、以前の結果を直接使って checkpoint から続行します。
+## 実行の流れをコードにする
 
-![Workflow Runtime Overview](images/workflow-runtime-overview.svg)
+Claude Code に保存される Workflow は JavaScript です。通常の条件分岐、loop、変数で処理を組み立て、判断が必要な step を `agent()` に任せます。
 
-```python
-SAMPLE_META = {"name": "review-changes", "description": "コード変更を review", "phases": ["Review", "Verify"]}
+```javascript
+export const meta = {
+  name: "review-changes",
+  description: "Review changed files and verify every finding",
+}
 
-async def sample_workflow(ctx, args):
-    ctx.phase("Review")
-    results = await ctx.pipeline(DIMENSIONS, audit, verify)   # 各 dimension が独立して audit → verify を通る
-    confirmed = [f for r in results if r for f in r["confirmed"]]
-    ctx.log(f"{len(confirmed)} 件の実在する問題を確認")
-    return {"confirmed": confirmed}
+const audits = await pipeline(args.files, file =>
+  agent(`Review ${file} for correctness problems.`, { label: file })
+)
+
+return audits.filter(Boolean)
 ```
 
-## Workflow ツール: バックグラウンド起動、main loop には 1 回の call だけ
-
-`Workflow`（別名 `RunWorkflow`）は main Agent の tool pool にあります。明示的に「この workflow を実行」と頼む、保存済みの `/command` を使う、またはモデルが自動で high-intensity path へ入ると、モデルが `Workflow(...)` の tool call を出します。
-
-ツールは argument を parse し、meta 情報を検証し、permission check を通し、local workflow task を登録すると、すぐ「非同期で起動済み」と返します。main loop は block せず別の仕事を続け、workflow は background で実行されます。これは s13 の引換券 pattern を拡大したものです。先に引換券を渡し、結果ができたら通知します。
+この章では、background 実行、並列処理、失敗、resume の仕組みを追いやすくするため、runtime を Python で再構成します。sample Workflow の中心は次のようになります。
 
 ```python
-class WorkflowTool:
-    async def call(self, meta, script_fn, args=None, resume_from_run_id=None):
-        validate_meta(meta)
-        check_permission(meta)
-        run_id = resume_from_run_id or create_run_id(meta)
-        task = LocalWorkflowTask(create_task_id(run_id), run_id, meta)
-        task.event("async_launched", runId=run_id, taskId=task.task_id)   # すぐ return
-        ...                                                                # 残りはバックグラウンドで進む
+async def review_changes(context, args):
+    context.phase("Review")
+
+    audits = await context.parallel([
+        lambda dimension=dimension: context.agent(
+            f"対象 file の {dimension} problem を調べる",
+            schema=FINDINGS_SCHEMA,
+            label=f"audit:{dimension}",
+        )
+        for dimension in REVIEW_DIMENSIONS
+    ])
+
+    findings = []
+    for dimension, result in zip(REVIEW_DIMENSIONS, audits):
+        if not result.ok:
+            continue
+        for finding in result.value["findings"]:
+            findings.append({
+                "source_id": f"r{len(findings)}",
+                "dimension": dimension,
+                **finding,
+            })
+
+    context.phase("Consolidate")
+    grouping = await context.agent(
+        f"同じ根本原因の report をまとめる：{findings}",
+        schema=CONSOLIDATION_SCHEMA,
+        label="consolidate",
+    )
+    consolidated = validate_consolidation(findings, grouping)
+
+    async def verify(finding, _original, _index):
+        verdict = await context.agent(
+            f"この finding を独立して検証する：{finding}",
+            schema=VERDICT_SCHEMA,
+            label=f"verify:{finding['title']}",
+        )
+        return finding if verdict["confirmed"] else {}
+
+    context.phase("Verify")
+    verdicts = await context.pipeline(consolidated, verify)
+
+    return [
+        result.value for result in verdicts
+        if result.ok and result.value
+    ]
 ```
 
-> 実際の Claude Code は `{status:'async_launched', taskId, taskType:'local_workflow', runId, summary, transcriptDir, scriptPath}` をすぐ返し、background task の完了後に通知します。
+言語が変わっても役割分担は同じです。判断はモデルが担当し、script は開始、待機、結果の受け渡し、終了処理を担当します。
 
-## Script と meta: 1 行目を正しく書く
+## 一度起動し、background で完了する
 
-script の 1 行目は必ず `export const meta = { name, description, phases }` とし、変数、関数呼び出し、文字列連結を含まない純粋な literal でなければなりません。runtime はコードを一切実行する前に parse します。`name` と `description` は task と UI の表示に使い、`phases` は progress bar の group 名を定義します。
-
-不正な入力はすぐ `WorkflowInputError` になり、登録時に止まります。s14 の cron 式検証と同じ考えです。不正な script が実行時まで進んでから壊れないようにします。
+Workflow は main Agent の tool の一つです。モデルが呼び出すと、tool は local task を登録してすぐに戻ります。
 
 ```python
-def validate_meta(meta):
-    if not meta.get("name") or not meta.get("description"):
-        raise WorkflowInputError("meta には name と description が必要です")
-    if "phases" in meta and not isinstance(meta["phases"], list):
-        raise WorkflowInputError("meta.phases は list でなければなりません")
-    return meta
+job = asyncio.create_task(self._execute(...))
+self.registry.register(task, job)
+
+return {
+    "status": "async_launched",
+    "taskId": task_id,
+    "runId": run_id,
+}
 ```
 
-> 実際の Claude Code の `parseWorkflowScript` は、meta を 1 行目の純粋な literal に限定します。教材版は dict を直接受け取り、この部分を簡略化しています。
+main session は全処理の完了を待たず、task の受付情報を受け取ります。background task はそのまま進み、phase、Agent、最終完了の event を送ります。
 
-## Orchestration primitive: この少数だけで、すべての flow を書ける
+## agent() は完全な subagent を起動する
 
-script は独立した context で動き、global variable として使えるのは少数の orchestration primitive だけです。script 自身はファイルを直接読み書きせず、shell も実行しません。実際のコード操作は、派遣された subagent が自分の tool permission で行います。primitive はすべて `ExecutionState` の method です。
-
-| Primitive | 役割 |
-|------|------|
-| `agent(prompt, {schema, label, phase})` | 1 つの subagent を派遣 |
-| `parallel(thunks)` | **barrier**: すべての task を並行実行し、全結果が戻るまで待つ |
-| `pipeline(items, *stages)` | 各 item を **barrier なし**で stage ごとに実行し、終わった item から先へ進める |
-| `phase(title)` | 現在の progress phase を記録し、progress bar を更新 |
-| `log(message)` | progress log を 1 行出力 |
-| `workflow(name, args)` | nested sub-workflow（1 階層だけ） |
-
-既定では `pipeline` を使うべきです。各 item がすべての stage を独立して通り、item A が stage 3 にいる間、item B はまだ stage 1 かもしれません。次の stage へ進むために前 stage の全結果が本当に必要なときだけ、`parallel` barrier を使います。barrier は最も遅い task を待つため、不要なら置かないでください。
+`agent()` は一度だけ text completion を呼ぶ処理ではありません。各 subagent は独立した messages と tool loop を持ち、file や diff を読み、追加の tool call が必要かを自分で判断します。
 
 ```python
-async def pipeline(self, items, *stages):
-    async def run_item(item, idx):
-        value = item
-        for stage in stages:                       # 各 item がすべての stage を独立して完走
-            value = await stage(value, item, idx)
-        return value
-    return await asyncio.gather(*[run_item(it, i) for i, it in enumerate(items)])
+for _turn in range(30):
+    response = client.messages.create(
+        model=model,
+        messages=messages,
+        tools=READ_ONLY_TOOLS,
+    )
+    messages.append({"role": "assistant", "content": response.content})
+
+    tool_results = []
+    for block in response.content:
+        if _block_type(block) != "tool_use":
+            continue
+        output = self._run_tool(
+            _block_value(block, "name"),
+            _block_value(block, "input", {}),
+        )
+        tool_results.append({
+            "type": "tool_result",
+            "tool_use_id": _block_value(block, "id"),
+            "content": output,
+        })
+
+    if tool_results:
+        messages.append({"role": "user", "content": tool_results})
+        continue
+
+    return AgentRun(value=_extract_text(response.content))
 ```
 
-> 実際の Claude Code は同名 primitive を script VM の context へ注入します。さらに `args`、total/spent/remaining を持つ `budget`、最大 1000 Agent の上限、concurrency semaphore も提供します。
+sample reviewer が使えるのは read-only tool だけです。`read_file` は安定した行番号を返すため、後続の finding は正確な evidence を示せます。`glob` は Git が track している file と ignore していない file から match し、件数と文字数を制限します。広い検索でも `.worktrees` や生成 file を大量にモデルへ返しません。file を変更する Workflow では、複数の writer に同じ directory を共有させず、前の章で扱った permission check と worktree isolation を引き続き使うべきです。
 
-## 構造化出力: Subagent に散文を返させない
+## parallel() と pipeline()
 
-`agent({schema})` は、schema に一致する JSON object を subagent に要求します。内部では structured output call を 1 回使い、runtime が結果を schema で検証し、不一致なら 1 回 retry します。下流コードが受け取るのは規則的な object であり、再 parse が必要な長文ではありません。
-
-s05 では tool argument を全面的に信頼できないと説明しました。ここでは同じ教訓を逆向きに使います。subagent の出力も全面的には信頼できません。orchestration boundary で検証し、1 回 retry の機会を与え、不確実性を後続 flow の外へ止めます。
+互いに独立し、最後にまとめて受け取りたい仕事には `parallel()` を使います。
 
 ```python
-result = self.runner.run(prompt, schema, label)
-if schema is not None:
-    ok, err = SimpleJsonSchema(schema).validate(result)
-    if not ok:                                       # 1 回だけ注意して retry、それでも不正なら error
-        result = self.runner.run(prompt + "\n\n有効な JSON を返してください。", schema, label)
-        ok, err = SimpleJsonSchema(schema).validate(result)
-        if not ok:
-            raise WorkflowInputError(f"agent({{schema}}) の出力が不正です: {err}")
+audits = await context.parallel([
+    lambda: audit("correctness"),
+    lambda: audit("maintainability"),
+])
 ```
 
-> 実際の Claude Code は `SimpleJsonSchema`、`StructuredOutput` ツール、schema-aware retry を組み合わせ、出力形式を保証します。
+すべての branch が同時に始まり、完了後は入力順で結果が返ります。
 
-## Background task と progress event
-
-`LocalWorkflowTask` は status と token usage を管理し、SDK style の event stream を外へ出します。`task_started` → phase change、subagent start、log batch を含む一連の `task_progress` → 完了、失敗、停止に加え、output file、token 数、tool call 数、所要時間を含む最後の `task_notification` です。
-
-main session は通常 event として処理し、最後の完了通知だけが main loop へ再び入ります。
+各 item を複数の stage に順番に通したい場合は `pipeline()` を使います。
 
 ```python
-class LocalWorkflowTask:
-    def progress_event(self, ptype, **data):         # phase/subagent/log
-        self.progress.append({"type": ptype, **data})
-        print(f"  progress   {ptype} ...")
+results = await context.pipeline(
+    findings,
+    verify,
+)
 ```
 
-> 実際の Claude Code は進捗を task state へまとめ、`task_progress.workflow_progress` として UI と SDK へ送ります。
+同じ item の stage 順序は守られますが、異なる item は並行して進みます。ある finding の verification が終わっても、別の finding はまだ関連コードを読んでいるかもしれません。
 
-## 保存: Snapshot + journal で中断から再開する
+## まず形を保証し、そのあと内容を判断する
 
-各 run は `~/.claude/projects/<project>/<session>/` に 5 種類を書きます。`<runId>.json` snapshot、`<runId>.output.json` output、`<runId>.journal.jsonl` journal、`scripts/<runId>.js` の script copy、`subagents/workflows/<runId>/` の subagent transcript です。保存した再利用可能な workflow は project scope の `.claude/workflows/` または user scope の `~/.claude/workflows/` に置きます。
-
-journal は checkpoint resume の中心で、各 `agent()` の結果を 1 行ずつ記録します。
+Workflow の結果はさらにコードから利用されるため、field の形を安定させる必要があります。`agent(schema=...)` は、schema に一致する structured result を最後に提出するよう subagent に求めます。
 
 ```python
-class WorkflowJournal:
-    def record(self, key, value):
-        self._f.write(json.dumps({"key": key, "value": value}) + "\n")
-        self._f.flush()
-        self.cache[key] = value
+{
+    "findings": [
+        {
+            "title": "...",
+            "severity": "high",
+            "evidence": "..."
+        }
+    ]
+}
 ```
 
-## Resume: runId から続行し、変更のないものを再利用する
+Schema が保証するのは、下流のコードが値を扱えることだけです。内容が正しいことまでは保証しません。
 
-`Workflow({scriptPath, resumeFromRunId, args})` を呼ぶと script を再実行しますが、各 `agent()` は決定的な semantic key を計算します。journal に key があれば、再実行せず cached result を返します。変更のない call はすべて cache hit し、変更された call とそれに依存する後続 step だけが本当に動きます。
+正しい形の `findings` array が返っても、各 finding が本物か、説明された原因と影響をコードから導けるかは別の Agent が検証する必要があります。形の validation と内容の verification は別の問題です。JSON が正しいだけで結論を信用してはいけません。
 
-key は concurrency の完了順に依存してはいけません。`parallel` と `pipeline` の Agent は不定の順番で完了します。「何番目に完了したか」を key にすると、次回の cache が別の call へ対応してしまいます。そのため key は競合する counter ではなく、call の内容、つまり type、label、prompt、schema の stable hash です。
+## 同じ issue は一度だけ検証する
+
+異なる review dimension が同じ issue を報告しても、title が完全に一致することはほとんどありません。title は表示用の文であり、重複判定の key には使えません。
+
+script は各 raw report に `r0`、`r1` のような source ID を付けます。そのあと Consolidate Agent が、同じ根本原因を説明する report を判断します。
+
+```json
+{
+  "groups": [
+    {
+      "source_ids": ["r0", "r1"],
+      "title": "percentage() が total 0 を処理しない",
+      "evidence": "二つの report は同じ zero guard の欠落を示している"
+    }
+  ]
+}
+```
+
+semantic grouping はモデルが担当しますが、一つの修正で group 内の全 report を解決できる場合だけ統合し、判断に迷う場合は分けたままにします。script はすべての source ID が一度だけ現れることを確認し、raw report の最も高い severity と全 review dimension を残します。Verify Agent は consolidated issue ごとに一つだけ起動します。
+
+grouping が source ID を省略、重複、または捏造した場合、workflow は error を `incomplete` に記録し、raw report を個別に検証します。Consolidate が失敗しても finding は消えません。
+
+すべての branch が完了しても、すべての defect を発見した証明にはなりません。並列 review は確認範囲を広げますが、モデルの判断を網羅的な検査に変えるものではありません。
+
+## 失敗を消してはいけない
+
+並列処理では timeout、rate limit、不正な出力、tool error が起こります。例外をすべて `None` に変えると、次の二つを区別できません。
+
+- 確認は完了したが問題が見つからなかった。
+- 確認そのものが完了しなかった。
+
+そのため、`parallel()` と `pipeline()` は明示的な `Outcome` を返します。
 
 ```python
-def key(self, kind, label, prompt, schema):
-    basis = f"{kind}|{label}|{prompt}|{json.dumps(schema, sort_keys=True)}"
-    return f"{kind}-{_stable_hash(basis) % 10**10:010d}"
-
-# agent() の内部:
-cached = self.journal.cached(key)
-if cached is not MISS:
-    self.task.progress_event("workflow_agent", label=label, status="cached")
-    return cached
+Outcome(ok=True, value=result)
+Outcome(ok=False, error="RuntimeError: request timed out")
 ```
 
-> 実際の Claude Code も「決定的 semantic key + journal cache」という考えです。同じ session で resume すると、完了済み `agent()` は cached result を直接返し、その後だけを実行します。
+検証済みの finding は report に残し、完了しなかった review、consolidation、verification branch は `incomplete` に記録します。部分的な結果は利用できますが、失敗を「問題なし」として扱うことはできません。
 
-## 決定性: Resume に意味を持たせる再現性
+## resume はどこから始まるか
 
-resume が動くには、まず script が再現可能でなければなりません。runtime は `Date.now()`、引数なしの `new Date()`、`Math.random()` などの非決定的なものを script context から取り除き、Node native API も渡しません。同じ script + 同じ argument → 同じ key → 100% cache hit になります。教材版は stable hash で同じ性質を得ます。実際の版は、非決定的な source を除いた sandbox VM で JavaScript 全体を実行します。
+runtime は各 `agent()` の開始順、入力、結果を記録します。resume では最初の呼び出しから順に比較します。
 
-## 実際に動かす
+```text
+old run: A → B → C  → D
+new run: A → B → C' → D
 
-sample workflow `review-changes` は `pipeline` を使い、各 review dimension を独立して audit → verify へ通します。audit では schema 付き `agent()` が問題を探し、verify では `parallel()` が各 finding に別の adversarial verification subagent を送ります。実在すると確認された問題だけを残し、severity 順に並べます。
-
-```python
-async def sample_workflow(ctx, args):
-    ctx.phase("Review")
-
-    async def audit(_v, dimension, _i):
-        out = await ctx.agent(f"変更されたコードに {dimension} 関連の問題がないか確認してください",
-                              schema=FINDINGS_SCHEMA, label=f"audit:{dimension}", phase="Review")
-        return {"dimension": dimension, "findings": out["findings"]}
-
-    async def verify(audited, dimension, _i):
-        ctx.phase("Verify")
-        verdicts = await ctx.parallel([                       # 各 finding を独立して verify
-            (lambda f=f: ctx.agent(f"この問題が実在するか adversarial に検証してください: {f['title']}",
-                                   schema=VERDICT_SCHEMA, label=f"verify:{dimension}:{f['title']}"))
-            for f in audited["findings"]])
-        return {"dimension": dimension,
-                "confirmed": [f for f, v in zip(audited["findings"], verdicts) if v and v["isReal"]]}
-
-    results = await ctx.pipeline(DIMENSIONS, audit, verify)
-    ...
+resume:  A と B は以前の結果を利用
+         C' は再実行
+         D も再実行
 ```
 
-## s20 からの変更点
+未完了または変更された step が一つ見つかると、それ以降はすべて再実行します。以前の処理の後半を、新しい実行経路へ誤って接続しないためです。
 
-| | s20 Comprehensive Agent | s21 Workflow Runtime |
-|--|-----------|---------------------|
-| loop | 1 つ、モデル駆動 | main loop は不変。その上に決定的 orchestration を追加 |
-| 次の step を決めるもの | モデルが毎ラウンド判断 | script が orchestration flow を事前に定義 |
-| multi-agent | s06 subagent を一度だけ派遣 | script 化された、再現可能で復元可能な一括 orchestration |
-| 新しい仕組み | — | script DSL、background task、progress event、journal/resume、structured output、deterministic VM |
+並列 Agent の完了順は変わる可能性があるため、journal は完了順ではなく開始順を記録します。
 
-s21 は main loop を置き換えません。tool layer に `Workflow` を公開し、背後で local workflow runtime を起動します。1 つの workflow が N 個の Agent loop を決定的に駆動します。s06 の subagent はモデルがその場で 1 回派遣し、s21 は orchestration を replay 可能な script にします。
+journal が比較するのは `agent()` call の入力です。Agent が読む file の変更までは検出しません。`resume` は同じ run を続けるために使い、コードや入力データが変わった場合は新しい run を開始します。
 
-## 試してみる
+## 一つの実行は一つの制限を共有する
+
+concurrency semaphore、Agent call 数、usage は個別の step ではなく実行全体に属します。usage は Agent 数、model API call 数、token、tool call 数を別々に記録します。nested Workflow も同じ制限を共有するため、nesting で上限を回避することはできません。
+
+permission は起動前に確認します。明示的な allow rule がなければ user に確認すべきです。この章の script を直接実行する操作は、内蔵 sample の起動を user が明示的に承認したものとして扱います。
+
+## 実行してみる
+
+dependency を install し、`.env` を準備します。
 
 ```bash
-python s21_workflow_runtime/code.py          # review-changes を起動し、event stream を確認
-python s21_workflow_runtime/code.py resume   # 前回の runId から resume。すべての agent() が journal cache に当たる
+pip install -r requirements.txt
+
+# .env
+ANTHROPIC_API_KEY=...
+MODEL_ID=...
 ```
 
-1 回の起動から `async_launched`、background の phase change と subagent progress、最後の `task_notification` までを観察してください。結果は task object に保存されます。resume 時はすべて cache hit するため `agents=0 tokens=0` と表示され、結果は前回と 1 byte も違いません。
+内蔵 review Workflow を実行します。
 
-## 次へ
+```bash
+python s21_workflow_runtime/code.py
+```
 
-orchestration は Agent 能力の上にもう 1 層を加えます。main loop は個々の操作を管理し、script はチーム全体の flow を管理します。仕事が決定的で復元可能な script になると、モデルは「ラウンドごとの driver」から「script に schedule される実行 unit」へ変わります。同じ `agent()` を main loop でモデルがその場で呼ぶことも、workflow 内で script がまとめて編成することもできます。
+対象 file を指定することもできます。
 
-次へ: [s22 Goal Loop](../s22_goal_loop/) — Orchestration は仕事を fan-out し、main loop から離れます。次章は逆に、1 つの goal が control を main loop へ引き戻し、objective が達成されるまで turn の終了を認めません。
+```bash
+python s21_workflow_runtime/code.py s20_comprehensive/code.py
+```
 
-<!-- translation-sync: zh@v2, en@v2, ja@v2 -->
+直前の実行を resume します。
+
+```bash
+python s21_workflow_runtime/code.py resume
+```
+
+event stream には次の順序が現れます。
+
+```text
+async_launched
+task_started
+workflow_phase
+workflow_agent
+task_notification
+```
+
+output と journal は `s21_workflow_runtime/.runtime/` に保存されます。これは local runtime state であり、repository には commit しません。
+
+## s20 から何が変わったか
+
+| | s20 comprehensive harness | s21 Workflow Runtime |
+|---|---|---|
+| 次を誰が決めるか | モデルが turn ごとに決める | script が既知の流れを実行する |
+| Multi-agent | モデルが必要に応じて subagent や teammate を起動する | script が複数の subagent をまとめて起動、集約する |
+| 中間結果 | message history に戻る | script の変数に残る |
+| 実行方法 | 現在の session 内で進む | local background task として進む |
+| Resume | session と task state に依存する | Agent の開始順で完了済み prefix を再利用する |
+
+各 `agent()` の内部では元の agent loop が動きます。script が担当するのは、複数の Agent の実行順序です。
+
+すべての task を Workflow にする必要はありません。要求が変化している場合や、次の step がモデルの発見に依存する場合は、通常の agent loop を使い続けます。実行順序が安定し、繰り返す価値があるときだけコードに移します。
+
+次章の [s22 Goal Loop](../s22_goal_loop/) は、turn が止まろうとするたびに完了条件を確認します。Workflow の終了は script が終わったことを示しますが、user の最終 goal が満たされたとは限りません。
+
+<!-- translation-sync: zh@v4, en@v4, ja@v4 -->

@@ -141,7 +141,11 @@ def complete_task(task_id: str) -> str:
 # ── Prompt Assembly (from s10, synced) ──
 
 PROMPT_SECTIONS = {
-    "identity": "You are a coding agent. Act, don't explain.",
+    "identity": (
+        "You are a coding agent. Act, don't explain. After spawning "
+        "teammates, do not poll check_inbox in a loop; return control and "
+        "let mailbox events wake the next turn."
+    ),
     "tools": "Available tools: bash, read_file, write_file, "
              "get_task, create_task, list_tasks, claim_task, complete_task, "
              "schedule_cron, list_crons, cancel_cron, "
@@ -636,9 +640,47 @@ BUS = MessageBus()
 
 # Track spawned teammates
 active_teammates: dict[str, bool] = {}
+MAX_TEAMMATE_ROUNDS = 10
+MAX_LEAD_TOOL_ROUNDS = 12
 
 
 # ── Teammate Thread (s15 new) ──
+
+def _text_block(block) -> str | None:
+    if isinstance(block, dict):
+        if block.get("type") == "text":
+            return str(block.get("text", ""))
+        return None
+    if getattr(block, "type", None) == "text":
+        return str(getattr(block, "text", ""))
+    return None
+
+
+def build_teammate_report(
+    status: str,
+    messages: list,
+    rounds: int,
+    error: str = "",
+) -> dict:
+    summary = "No final summary was returned."
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            text = _text_block(block)
+            if text:
+                summary = text
+                break
+        if summary != "No final summary was returned.":
+            break
+    report = {"status": status, "rounds": rounds, "summary": summary}
+    if error:
+        report["error"] = error
+    return report
+
 
 def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
     """Spawn a teammate agent in a background thread.
@@ -650,10 +692,15 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
 
     system = (f"You are '{name}', a {role}. "
               f"Use tools to complete tasks. "
-              f"Send results via send_message to 'lead'.")
+              f"Send results via send_message to 'lead'. "
+              f"Finish within {MAX_TEAMMATE_ROUNDS} model turns; if work "
+              f"remains, say exactly what is unfinished.")
 
     def run():
         messages = [{"role": "user", "content": prompt}]
+        status = "max_rounds"
+        error_message = ""
+        rounds = 0
         sub_tools = [
             {"name": "bash", "description": "Run a shell command.",
              "input_schema": {"type": "object",
@@ -681,7 +728,8 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                                   "Sent")[1],
         }
 
-        for _ in range(10):
+        for _ in range(MAX_TEAMMATE_ROUNDS):
+            rounds += 1
             inbox = BUS.read_inbox(name)
             if inbox:
                 messages.append({"role": "user",
@@ -690,10 +738,13 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 response = client.messages.create(
                     model=MODEL, system=system, messages=messages[-20:],
                     tools=sub_tools, max_tokens=8000)
-            except Exception:
+            except Exception as error:
+                status = "error"
+                error_message = f"{type(error).__name__}: {error}"
                 break
             messages.append({"role": "assistant", "content": response.content})
             if response.stop_reason != "tool_use":
+                status = "completed"
                 break
             results = []
             for block in response.content:
@@ -705,20 +756,18 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                     "content": str(output)})
             messages.append({"role": "user", "content": results})
 
-        # Send final summary to Lead
-        summary = "Done."
-        for msg in reversed(messages):
-            if msg["role"] == "assistant" and isinstance(msg["content"], list):
-                for b in msg["content"]:
-                    if getattr(b, "type", None) == "text":
-                        summary = b.text
-                        break
-                else:
-                    continue
-                break
-        BUS.send(name, "lead", summary, "result")
+        report = build_teammate_report(
+            status, messages, rounds, error_message
+        )
+        message_type = "result" if status == "completed" else "error"
+        BUS.send(
+            name,
+            "lead",
+            json.dumps(report, ensure_ascii=False),
+            message_type,
+        )
         active_teammates.pop(name, None)
-        print(f"  \033[32m[teammate] {name} finished\033[0m")
+        print(f"  \033[32m[teammate] {name} finished: {status}\033[0m")
 
     active_teammates[name] = True
     threading.Thread(target=run, daemon=True).start()
@@ -860,7 +909,8 @@ def update_context(context: dict, messages: list) -> dict:
 
 def agent_loop(messages: list, context: dict):
     system = get_system_prompt(context)
-    while True:
+    tool_rounds = 0
+    while tool_rounds < MAX_LEAD_TOOL_ROUNDS:
         # Consume fired cron jobs → inject as messages
         fired = consume_cron_queue()
         for job in fired:
@@ -876,11 +926,12 @@ def agent_loop(messages: list, context: dict):
             messages.append({"role": "assistant", "content": [
                 {"type": "text",
                  "text": f"[Error] {type(e).__name__}: {e}"}]})
-            return
+            return "error"
 
         messages.append({"role": "assistant", "content": response.content})
         if response.stop_reason != "tool_use":
-            return
+            return "completed"
+        tool_rounds += 1
 
         results = []
         for block in response.content:
@@ -910,6 +961,7 @@ def agent_loop(messages: list, context: dict):
         messages.append({"role": "user", "content": user_content})
         context = update_context(context, messages)
         system = get_system_prompt(context)
+    return "yielded"
 
 
 if __name__ == "__main__":
@@ -971,8 +1023,9 @@ if __name__ == "__main__":
         agent_loop(history, context)
         context = update_context(context, history)
         for block in history[-1]["content"]:
-            if getattr(block, "type", None) == "text":
-                print(block.text)
+            text = _text_block(block)
+            if text:
+                print(text)
 
         # Announce once when every teammate has finished and its output drained.
         if active_teammates:

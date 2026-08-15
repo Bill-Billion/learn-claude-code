@@ -74,6 +74,7 @@ The hard constraints from each chapter become assembly rules when placed in one 
 | A single mailbox-consumption entry point routes first | A protocol response is removed without registration and remains pending forever | s16 |
 | Verify before destruction (persist / parse / count changes) | One failure empties memory or destroys work still inside a workspace | s08/s09/s18 |
 | Validate every model-provided name first | Path injection reads `.env` or creates a workspace outside the repository | s02/s07/s18/s19 |
+| Keep MCP annotations as host metadata | Parsing words from descriptions loses structure and cannot drive a permission decision | s19 |
 
 This table is the skeleton of the entire course. Each row looks like a small precaution on its own; together they express one position: **the model makes decisions, while the harness prevents those decisions from causing structural damage.**
 
@@ -91,9 +92,11 @@ This table is the skeleton of the entire course. Each row looks like a small pre
 
 **Compaction and recovery.** The four-step pre-LLM pipeline comes from s08. The call itself is wrapped in s11 recovery: backoff for 429/529, two-step `max_tokens` escalation, and reactive compaction on overflow.
 
-**Background work and scheduling.** Slow commands move into threads, return claim tickets, and inject notifications as in s13. An independent cron thread watches the clock, sends triggers through a queue, and excludes scheduled turns from user turns as in s14.
+**Background work and scheduling.** Slow commands move into threads, return claim tickets, and inject notifications as in s13. An independent cron thread watches the clock, sends triggers through a queue, and excludes scheduled turns from user turns as in s14. An explicit `run_in_background=true` always wins. Automatic dispatch matches command entry points such as `pytest`, `npm run check`, or `cargo build`; it does not search arbitrary words in arguments and filenames, so `cat pytest_out.txt` stays in the foreground.
 
-**Isolation and external tools.** Tasks can bind to worktrees where teammates operate, following s18. Discovered MCP tools enter the pool with prefixes, following s19.
+**Isolation and external tools.** Tasks can bind to worktrees where teammates operate, following s18. Each worktree records its branch, path, and creation commit, so cleanup compares `base_commit..HEAD` and does not mistake "no upstream" for "no commits." Discovered MCP tools enter the pool with prefixes, following s19.
+
+MCP annotations remain in the host-side registry. For the explicitly registered in-process mock servers used here, a declared read-only tool can proceed without interruption; destructive and unclassified tools ask for approval. That is the policy of this closed teaching setup, not a general authorization rule. A connector that accepts arbitrary servers must add server trust and local policy because annotations are self-reported hints.
 
 ---
 
@@ -102,7 +105,7 @@ This table is the skeleton of the entire course. Each row looks like a small pre
 | Component | s19 | s20 |
 |------|-----|-----|
 | Tool pool | Built-in + MCP | Every tool from s01-s18 restored |
-| Permissions | Omitted from the teaching focus | Executed in the `PreToolUse` hook |
+| Permissions | Omitted from the teaching focus | Executed in the `PreToolUse` hook, including MCP metadata |
 | Hooks | Omitted | All four events attached |
 | todo / skill / compact | Omitted | All restored |
 | Error recovery | Simplified try/except | Backoff / escalation / reactive compact |
@@ -119,7 +122,7 @@ python s20_comprehensive/code.py
 ```
 
 1. `Create a todo list for inspecting this repo, then list Python files`: s05's sticky note and s02's tools operate in the same round.
-2. `Connect to the docs MCP server and search for agent loop`: discovery and assembly from s19.
+2. `Connect to the docs MCP server and search for agent loop`: discovery and assembly from s19; the registered read-only annotation reaches the permission hook as host metadata.
 3. `Create two tasks, create worktrees for them, then spawn alice and bob. Ask them to submit plans before claiming tasks.`: four mechanisms from s12, s15, s16, and s18 interlock. Watch teammates wait for plan approval, claim only after approval, and then work in separate worktrees.
 4. `Remind me of the meeting in 3 minutes.`: the alarm from s14 wakes the terminal when the time arrives.
 5. `Run 'sleep 20 && echo build done' in the background and continue reading README.md`: the ticket and notification from s13.

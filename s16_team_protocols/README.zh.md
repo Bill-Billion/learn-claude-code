@@ -115,6 +115,8 @@ Lead: review_plan(req_xxx, approve=True)                → plan_approval_respon
 Bob 的对话里被注入: [Plan approved] Proceed with the task.
 ```
 
+答复还必须唤醒已经进入待命的队友。`wait_for_teammate_message()` 收到 `plan_approval_response` 后，先把批准或驳回写进 Bob 的对话，再返回一轮新的模型调用。少了这一步，批复虽然安稳躺在信箱里，Bob 却会一直睡在旁边。
+
 一个 `request_id` 关联机制、一台 pending → approved/rejected 状态机，服务两种协议。以后要加第三种（比如资源申请），照葫芦画瓢即可，这就是把"约定"做成结构的回报。
 
 必须诚实交代边界：**这是协议级审批，不是代码级门禁。** `submit_plan` 之后，队友的线程照常运转，工具照常可调，"等批复再动手"靠的是模型自觉。想要硬约束，得在工具分发层拦截未获批准的操作。s03 讲过问答层放行不等于边界层放行，这一课的教学版只建了问答层，边界层留白。

@@ -64,7 +64,10 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
 
     def run():
         messages = [{"role": "user", "content": prompt}]
-        for _ in range(10):                          # Teaching version: at most 10 rounds
+        status = "max_rounds"
+        rounds = 0
+        for _ in range(MAX_TEAMMATE_ROUNDS):
+            rounds += 1
             inbox = BUS.read_inbox(name)             # Check the mailbox before each round
             if inbox:
                 messages.append({"role": "user",
@@ -73,13 +76,20 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 model=MODEL, system=system, messages=messages[-20:],   # Sliding window
                 tools=sub_tools, max_tokens=8000)
             ...
-        BUS.send(name, "lead", summary, "result")    # Send the lead a summary before leaving
+            if response.stop_reason != "tool_use":
+                status = "completed"
+                break
+        report = build_teammate_report(status, messages, rounds)
+        BUS.send(name, "lead", json.dumps(report),
+                 "result" if status == "completed" else "error")
         active_teammates.pop(name, None)             # Remove itself from the roster
 
     threading.Thread(target=run, daemon=True).start()
 ```
 
 The tool set is narrowed as usual: `bash`, `read_file`, `write_file`, and `send_message`. It does not include `spawn_teammate`, so teammates cannot recruit more teammates, following the anti-recursion rule from s06. Context management uses a `messages[-20:]` sliding window instead of the compaction pipeline from s08. Teammates are short-lived, with a ten-round limit, and the most recent twenty messages cover their entire lives; a four-step cleanup pipeline would be needless overhead.
+
+Ten rounds are an execution budget, not proof of completion. A teammate that stops normally reports `status="completed"`. Reaching the limit reports `status="max_rounds"`, and an API failure reports `status="error"`; both arrive as non-success messages with the last useful summary and round count. The lead can now distinguish "finished" from "stopped running."
 
 The lead gains three tools: `spawn_teammate` to recruit, `send_message` to communicate, and `check_inbox` to read mail.
 
@@ -117,6 +127,8 @@ Each of the two defenses addresses a real failure mode.
 
 **The poller must not consult the roster.** The intuitive implementation is "check for mail only while a teammate is alive." But when a teammate leaves, it first sends its final summary and then unregisters itself, and those operations are not atomic. If the roster gates polling, a final message that becomes visible just after unregistration may never be collected. The poller therefore trusts only the mailbox: if mail exists, wake up, whether or not the sender is still listed.
 
+The lead does not need to call `check_inbox` repeatedly after spawning a teammate. Its prompt tells it to return control and let the event loop wake the next turn when mail arrives. A per-call tool-round limit is the last guard: if the model keeps polling anyway, `agent_loop()` yields to the terminal instead of spending calls forever.
+
 > In the real Claude Code, teammates do not stop after ten rounds. They enter an idle loop after finishing and wait by the mailbox until a `shutdown_request` arrives. Mailbox writes use file locks. Teams also have their own hook events, `TeammateIdle` and `TaskCompleted`, where external systems can attach behavior.
 
 ---
@@ -129,7 +141,7 @@ Each of the two defenses addresses a real failure mode.
 | Communication | None | `MessageBus` file mailboxes (`.mailboxes/*.jsonl`) |
 | New tools | — | `spawn_teammate`, `send_message`, `check_inbox` (14 total) |
 | Main program | Request-response through `input()` | Event loop (user input + wake events) |
-| Teammate lifecycle | — | At most 10 rounds; sends summary and unregisters on completion |
+| Teammate lifecycle | — | At most 10 rounds; reports completed / max_rounds / error, then unregisters |
 
 ---
 

@@ -81,11 +81,11 @@ def assemble_tool_pool() -> tuple[list[dict], dict]:
 
 ## 注解：外部工具的自我申报
 
-看 mock server 的工具描述：`search` 标着 `(readOnly)`，`deploy.trigger` 标着 `(destructive)`。这是给权限系统的接口：内置工具读写与否我们自己清楚，外接工具只能靠它申报。
+看 mock server 的工具定义：`search` 带着 `{"readOnlyHint": true, "destructiveHint": false}`，`deploy.trigger` 则正好相反。它们是结构化注解，不是拼在描述后面的几个字。内置工具读写与否我们自己清楚，外接工具只能申报自己的预期行为。
 
-必须诚实一层：注解是 server 说的，server 可以撒谎。一个恶意 server 把删库工具标成 readOnly，教学版会照单全信。所以真实系统对注解的用法是保守方向的：readOnly 只能换来"少打扰"，destructive 必然触发审批，申报无法让一个危险工具跳过 s03 那道门。信任边界画在协议上，不画在对方的自觉上。
+`assemble_tool_pool()` 按带前缀的工具名把注解保存在 `MCP_TOOL_ANNOTATIONS`。这是宿主元数据，不会被压进 description，也不会混进发给模型的工具 schema。s19 只负责把信息完整带回来，还不执行权限策略；到 s20，`PreToolUse` 才会在分发前读取它。
 
-> 真实 Claude Code：支持六种传输（stdio、HTTP、SSE 等），带 OAuth 认证、服务器反向推送通知、多来源配置合并；MCP 工具的 readOnly/destructive 注解真正接入权限管线，destructive 默认要求用户批准。教学版的 mock 保留了发现、命名、装配、注解四个关键环节。
+还得诚实一层：注解是 server 自己说的，server 可以撒谎。MCP 把它们定义为提示，不是授权凭证。真正接外部 server 时，必须再叠加 server 信任和本地策略。本课只能连接代码里显式登记的进程内 mock，但仍然把这条边界写清楚，不把 `readOnlyHint=true` 教成安全证明。
 
 ---
 
@@ -98,6 +98,7 @@ def assemble_tool_pool() -> tuple[list[dict], dict]:
 | 新函数 | — | `connect_mcp`, `assemble_tool_pool`, `normalize_mcp_name` |
 | 命名 | 裸名 | MCP 工具带 `mcp__{server}__{tool}` 前缀 |
 | 工具池 | 静态 `TOOLS` | 每个工具轮后重新装配 |
+| 注解 | 无 | 按带前缀工具名保存的结构化宿主元数据 |
 
 ---
 
@@ -111,7 +112,7 @@ python s19_mcp_plugin/code.py
 1. **发现的瞬间**：`Connect to the docs MCP server, then list what tools you have now.`。连接日志 `[mcp] connected: docs → ['search', 'get_version']` 之后，模型自己就能报出 `mcp__docs__search` 这些新名字，它们进池子了；
 2. **同池调用**：`Search the docs for "authentication" and also read README.md`。一轮里外接工具和内置工具混着调，对模型来说没有任何区别；
 3. **连接不存在的 server**：`Connect to the jira MCP server`。返回 `Unknown server 'jira'. Available: docs, deploy`，报错里带着可用清单，模型看了自己纠正；
-4. **注解的观感**：`Connect to deploy and check the status of service 'web'`，再试 `Trigger a deployment of 'web'`。两个工具都能跑通（教学版没接权限门），但描述里的 `(readOnly)` 和 `(destructive)` 已经写在那里。回想 s03：如果要给外接工具上三道闸门，判断依据就是这些注解。
+4. **注解是否保住**：`Connect to deploy and check the status of service 'web'`，再试 `Trigger a deployment of 'web'`。s19 还没有接权限门，所以两个工具都能运行；差别保存在 `MCP_TOOL_ANNOTATIONS` 里。s20 会在分发前读取它，不再靠工具名字猜风险。
 
 ---
 

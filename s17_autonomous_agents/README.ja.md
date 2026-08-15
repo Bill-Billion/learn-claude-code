@@ -78,6 +78,8 @@ def scan_unclaimed_tasks() -> list[dict]:
 
 2 人の teammate が同時に巡回し、同じタスクを見たらどうなるでしょう。答えは `claim_task` の戻り値チェックにあります。s12 の所有者チェックがここで効きます。先に書いた側が状態を `in_progress` に変え、後から `claim_task` を呼んだ側は `"Task xxx is in_progress, cannot claim"` を受け取ります。したがって claim 後には必ず結果を検証し、`"Claimed" in result` のときだけ獲得です。負けた側は `[idle] claim failed` を 1 行出して巡回を続け、次の周回で別の仕事を探します。
 
+claim に成功すると、Harness は task を読み直し、完全な JSON を `<auto-claimed>` に入れて teammate の会話へ注入します。subject だけでは作業契約になりません。何を作るか、今着手できるかを判断するには、description、依存先、owner、現在の status も必要です。後から確認するときは、`get_task` が同じ record を返します。
+
 正直な境界は同じです。教材版に file lock はなく、2 つの thread が同じミリ秒に `pending` を読み、両方が書く window は残っています。実システムは s12 で説明したとおり、file lock 内で再読込してから判定します。教材版は小さな競合 window を受け入れる代わりに、「楽観的 claim + 失敗時の retry」というパターンを直接読める形にしています。
 
 ---

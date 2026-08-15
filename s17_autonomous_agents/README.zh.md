@@ -78,6 +78,8 @@ def scan_unclaimed_tasks() -> list[dict]:
 
 两个队友同时在巡逻，同时看见同一个任务，怎么办？答案在 `claim_task` 的返回值检查里。s12 写下的归属检查此刻生效：先写入的人把状态改成 `in_progress`，后来的人调 `claim_task` 会得到 `"Task xxx is in_progress, cannot claim"`。所以认领后必须验证返回值，`"Claimed" in result` 才算抢到，抢输了打一行 `[idle] claim failed` 继续巡逻，下一圈再找别的活。
 
+认领成功后，harness 会重新读取任务，把完整 JSON 放进 `<auto-claimed>` 注入队友对话。只有标题不算任务契约，队友还得知道描述、依赖、owner 和当前状态，才能判断要交付什么、现在能不能开工。后面需要再核对时，`get_task` 读到的是同一份记录。
+
 诚实的边界还是那条：教学版没有文件锁，两个线程在同一毫秒各自读到 `pending` 再各自写入的窗口依然存在。真实系统在文件锁内重读再判定（s12 的对照行讲过）。教学版接受这个小窗口，换来的是代码一眼能看懂"乐观认领 + 失败重试"这个模式本身。
 
 ---
